@@ -87,7 +87,9 @@ export async function reindexWorkspace(workspaceId: string, userId?: string) {
           targetNodeId: typeof parsed.metadata.target === "string" ? refKey(parsed.metadata.target) : null,
           workflow: String(parsed.metadata.workflow ?? "triage_problem"),
           priority: Number(parsed.metadata.priority ?? 0),
-          status: String(parsed.metadata.status ?? "open")
+          status: String(parsed.metadata.status ?? "open"),
+          claimedSessionId: typeof parsed.metadata.claimed_session_id === "string" ? parsed.metadata.claimed_session_id : null,
+          leaseExpiresAt: dateOrNull(parsed.metadata.lease_expires_at)
         },
         create: {
           workspaceId,
@@ -95,7 +97,9 @@ export async function reindexWorkspace(workspaceId: string, userId?: string) {
           targetNodeId: typeof parsed.metadata.target === "string" ? refKey(parsed.metadata.target) : null,
           workflow: String(parsed.metadata.workflow ?? "triage_problem"),
           priority: Number(parsed.metadata.priority ?? 0),
-          status: String(parsed.metadata.status ?? "open")
+          status: String(parsed.metadata.status ?? "open"),
+          claimedSessionId: typeof parsed.metadata.claimed_session_id === "string" ? parsed.metadata.claimed_session_id : null,
+          leaseExpiresAt: dateOrNull(parsed.metadata.lease_expires_at)
         }
       })
     }
@@ -115,7 +119,7 @@ export async function reindexWorkspace(workspaceId: string, userId?: string) {
   }
 
   await prisma.nodeIndex.updateMany({ where: { workspaceId, nodeId: { notIn: [...seen] } }, data: { stale: true } })
-  await prisma.taskIndex.updateMany({ where: { workspaceId, nodeId: { notIn: [...seenTasks] }, status: { notIn: ["closed", "cancelled"] } }, data: { status: "closed" } })
+  await prisma.taskIndex.updateMany({ where: { workspaceId, nodeId: { notIn: [...seenTasks] }, status: { notIn: ["completed", "cancelled"] } }, data: { status: "cancelled", leaseExpiresAt: null } })
   await auditLog({ userId, workspaceId, action: "workspace.reindex", targetType: "Workspace", targetId: workspaceId, details: { files: files.length } })
   return { files: files.length, nodes: seen.size }
 }

@@ -4,10 +4,10 @@ import { scopes, hasPermission } from "../auth/scopes.js"
 import { requireWorkspaceRole } from "../auth/permissions.js"
 import { config } from "../config.js"
 import { readResource, listResources } from "./resources.js"
-import { listWorkspaces, startResearchSession, startWorkflow } from "./tools/sessionTools.js"
+import { listWorkspaces, maffBootstrap, startResearchSession, startWorkflow } from "./tools/sessionTools.js"
 import { getActiveRoutes, getNeighbors, getOpenGaps, getStaleNodes, searchNodes } from "./tools/graphTools.js"
 import { appendToNodeTool, createNodeTool, getNode, linkNodesTool, replaceNodeSectionTool, setNodeStatus, updateNodeMetadataTool } from "./tools/nodeTools.js"
-import { claimTask, completeTask, createTask, getNextTask, snoozeTask } from "./tools/taskTools.js"
+import { claimTask, completeTask, createTask, getNextTask, heartbeatTask, releaseTask, snoozeTask } from "./tools/taskTools.js"
 import { completeWorkflow, createConjecture, createGap, createProblem, createProofRoute, logProofAttempt, researchExtras } from "./tools/researchTools.js"
 import { createFormalizationTarget, createLeanProject, createLeanStub, leanCheck, leanExtras, leanGoal } from "./tools/leanTools.js"
 import { quartzStatus, rebuildIndex, rebuildQuartz } from "./tools/siteTools.js"
@@ -28,8 +28,11 @@ const tool = (name: string, description: string, role: WorkspaceRole, inputSchem
 
 export const toolDefinitions: ToolDef[] = [
   tool("list_workspaces", "List workspaces visible to the authenticated user.", "viewer", objectSchema({})),
+  tool("maff_bootstrap", "Use this first whenever the user wants to create, save, resume, or work on anything in Maff. This tool resolves the workspace/problem/task, detects the scenario, chooses the workflow, returns the relevant prompt, skills, graph context, queue decision, and suggested next tools.", "viewer", objectSchema({ workspace_id: s, node_ref: s, user_goal: s, workflow_type: s, mode: s, create_if_missing: { type: "boolean" }, title: s, area: s, rough_statement: s }, [])),
   tool("start_research_session", "Resolve a node or task and return recommended workflow context.", "viewer", objectSchema({ workspace_id: s, node_ref: s, user_goal: s }, ["workspace_id"])),
   tool("start_workflow", "Start a named workflow for a node.", "viewer", objectSchema({ workspace_id: s, workflow_type: s, node_id: s }, ["workspace_id", "workflow_type", "node_id"])),
+  tool("list_prompts", "List available Maff workflow prompts. Normally call maff_bootstrap first unless the user explicitly asks for prompt names.", "viewer", objectSchema({})),
+  tool("get_prompt", "Read a Maff workflow prompt by name. Normally call maff_bootstrap first unless the user explicitly asks for this exact prompt.", "viewer", objectSchema({ name: s }, ["name"])),
   tool("get_skill_pack", "Return compact skills relevant to a workflow and node.", "viewer", objectSchema({ workspace_id: s, node_id: s, workflow_type: s }, ["workspace_id", "workflow_type"])),
   tool("search_nodes", "Search indexed research nodes.", "viewer", objectSchema({ workspace_id: s, query: s, filters: anyObj }, ["workspace_id"])),
   tool("get_node", "Read a parsed Markdown node.", "viewer", objectSchema({ workspace_id: s, node_id: s }, ["workspace_id", "node_id"])),
@@ -50,10 +53,21 @@ export const toolDefinitions: ToolDef[] = [
   tool("create_gap", "Create a Gap node for a target.", "editor", objectSchema({ workspace_id: s, target_node_id: s, statement: s, severity: s, possible_resolutions: strArray }, ["workspace_id", "target_node_id", "statement", "severity"])),
   tool("create_task", "Create a Task node.", "editor", objectSchema({ workspace_id: s, target_node_id: s, workflow_type: s, priority: n, instructions: s }, ["workspace_id", "target_node_id", "workflow_type", "priority", "instructions"])),
   tool("get_next_task", "Read the next queued task.", "viewer", objectSchema({ workspace_id: s }, ["workspace_id"])),
-  tool("claim_task", "Claim a task.", "editor", objectSchema({ workspace_id: s, task_id: s }, ["workspace_id", "task_id"])),
+  tool("claim_task", "Claim a task with a lease. Normally call maff_bootstrap first unless the user explicitly supplied a workspace_id/task_id and requested this exact operation.", "editor", objectSchema({ workspace_id: s, task_id: s, claimed_session_id: s, workflow: s }, ["workspace_id"])),
+  tool("heartbeat_task", "Extend a claimed task lease. Normally call maff_bootstrap first unless the user explicitly supplied a workspace_id/task_id and requested this exact operation.", "editor", objectSchema({ workspace_id: s, task_id: s, workflow: s }, ["workspace_id", "task_id"])),
   tool("complete_task", "Complete a task.", "editor", objectSchema({ workspace_id: s, task_id: s, outcome_summary: s }, ["workspace_id", "task_id", "outcome_summary"])),
+  tool("release_task", "Release a claimed task back to the open queue. Normally call maff_bootstrap first unless the user explicitly supplied a workspace_id/task_id and requested this exact operation.", "editor", objectSchema({ workspace_id: s, task_id: s }, ["workspace_id", "task_id"])),
   tool("snooze_task", "Snooze a task.", "editor", objectSchema({ workspace_id: s, task_id: s, reason: s }, ["workspace_id", "task_id", "reason"])),
   tool("complete_workflow", "Append workflow result and create appropriate follow-up tasks.", "editor", objectSchema({ workspace_id: s, node_id: s, workflow_type: s, summary: s, graph_updates: anyObj }, ["workspace_id", "node_id", "workflow_type", "summary"])),
+  tool("create_counterexample", "Create a Counterexample node. Normally call maff_bootstrap first unless the user explicitly supplied a workspace_id/node_id and requested this exact operation.", "editor", objectSchema({ workspace_id: s, target_node_id: s, construction: s, explanation: s, artifacts: strArray }, ["workspace_id", "target_node_id", "construction", "explanation"])),
+  tool("create_experiment", "Create an Experiment node. Normally call maff_bootstrap first unless the user explicitly supplied a workspace_id/node_id and requested this exact operation.", "editor", objectSchema({ workspace_id: s, problem_id: s, title: s, hypothesis: s, code_ref: s, parameters: anyObj }, ["workspace_id", "problem_id", "title", "hypothesis"])),
+  tool("log_experiment_result", "Log an Experiment result. Normally call maff_bootstrap first unless the user explicitly supplied a workspace_id/experiment_id and requested this exact operation.", "editor", objectSchema({ workspace_id: s, experiment_id: s, result_summary: s, artifacts: strArray, implications: s }, ["workspace_id", "experiment_id", "result_summary"])),
+  tool("create_literature_source", "Create a Paper literature source node. Normally call maff_bootstrap first unless the user explicitly supplied a workspace_id and requested this exact operation.", "editor", objectSchema({ workspace_id: s, title: s, authors: strArray, year: n, citation: s, relevance: s, notes: s }, ["workspace_id", "title", "authors", "year", "citation", "relevance", "notes"])),
+  tool("mark_claim_novelty", "Append a novelty verdict to a claim. Normally call maff_bootstrap first unless the user explicitly supplied a workspace_id/claim_id and requested this exact operation.", "editor", objectSchema({ workspace_id: s, claim_id: s, novelty_status: s, evidence: s }, ["workspace_id", "claim_id", "novelty_status", "evidence"])),
+  tool("promote_to_theorem_candidate", "Promote a conjecture toward theorem-candidate status. Normally call maff_bootstrap first unless the user explicitly supplied ids and requested this exact operation.", "editor", objectSchema({ workspace_id: s, conjecture_id: s, theorem_statement: s, reason: s }, ["workspace_id", "conjecture_id", "reason"])),
+  tool("promote_to_informal_proof", "Create an InformalProof node from a proof candidate. Normally call maff_bootstrap first unless the user explicitly supplied ids and requested this exact operation.", "editor", objectSchema({ workspace_id: s, claim_id: s, proof_node_body: s, remaining_caveats: strArray }, ["workspace_id", "claim_id", "proof_node_body"])),
+  tool("pause_project", "Pause a project without deleting it. Normally call maff_bootstrap first unless the user explicitly supplied ids and requested this exact operation.", "owner", objectSchema({ workspace_id: s, node_id: s, reason: s, revival_trigger: s }, ["workspace_id", "node_id", "reason", "revival_trigger"])),
+  tool("kill_project", "Mark a project killed without deleting it. Normally call maff_bootstrap first unless the user explicitly supplied ids and requested this exact operation.", "owner", objectSchema({ workspace_id: s, node_id: s, reason: s, salvage_value: s }, ["workspace_id", "node_id", "reason", "salvage_value"])),
   tool("rebuild_index", "Rebuild a workspace index.", "editor", objectSchema({ workspace_id: s }, ["workspace_id"])),
   tool("rebuild_quartz_site", "Build a workspace Quartz site.", "editor", objectSchema({ workspace_id: s }, ["workspace_id"])),
   tool("get_quartz_site_status", "Read latest Quartz build status.", "viewer", objectSchema({ workspace_id: s }, ["workspace_id"])),
@@ -63,7 +77,11 @@ export const toolDefinitions: ToolDef[] = [
   tool("lean_check", "Run the Lean worker check for a LeanTheorem node.", "editor", objectSchema({ workspace_id: s, lean_file_id: s }, ["workspace_id", "lean_file_id"])),
   tool("lean_goal", "Read a Lean goal if supported.", "editor", objectSchema({ workspace_id: s, lean_file_id: s, position: anyObj }, ["workspace_id", "lean_file_id", "position"])),
   tool("lean_search_mathlib", "Search Mathlib or local notes for formalization hints.", "viewer", objectSchema({ workspace_id: s, query: s }, ["workspace_id", "query"])),
-  tool("mark_lean_verified", "Conservatively mark a Lean theorem verified if latest check permits it.", "editor", objectSchema({ workspace_id: s, lean_theorem_node_id: s, file_ref: s, theorem_name: s }, ["workspace_id", "lean_theorem_node_id", "file_ref", "theorem_name"]))
+  tool("lean_multi_attempt", "Try multiple Lean tactics if supported by the worker. Normally call maff_bootstrap first unless the user explicitly supplied Lean ids.", "editor", objectSchema({ workspace_id: s, lean_file_id: s, position: anyObj, tactics: strArray }, ["workspace_id", "lean_file_id", "position", "tactics"])),
+  tool("log_lean_attempt", "Log a Lean formalization attempt. Normally call maff_bootstrap first unless the user explicitly supplied formalization ids.", "editor", objectSchema({ workspace_id: s, formalization_target_id: s, result: s, diagnostics: anyObj, next_gap: s }, ["workspace_id", "formalization_target_id", "result", "diagnostics"])),
+  tool("mark_lean_verified", "Conservatively mark a Lean theorem verified if latest check permits it.", "editor", objectSchema({ workspace_id: s, lean_theorem_node_id: s, file_ref: s, theorem_name: s }, ["workspace_id", "lean_theorem_node_id", "file_ref", "theorem_name"])),
+  tool("create_assumption_entry", "Create a formalization assumption or axiom hygiene entry. Normally call maff_bootstrap first unless the user explicitly requested this exact operation.", "editor", objectSchema({ workspace_id: s, statement: s, reason: s, status: s }, ["workspace_id", "statement", "reason", "status"])),
+  tool("create_local_theorem_library_entry", "Create a local Lean theorem library entry. Normally call maff_bootstrap first unless the user explicitly requested this exact operation.", "editor", objectSchema({ workspace_id: s, lean_theorem_name: s, statement: s, proof_file: s }, ["workspace_id", "lean_theorem_name", "statement", "proof_file"]))
 ]
 
 const toolByName = new Map(toolDefinitions.map((definition) => [definition.name, definition]))
@@ -96,8 +114,11 @@ async function callTool(toolName: string, args: any, ctx: ToolContext) {
   const userId = ctx.userId
   switch (toolName) {
     case "list_workspaces": return listWorkspaces(userId)
+    case "maff_bootstrap": return maffBootstrap({ userId, workspaceId, nodeRef: args.node_ref, userGoal: args.user_goal, workflowType: args.workflow_type, mode: args.mode, createIfMissing: args.create_if_missing, title: args.title, area: args.area, roughStatement: args.rough_statement })
     case "start_research_session": return startResearchSession({ userId, workspaceId, nodeRef: args.node_ref, userGoal: args.user_goal })
     case "start_workflow": return startWorkflow(workspaceId, args.node_id, args.workflow_type)
+    case "list_prompts": return { prompts: await listPrompts() }
+    case "get_prompt": return { name: args.name, text: await getPrompt(args.name) }
     case "get_skill_pack": return getSkillPack(workspaceId, args.node_id, args.workflow_type)
     case "search_nodes": return searchNodes(workspaceId, args.query, args.filters)
     case "get_node": return getNode(workspaceId, args.node_id)
@@ -118,8 +139,10 @@ async function callTool(toolName: string, args: any, ctx: ToolContext) {
     case "create_gap": return createGap({ workspaceId, targetNodeId: args.target_node_id, statement: args.statement, severity: args.severity, possibleResolutions: args.possible_resolutions ?? [], userId })
     case "create_task": return createTask({ workspaceId, targetNodeId: args.target_node_id, workflowType: args.workflow_type, priority: args.priority, instructions: args.instructions, userId })
     case "get_next_task": return getNextTask(workspaceId)
-    case "claim_task": return claimTask(workspaceId, args.task_id, userId)
+    case "claim_task": return claimTask(workspaceId, args.task_id, userId, args.claimed_session_id, args.workflow)
+    case "heartbeat_task": return heartbeatTask(workspaceId, args.task_id, args.workflow)
     case "complete_task": return completeTask(workspaceId, args.task_id, args.outcome_summary)
+    case "release_task": return releaseTask(workspaceId, args.task_id)
     case "snooze_task": return snoozeTask(workspaceId, args.task_id, args.reason)
     case "complete_workflow": return completeWorkflow({ workspaceId, nodeId: args.node_id, workflowType: args.workflow_type, summary: args.summary, graphUpdates: args.graph_updates, userId })
     case "rebuild_index": return rebuildIndex(workspaceId, userId)
@@ -133,8 +156,18 @@ async function callTool(toolName: string, args: any, ctx: ToolContext) {
     case "create_counterexample": return researchExtras.create_counterexample({ workspaceId, targetNodeId: args.target_node_id, construction: args.construction, explanation: args.explanation, artifacts: args.artifacts, userId })
     case "create_experiment": return researchExtras.create_experiment({ workspaceId, problemId: args.problem_id, title: args.title, hypothesis: args.hypothesis, codeRef: args.code_ref, parameters: args.parameters, userId })
     case "log_experiment_result": return researchExtras.log_experiment_result({ workspaceId, experimentId: args.experiment_id, resultSummary: args.result_summary, artifacts: args.artifacts, implications: args.implications, userId })
+    case "create_literature_source": return researchExtras.create_literature_source({ workspaceId, title: args.title, authors: args.authors, year: args.year, citation: args.citation, relevance: args.relevance, notes: args.notes, userId })
+    case "mark_claim_novelty": return researchExtras.mark_claim_novelty({ workspaceId, claimId: args.claim_id, noveltyStatus: args.novelty_status, evidence: args.evidence, userId })
+    case "promote_to_theorem_candidate": return researchExtras.promote_to_theorem_candidate({ workspaceId, conjectureId: args.conjecture_id, theoremStatement: args.theorem_statement, reason: args.reason, userId })
+    case "promote_to_informal_proof": return researchExtras.promote_to_informal_proof({ workspaceId, claimId: args.claim_id, proofNodeBody: args.proof_node_body, remainingCaveats: args.remaining_caveats, userId })
+    case "pause_project": return researchExtras.pause_project({ workspaceId, nodeId: args.node_id, reason: args.reason, revivalTrigger: args.revival_trigger, userId })
+    case "kill_project": return researchExtras.kill_project({ workspaceId, nodeId: args.node_id, reason: args.reason, salvageValue: args.salvage_value, userId })
     case "lean_search_mathlib": return leanExtras.lean_search_mathlib({ workspaceId, query: args.query })
+    case "lean_multi_attempt": return leanExtras.lean_multi_attempt()
+    case "log_lean_attempt": return leanExtras.log_lean_attempt({ workspaceId, formalizationTargetId: args.formalization_target_id, result: args.result, diagnostics: args.diagnostics, nextGap: args.next_gap, userId })
     case "mark_lean_verified": return leanExtras.mark_lean_verified({ workspaceId, leanTheoremNodeId: args.lean_theorem_node_id, fileRef: args.file_ref, theoremName: args.theorem_name, userId })
+    case "create_assumption_entry": return leanExtras.create_assumption_entry({ workspaceId, statement: args.statement, reason: args.reason, status: args.status, userId })
+    case "create_local_theorem_library_entry": return leanExtras.create_local_theorem_library_entry({ workspaceId, leanTheoremName: args.lean_theorem_name, statement: args.statement, proofFile: args.proof_file, userId })
     default: throw new Error(`Unknown tool: ${toolName}`)
   }
 }

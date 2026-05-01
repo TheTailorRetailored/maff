@@ -11,6 +11,7 @@ import { config } from "../config.js"
 import path from "node:path"
 
 type ResourceContext = { userId: string; claims: AuthClaims }
+const introText = "Maff is a tool-first private math research graph. Use maff_bootstrap first for workflow orchestration; resources are read-only references for browsing and linking."
 
 async function requireViewer(ctx: ResourceContext, workspaceId: string) {
   return requireWorkspaceRole(ctx.userId, workspaceId, "viewer")
@@ -24,6 +25,7 @@ export async function listResources(ctx: ResourceContext) {
   const [prompts, skills] = await Promise.all([listPrompts(), listMarkdownFiles()])
   return {
     resources: [
+      { uri: "maff://intro", name: "Maff introduction", mimeType: "text/plain" },
       ...workspaces.flatMap((workspace) => [
       { uri: `workspace://${workspace.id}/manifest`, name: `${workspace.name} manifest`, mimeType: "application/json" },
       { uri: `workspace://${workspace.id}/recent`, name: `${workspace.name} recent nodes`, mimeType: "application/json" },
@@ -42,6 +44,7 @@ export async function listResources(ctx: ResourceContext) {
 
 export async function readResource(uri: string, ctx: ResourceContext) {
   const [scheme, rest] = uri.split("://")
+  if (scheme === "maff" && rest === "intro") return introText
   if (scheme === "workspace") {
     const [workspaceId, kind] = rest.split("/")
     const membership = await requireViewer(ctx, workspaceId)
@@ -63,11 +66,20 @@ export async function readResource(uri: string, ctx: ResourceContext) {
     const [workspaceId, nodeId, kind] = rest.split("/")
     await requireViewer(ctx, workspaceId)
     if (kind === "neighbors") return getNeighbors(workspaceId, nodeId)
-    return getNode(workspaceId, nodeId)
+    const node = await getNode(workspaceId, nodeId)
+    if (kind === "markdown") return node.body
+    if (kind === "metadata") return node.metadata
+    return node
   }
   if (scheme === "graph") {
-    const [workspaceId] = rest.split("/")
+    const [workspaceId, kind, id] = rest.split("/")
     await requireViewer(ctx, workspaceId)
+    if (kind === "problem" && id) return { nodes: await prisma.nodeIndex.findMany({ where: { workspaceId, OR: [{ nodeId: id }, { metadata: { path: ["problem"], equals: id } }, { metadata: { path: ["target"], equals: id } }] } }), edges: await prisma.edgeIndex.findMany({ where: { workspaceId, OR: [{ sourceNodeId: id }, { targetNodeId: id }, { targetNodeRef: id }] } }) }
+    if (kind === "claim" && id) {
+      const edges = await prisma.edgeIndex.findMany({ where: { workspaceId, OR: [{ sourceNodeId: id }, { targetNodeId: id }] } })
+      const nodeIds = [...new Set([id, ...edges.flatMap((e) => [e.sourceNodeId, e.targetNodeId]).filter(Boolean) as string[]])]
+      return { nodes: await prisma.nodeIndex.findMany({ where: { workspaceId, nodeId: { in: nodeIds } } }), edges }
+    }
     return { nodes: await prisma.nodeIndex.findMany({ where: { workspaceId } }), edges: await prisma.edgeIndex.findMany({ where: { workspaceId } }) }
   }
   if (scheme === "skill") return loadSkill(rest.split("/"))

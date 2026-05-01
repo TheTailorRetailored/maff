@@ -130,6 +130,8 @@ model TaskIndex {
   priority    Int      @default(0)
   status      String   @default("open")
   assignedToUserId String? @db.Uuid
+  claimedSessionId String?
+  leaseExpiresAt DateTime?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
