@@ -9,6 +9,8 @@ services:
       - pg_data:/var/lib/postgresql/data
     ports:
       - "127.0.0.1:5432:5432"
+    networks:
+      - default
 
   api:
     build:
@@ -39,6 +41,9 @@ services:
       - ./prompts:/app/prompts:ro
     ports:
       - "127.0.0.1:3001:3001"
+    networks:
+      - default
+      - caddy
 
   web:
     build: ./apps/web
@@ -49,6 +54,9 @@ services:
       VITE_AUTH0_AUDIENCE: ${AUTH0_AUDIENCE}
     ports:
       - "127.0.0.1:3000:3000"
+    networks:
+      - default
+      - caddy
 
   lean-worker:
     build: ./workers/lean-worker
@@ -61,6 +69,8 @@ services:
       - lean_lake:/root/.lake
     ports:
       - "127.0.0.1:8765:8765"
+    networks:
+      - default
 
   caddy:
     image: caddy:2
@@ -86,3 +96,8 @@ volumes:
   lean_lake:
   caddy_data:
   caddy_config:
+
+networks:
+  caddy:
+    external: true
+    name: caddy_default
