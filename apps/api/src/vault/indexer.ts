@@ -85,21 +85,29 @@ export async function reindexWorkspace(workspaceId: string, userId?: string) {
         where: { workspaceId_nodeId: { workspaceId, nodeId } },
         update: {
           targetNodeId: typeof parsed.metadata.target === "string" ? refKey(parsed.metadata.target) : null,
+          targetSection: typeof parsed.metadata.target_section === "string" ? parsed.metadata.target_section : null,
           workflow: String(parsed.metadata.workflow ?? "triage_problem"),
+          title: String(parsed.metadata.title ?? parsed.title ?? "Task"),
+          instructions: String(parsed.metadata.instructions ?? ""),
           priority: Number(parsed.metadata.priority ?? 0),
           status: String(parsed.metadata.status ?? "open"),
           claimedSessionId: typeof parsed.metadata.claimed_session_id === "string" ? parsed.metadata.claimed_session_id : null,
-          leaseExpiresAt: dateOrNull(parsed.metadata.lease_expires_at)
+          leaseExpiresAt: dateOrNull(parsed.metadata.lease_expires_at),
+          completedAt: dateOrNull(parsed.metadata.completed_at)
         },
         create: {
           workspaceId,
           nodeId,
           targetNodeId: typeof parsed.metadata.target === "string" ? refKey(parsed.metadata.target) : null,
+          targetSection: typeof parsed.metadata.target_section === "string" ? parsed.metadata.target_section : null,
           workflow: String(parsed.metadata.workflow ?? "triage_problem"),
+          title: String(parsed.metadata.title ?? parsed.title ?? "Task"),
+          instructions: String(parsed.metadata.instructions ?? ""),
           priority: Number(parsed.metadata.priority ?? 0),
           status: String(parsed.metadata.status ?? "open"),
           claimedSessionId: typeof parsed.metadata.claimed_session_id === "string" ? parsed.metadata.claimed_session_id : null,
-          leaseExpiresAt: dateOrNull(parsed.metadata.lease_expires_at)
+          leaseExpiresAt: dateOrNull(parsed.metadata.lease_expires_at),
+          completedAt: dateOrNull(parsed.metadata.completed_at)
         }
       })
     }
@@ -119,7 +127,7 @@ export async function reindexWorkspace(workspaceId: string, userId?: string) {
   }
 
   await prisma.nodeIndex.updateMany({ where: { workspaceId, nodeId: { notIn: [...seen] } }, data: { stale: true } })
-  await prisma.taskIndex.updateMany({ where: { workspaceId, nodeId: { notIn: [...seenTasks] }, status: { notIn: ["completed", "cancelled"] } }, data: { status: "cancelled", leaseExpiresAt: null } })
+  if (seenTasks.size) await prisma.taskIndex.updateMany({ where: { workspaceId, nodeId: { notIn: [...seenTasks] }, status: { notIn: ["completed", "cancelled"] } }, data: { status: "cancelled", leaseExpiresAt: null } })
   await auditLog({ userId, workspaceId, action: "workspace.reindex", targetType: "Workspace", targetId: workspaceId, details: { files: files.length } })
   return { files: files.length, nodes: seen.size }
 }

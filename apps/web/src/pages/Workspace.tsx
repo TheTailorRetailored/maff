@@ -26,7 +26,10 @@ export function Workspace({ workspaceId, setWorkspaceId, onOpenNode }: { workspa
     if (!title.trim()) return
     try {
       setError("")
-      await request(`/workspaces/${workspaceId}/nodes`, { method: "POST", body: JSON.stringify({ title, type, metadata: { status: type === "Task" ? "open" : "seed" }, body: `# ${type}: ${title}\n\n## Statement\n\n` }) })
+      const metadata = type === "Claim"
+        ? { status: "active", claim_kind: "conjecture", claim_status: "idea", role: "main_result", proof_status: "none", lean_status: "not_started" }
+        : { status: "seed" }
+      await request(`/workspaces/${workspaceId}/nodes`, { method: "POST", body: JSON.stringify({ title, type, metadata }) })
       setTitle("")
       refresh()
     } catch (err) {
@@ -40,7 +43,7 @@ export function Workspace({ workspaceId, setWorkspaceId, onOpenNode }: { workspa
       <div className="toolbar">
         <button disabled={!workspaceId} onClick={() => request(`/workspaces/${workspaceId}/reindex`, { method: "POST" }).then(refresh).catch((err) => setError(err instanceof Error ? err.message : String(err)))}>Reindex</button>
         <button disabled={!workspaceId} onClick={() => request(`/workspaces/${workspaceId}/quartz/rebuild`, { method: "POST" }).catch((err) => setError(err instanceof Error ? err.message : String(err)))}>Rebuild Quartz</button>
-        <select value={type} onChange={(e) => setType(e.target.value)}><option>Problem</option><option>Conjecture</option><option>ProofRoute</option><option>Gap</option><option>Task</option><option>FormalizationTarget</option></select>
+        <select value={type} onChange={(e) => setType(e.target.value)}><option>Problem</option><option>Claim</option><option>Definition</option><option>Paper</option><option>KnownResult</option><option>Experiment</option><option>FormalizationTarget</option></select>
         <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="New node title" />
         <button disabled={!workspaceId} onClick={createNode}>New Node</button>
       </div>

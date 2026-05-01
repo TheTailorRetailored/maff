@@ -126,12 +126,16 @@ model TaskIndex {
   workspaceId String   @db.Uuid
   nodeId      String
   targetNodeId String?
+  targetSection String?
   workflow    String
+  title       String   @default("")
+  instructions String  @default("")
   priority    Int      @default(0)
   status      String   @default("open")
   assignedToUserId String? @db.Uuid
   claimedSessionId String?
   leaseExpiresAt DateTime?
+  completedAt DateTime?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react"
-import { useApi } from "../api/client"
+import { useApi, type TaskIndex } from "../api/client"
 import { MarkdownRenderer } from "../components/MarkdownRenderer"
+import { TaskCard } from "../components/TaskCard"
 
 export function NodeView({ workspaceId, nodeId }: { workspaceId: string; nodeId: string; onOpenNode: (id: string) => void }) {
   const { request } = useApi()
@@ -8,9 +9,13 @@ export function NodeView({ workspaceId, nodeId }: { workspaceId: string; nodeId:
   const [section, setSection] = useState("Decision log")
   const [content, setContent] = useState("")
   const [status, setStatus] = useState("")
+  const [tasks, setTasks] = useState<TaskIndex[]>([])
   const refresh = () => {
     if (!workspaceId || !nodeId) return Promise.resolve()
-    return request<any>(`/workspaces/${workspaceId}/nodes/${nodeId}`).then((n) => { setNode(n); setStatus(String(n.metadata.status ?? "")) })
+    return Promise.all([
+      request<any>(`/workspaces/${workspaceId}/nodes/${nodeId}`),
+      request<TaskIndex[]>(`/workspaces/${workspaceId}/tasks?targetNodeId=${encodeURIComponent(nodeId)}`)
+    ]).then(([n, nodeTasks]) => { setNode(n); setStatus(String(n.metadata.status ?? n.metadata.claim_status ?? "")); setTasks(nodeTasks) })
   }
   useEffect(() => { void refresh() }, [workspaceId, nodeId])
   if (!workspaceId || !nodeId) return <section className="page"><h1>Node</h1><p>Select a node from a workspace or graph.</p></section>
@@ -25,6 +30,11 @@ export function NodeView({ workspaceId, nodeId }: { workspaceId: string; nodeId:
         <aside className="panel">
           <h2>Metadata</h2>
           <pre>{JSON.stringify(node.metadata, null, 2)}</pre>
+          <h2>Attached Tasks</h2>
+          <div className="stack">
+            {tasks.length === 0 && <p className="notice">No attached tasks.</p>}
+            {tasks.map((task) => <TaskCard key={task.id} task={task} />)}
+          </div>
           <div className="toolbar compact">
             <select value={status} onChange={(e) => setStatus(e.target.value)}>
               {["seed", "active", "lit_checked", "route_active", "proof_candidate", "informally_proved", "formalizing", "lean_verified", "paused", "killed", "open", "closed"].map((s) => <option key={s}>{s}</option>)}

@@ -9,7 +9,13 @@ export function registerGraphRoutes(router: Router) {
   router.get("/workspaces/:id/graph", asyncHandler(async (req, res) => {
     const user = requireUser(req)
     await requireWorkspaceRole(user.id, req.params.id, "viewer")
-    res.json({ nodes: await prisma.nodeIndex.findMany({ where: { workspaceId: req.params.id, stale: false } }), edges: await prisma.edgeIndex.findMany({ where: { workspaceId: req.params.id } }) })
+    const showAll = req.query.includeOperational === "true"
+    const graphTypes = ["Problem", "Claim", "Definition", "Paper", "KnownResult", "Experiment", "Draft"]
+    const edgeTypes = ["problem", "depends_on", "supports", "cites", "related_papers"]
+    const nodes = await prisma.nodeIndex.findMany({ where: { workspaceId: req.params.id, stale: false, ...(showAll ? {} : { type: { in: graphTypes } }) } })
+    const nodeIds = new Set(nodes.map((node) => node.nodeId))
+    const edges = await prisma.edgeIndex.findMany({ where: { workspaceId: req.params.id, ...(showAll ? {} : { edgeType: { in: edgeTypes } }) } })
+    res.json({ nodes, edges: showAll ? edges : edges.filter((edge) => nodeIds.has(edge.sourceNodeId) && !!edge.targetNodeId && nodeIds.has(edge.targetNodeId)) })
   }))
   router.get("/workspaces/:id/nodes/:nodeId/neighbors", asyncHandler(async (req, res) => {
     const user = requireUser(req)

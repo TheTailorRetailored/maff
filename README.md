@@ -13,6 +13,16 @@ Maff is a private, self-hosted math research system built around an Obsidian-com
 
 Markdown files remain the source of truth. The database stores users, permissions, indexes, jobs, and audit logs.
 
+## Graph Model
+
+Maff's default graph is mathematical, not operational. Primary graph nodes are `Problem`, `Claim`, `Definition`, `Paper`/`KnownResult`, and substantial `Experiment` or `Draft` notes.
+
+A `Claim` represents theorem-like mathematical content: conjectures, theorems, lemmas, propositions, corollaries, reductions, counterexample claims, and technical statements. Claim notes include sections for statement, status, role in project, dependencies, proof routes, informal proof, Lean formalization, attempts and notes, tasks, and decision log.
+
+Routes, proof attempts, minor gaps, informal proof updates, Lean status, and routine notes usually live inside the relevant Claim note. They are promoted to standalone graph nodes only when they become substantial, reusable, independently documentable, or explicitly requested.
+
+Tasks are operational queue records stored in PostgreSQL and attached to a target node/section. They appear in the queue and node detail views, but they do not appear in the default graph.
+
 ## Local Dev
 
 ```bash
@@ -100,7 +110,7 @@ GET /.well-known/oauth-protected-resource/mcp
 
 Both endpoints publish `resource: AUTH0_AUDIENCE`, `authorization_servers: [AUTH0_ISSUER]`, supported scopes (`maff:access`, `maff:admin`), and `resource_documentation: PUBLIC_BASE_URL`.
 
-MCP exposes structured research tools such as `start_research_session`, `create_conjecture`, `log_proof_attempt`, `create_gap`, `get_skill_pack`, `rebuild_quartz_site`, and Lean formalization tools. It intentionally does not expose arbitrary file writes, shell execution, or deletion tools.
+MCP exposes structured research tools such as `maff_bootstrap`, `create_claim`, `add_route_to_claim`, `log_proof_attempt`, `create_task`, `get_skill_pack`, `rebuild_quartz_site`, and Lean formalization tools. It intentionally does not expose arbitrary file writes, shell execution, or deletion tools.
 
 Maff is tool-first and resource-supported. ChatGPT should normally call `maff_bootstrap` first whenever the user wants to create, save, resume, or work on anything in Maff. `maff_bootstrap` returns the selected workflow prompt, compact skills, graph context, queue decision, suggested tools, writeback plan, and user-facing response contract inline. MCP resources such as `workspace://...`, `node://...`, `graph://...`, `skill://...`, and `prompt://...` are stable read-only references for browsing and linking; do not rely on clients automatically fetching them for orchestration.
 
@@ -111,7 +121,9 @@ Prompt tools are also available:
 
 The prompt catalog includes capture, triage, route generation, proof attack, gap analysis, literature, experiment, paper, weekly digest, and Lean formalization workflows.
 
-Task queue policy: use queued tasks only when resuming an existing problem with no specific user idea and no explicit workflow. Claimed tasks use leases: normal workflows default to 20 minutes, Lean/formalization workflows default to 60 minutes. The graph is the durable memory, so long sessions should checkpoint via proof attempts, gaps, tasks, and workflow completions.
+Task queue policy: use queued tasks only when resuming an existing problem with no specific user idea and no explicit workflow. Claimed tasks use leases: normal workflows default to 20 minutes, Lean/formalization workflows default to 60 minutes. The graph is the durable memory, so long sessions should checkpoint by appending attempts/gaps/routes to Claim notes, creating attached tasks, and completing workflows.
+
+Compatibility aliases remain available: `create_conjecture` creates a `Claim` with `claim_kind=conjecture`; `create_theorem_candidate` creates a theorem Claim; `create_lemma_candidate` creates a lemma Claim. Legacy route/gap/attempt tools append to Claim sections by default instead of creating graph nodes.
 
 ## Vaults
 
