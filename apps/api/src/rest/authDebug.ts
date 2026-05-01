@@ -18,6 +18,7 @@ export function registerAuthDebugRoutes(router: Router) {
       sub: claims.sub,
       email: claims.email,
       scope: claims.scope,
+      permissions: claims.permissions ?? [],
       expires_at: claims.exp ? new Date(claims.exp * 1000).toISOString() : null,
       internal_user_id: user.id,
       workspaces: await prisma.workspace.findMany({ where: { members: { some: { userId: user.id } } } })

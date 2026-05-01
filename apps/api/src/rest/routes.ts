@@ -57,8 +57,9 @@ export function apiRouter() {
 export function oauthProtectedResource() {
   return {
     resource: config.auth0.audience,
-    authorization_servers: [`https://${config.auth0.domain}`],
-    scopes_supported: Object.values(scopes)
+    authorization_servers: [config.auth0.issuer],
+    scopes_supported: Object.values(scopes),
+    resource_documentation: config.publicBaseUrl
   }
 }
 

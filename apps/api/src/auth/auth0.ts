@@ -30,8 +30,8 @@ export function extractBearerToken(req: Request) {
   return match?.[1]
 }
 
-function authChallenge(res: Response, message = "Bearer token required") {
-  res.setHeader("WWW-Authenticate", `Bearer realm="maff", resource_metadata="${config.publicBaseUrl}/.well-known/oauth-protected-resource", error="invalid_token", error_description="${message}"`)
+function authChallenge(res: Response, message = "Bearer token required", scope = "graph:read") {
+  res.setHeader("WWW-Authenticate", `Bearer resource_metadata="${config.publicBaseUrl}/.well-known/oauth-protected-resource", scope="${scope}", error="invalid_token", error_description="${message}"`)
 }
 
 export async function verifyAuth0Token(token: string): Promise<AuthClaims> {
