@@ -4,6 +4,8 @@ export const config = {
   publicBaseUrl: process.env.PUBLIC_BASE_URL ?? "http://localhost:3001",
   corsOrigins: (process.env.CORS_ORIGINS ?? "http://localhost:3000,http://127.0.0.1:3000").split(",").map((s) => s.trim()).filter(Boolean),
   autoJoinSharedWorkspace: (process.env.AUTO_JOIN_SHARED_WORKSPACE ?? "false").toLowerCase() === "true",
+  sharedWorkspaceAutoJoinEmails: (process.env.SHARED_WORKSPACE_AUTO_JOIN_EMAILS ?? "").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean),
+  sharedWorkspaceAutoJoinRole: process.env.SHARED_WORKSPACE_AUTO_JOIN_ROLE ?? "viewer",
   auth0: {
     domain: process.env.AUTH0_DOMAIN ?? "",
     issuer: process.env.AUTH0_ISSUER ?? "",

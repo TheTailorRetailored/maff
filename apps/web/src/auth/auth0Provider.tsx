@@ -11,7 +11,7 @@ export function MaffAuthProvider({ children }: { children: ReactNode }) {
       authorizationParams={{
         redirect_uri: window.location.origin,
         audience: import.meta.env.VITE_AUTH0_AUDIENCE,
-        scope: "openid profile email offline_access graph:read graph:write node:create node:update attempt:write experiment:write formalization:run publish:run workspace:admin"
+        scope: "openid profile email offline_access maff:access"
       }}
     >
       {children}

@@ -1,10 +1,11 @@
 import type { NextFunction, Request, Response } from "express"
 import fs from "node:fs/promises"
 import path from "node:path"
+import type { WorkspaceRole } from "@prisma/client"
 import { createRemoteJWKSet, jwtVerify, type JWTPayload } from "jose"
 import { config } from "../config.js"
 import { prisma } from "../db/prisma.js"
-import { hasScope } from "./scopes.js"
+import { hasPermission, scopes } from "./scopes.js"
 
 const jwks = config.auth0.jwksUri ? createRemoteJWKSet(new URL(config.auth0.jwksUri)) : undefined
 
@@ -30,8 +31,8 @@ export function extractBearerToken(req: Request) {
   return match?.[1]
 }
 
-function authChallenge(res: Response, message = "Bearer token required", scope = "graph:read") {
-  res.setHeader("WWW-Authenticate", `Bearer resource_metadata="${config.publicBaseUrl}/.well-known/oauth-protected-resource", scope="${scope}", error="invalid_token", error_description="${message}"`)
+export function authChallenge(res: Response, message = "Bearer token required", scope = scopes.maffAccess, error = "invalid_token") {
+  res.setHeader("WWW-Authenticate", `Bearer resource_metadata="${config.publicBaseUrl}/.well-known/oauth-protected-resource", error="${error}", error_description="${message}", scope="${scope}"`)
 }
 
 export async function verifyAuth0Token(token: string): Promise<AuthClaims> {
@@ -82,11 +83,14 @@ export async function findOrCreateUser(claims: AuthClaims) {
     create: { slug: "shared", name: "Shared Research", type: "shared", ownerUserId: user.id }
   })
   const sharedMembers = await prisma.workspaceMember.count({ where: { workspaceId: sharedWorkspace.id } })
-  if (sharedMembers === 0 || (!existing && config.autoJoinSharedWorkspace)) {
+  const email = user.email?.toLowerCase() ?? ""
+  const shouldAutoJoinShared = !existing && (config.autoJoinSharedWorkspace || (email && config.sharedWorkspaceAutoJoinEmails.includes(email)))
+  if (sharedMembers === 0 || shouldAutoJoinShared) {
+    const configuredRole = ["viewer", "editor", "owner", "admin"].includes(config.sharedWorkspaceAutoJoinRole) ? config.sharedWorkspaceAutoJoinRole as WorkspaceRole : "viewer"
     await prisma.workspaceMember.upsert({
       where: { workspaceId_userId: { workspaceId: sharedWorkspace.id, userId: user.id } },
       update: {},
-      create: { workspaceId: sharedWorkspace.id, userId: user.id, role: sharedMembers === 0 ? "owner" : "viewer" }
+      create: { workspaceId: sharedWorkspace.id, userId: user.id, role: sharedMembers === 0 ? "owner" : configuredRole }
     })
   }
   if (sharedMembers === 0) await seedWorkspaceVault(sharedWorkspace.slug)
@@ -118,7 +122,7 @@ export function requireAuth(requiredScope?: string) {
         return res.status(401).json({ error: "missing_token" })
       }
       const claims = await verifyAuth0Token(token)
-      if (requiredScope && !hasScope(claims.scope, requiredScope) && !(claims.permissions ?? []).includes(requiredScope)) {
+      if (requiredScope && !hasPermission({ scopeText: claims.scope, permissions: claims.permissions, required: requiredScope })) {
         return res.status(403).json({ error: "missing_scope", requiredScope })
       }
       const user = await findOrCreateUser(claims)

@@ -70,11 +70,12 @@ Do not use `handle_path /api*`, `rewrite`, or equivalent prefix stripping unless
 4. Ensure the SPA requests `audience = AUTH0_AUDIENCE`.
 5. Ensure access tokens are RS256 JWTs.
 6. Set `AUTH0_AUDIENCE` to the MCP protected resource, for example `https://maff.lachlanbridges.com/mcp`.
-7. Add scopes: `graph:read graph:write node:create node:update attempt:write experiment:write formalization:run publish:run workspace:admin`.
+7. Add API permissions: `maff:access` and `maff:admin`.
 8. Enable Auth0 OIDC Dynamic Application Registration if ChatGPT should self-register as an MCP OAuth client.
 9. The Maff Web SPA uses `AUTH0_CLIENT_ID`, but MCP clients use their own dynamically registered client ids. Maff does not require `azp` or `client_id` to match the SPA client id.
 10. For MCP clients, ensure OAuth requests include the same audience/resource.
-11. Confirm `/api/auth/debug-token` shows the expected `aud`, `iss`, scopes or permissions, and internal user id.
+11. For initial ChatGPT connector setup, use advanced OAuth base scopes: `openid profile email offline_access maff:access`.
+12. Confirm `/api/auth/debug-token` shows `has_maff_access: true`, the expected `aud`, `iss`, and internal user id.
 
 The API verifies JWTs locally via JWKS and does not use `/userinfo` for authorization.
 
@@ -97,7 +98,7 @@ GET /.well-known/oauth-protected-resource
 GET /.well-known/oauth-protected-resource/mcp
 ```
 
-Both endpoints publish `resource: AUTH0_AUDIENCE`, `authorization_servers: [AUTH0_ISSUER]`, supported scopes, and `resource_documentation: PUBLIC_BASE_URL`.
+Both endpoints publish `resource: AUTH0_AUDIENCE`, `authorization_servers: [AUTH0_ISSUER]`, supported scopes (`maff:access`, `maff:admin`), and `resource_documentation: PUBLIC_BASE_URL`.
 
 MCP exposes structured research tools such as `start_research_session`, `create_conjecture`, `log_proof_attempt`, `create_gap`, `get_skill_pack`, `rebuild_quartz_site`, and Lean formalization tools. It intentionally does not expose arbitrary file writes, shell execution, or deletion tools.
 
