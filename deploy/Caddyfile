@@ -1,0 +1,26 @@
+{
+	email off
+}
+
+:80 {
+	handle_path /app* {
+		reverse_proxy web:3000
+	}
+
+	handle_path /api* {
+		reverse_proxy api:3001
+	}
+
+	handle /mcp* {
+		reverse_proxy api:3001
+	}
+
+	handle_path /sites* {
+		reverse_proxy api:3001
+	}
+
+	handle {
+		redir /app
+	}
+}
+

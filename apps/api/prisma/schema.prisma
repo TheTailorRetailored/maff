@@ -1,0 +1,184 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum WorkspaceType {
+  private
+  shared
+}
+
+enum WorkspaceRole {
+  owner
+  editor
+  viewer
+  admin
+}
+
+enum JobType {
+  quartz_build
+  lean_check
+  lean_stub
+  lean_proof_attempt
+  index_rebuild
+}
+
+enum JobStatus {
+  queued
+  running
+  succeeded
+  failed
+  cancelled
+}
+
+model User {
+  id          String   @id @default(uuid()) @db.Uuid
+  auth0Sub    String   @unique
+  email       String?
+  displayName String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  memberships WorkspaceMember[]
+  jobs        Job[]             @relation("JobCreator")
+  auditLogs   AuditLog[]
+  tasks       TaskIndex[]       @relation("AssignedTasks")
+  ownedWorkspaces Workspace[]   @relation("WorkspaceOwner")
+}
+
+model Workspace {
+  id          String        @id @default(uuid()) @db.Uuid
+  slug        String        @unique
+  name        String
+  type        WorkspaceType
+  ownerUserId String?       @db.Uuid
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  owner       User?              @relation("WorkspaceOwner", fields: [ownerUserId], references: [id])
+  members     WorkspaceMember[]
+  nodes       NodeIndex[]
+  edges       EdgeIndex[]
+  tasks       TaskIndex[]
+  jobs        Job[]
+  auditLogs   AuditLog[]
+  localTheorems LocalTheorem[]
+}
+
+model WorkspaceMember {
+  id          String        @id @default(uuid()) @db.Uuid
+  workspaceId String        @db.Uuid
+  userId      String        @db.Uuid
+  role        WorkspaceRole
+  createdAt   DateTime      @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, userId])
+}
+
+model NodeIndex {
+  id          String   @id @default(uuid()) @db.Uuid
+  workspaceId String   @db.Uuid
+  nodeId      String
+  slug        String
+  title       String
+  type        String
+  status      String
+  area        String?
+  path        String
+  metadata    Json
+  bodyPreview String
+  createdAtFromFrontmatter DateTime?
+  updatedAtFromFrontmatter DateTime?
+  indexedAt   DateTime @default(now())
+  stale       Boolean  @default(false)
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, nodeId])
+  @@index([workspaceId, type, status])
+}
+
+model EdgeIndex {
+  id          String   @id @default(uuid()) @db.Uuid
+  workspaceId String   @db.Uuid
+  sourceNodeId String
+  targetNodeRef String
+  targetNodeId  String?
+  edgeType      String
+  sourceField   String?
+  createdAt     DateTime @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, sourceNodeId, targetNodeRef, edgeType])
+  @@index([workspaceId, sourceNodeId])
+}
+
+model TaskIndex {
+  id          String   @id @default(uuid()) @db.Uuid
+  workspaceId String   @db.Uuid
+  nodeId      String
+  targetNodeId String?
+  workflow    String
+  priority    Int      @default(0)
+  status      String   @default("open")
+  assignedToUserId String? @db.Uuid
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  assignedTo User?     @relation("AssignedTasks", fields: [assignedToUserId], references: [id])
+}
+
+model Job {
+  id          String    @id @default(uuid()) @db.Uuid
+  workspaceId String    @db.Uuid
+  type        JobType
+  status      JobStatus @default(queued)
+  input       Json
+  output      Json?
+  error       String?
+  createdByUserId String @db.Uuid
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  startedAt   DateTime?
+  finishedAt  DateTime?
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  createdBy User      @relation("JobCreator", fields: [createdByUserId], references: [id])
+}
+
+model AuditLog {
+  id          String   @id @default(uuid()) @db.Uuid
+  workspaceId String?  @db.Uuid
+  userId      String?  @db.Uuid
+  action      String
+  targetType  String
+  targetId    String?
+  details     Json
+  createdAt   DateTime @default(now())
+
+  workspace Workspace? @relation(fields: [workspaceId], references: [id], onDelete: SetNull)
+  user      User?      @relation(fields: [userId], references: [id], onDelete: SetNull)
+}
+
+model LocalTheorem {
+  id          String   @id @default(uuid()) @db.Uuid
+  workspaceId String   @db.Uuid
+  leanName    String
+  statement   String
+  proofFile   String
+  status      String
+  nodeId      String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+}

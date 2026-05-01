@@ -1,0 +1,83 @@
+services:
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: research_graph
+      POSTGRES_USER: research
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"
+
+  api:
+    build: ./apps/api
+    depends_on:
+      - db
+      - lean-worker
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgres://research:${POSTGRES_PASSWORD}@db:5432/research_graph
+      DATA_DIR: /data
+      AUTH0_DOMAIN: ${AUTH0_DOMAIN}
+      AUTH0_ISSUER: ${AUTH0_ISSUER}
+      AUTH0_AUDIENCE: ${AUTH0_AUDIENCE}
+      AUTH0_JWKS_URI: ${AUTH0_JWKS_URI}
+      AUTH0_CLIENT_ID: ${AUTH0_CLIENT_ID}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL}
+      LEAN_WORKER_URL: http://lean-worker:8765
+      QUARTZ_DIR: /quartz
+      SKILLS_DIR: /app/skills
+      PROMPTS_DIR: /app/prompts
+    volumes:
+      - research_data:/data
+      - ./skills:/app/skills:ro
+      - ./prompts:/app/prompts:ro
+      - ./quartz:/quartz
+    ports:
+      - "127.0.0.1:3001:3001"
+
+  web:
+    build: ./apps/web
+    environment:
+      VITE_API_BASE_URL: ${PUBLIC_BASE_URL}/api
+      VITE_AUTH0_DOMAIN: ${AUTH0_DOMAIN}
+      VITE_AUTH0_CLIENT_ID: ${AUTH0_CLIENT_ID}
+      VITE_AUTH0_AUDIENCE: ${AUTH0_AUDIENCE}
+    ports:
+      - "127.0.0.1:3000:3000"
+
+  lean-worker:
+    build: ./workers/lean-worker
+    environment:
+      LEAN_DATA_DIR: /data/lean-workspaces
+    volumes:
+      - research_data:/data
+      - lean_elan:/root/.elan
+      - lean_cache:/root/.cache
+      - lean_lake:/root/.lake
+    ports:
+      - "127.0.0.1:8765:8765"
+
+  caddy:
+    image: caddy:2
+    depends_on:
+      - api
+      - web
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    ports:
+      - "80:80"
+      - "443:443"
+
+volumes:
+  pg_data:
+  research_data:
+  lean_elan:
+  lean_cache:
+  lean_lake:
+  caddy_data:
+  caddy_config:
+
