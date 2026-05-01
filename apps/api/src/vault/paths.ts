@@ -33,7 +33,7 @@ export function vaultRoot(workspaceSlug: string) {
   return path.join(workspaceRoot(workspaceSlug), "vault")
 }
 
-export function assertInside(root: string, candidate: string) {
+export function assertInsideRoot(root: string, candidate: string) {
   const resolvedRoot = path.resolve(root)
   const resolvedCandidate = path.resolve(candidate)
   if (resolvedCandidate !== resolvedRoot && !resolvedCandidate.startsWith(resolvedRoot + path.sep)) {
@@ -42,14 +42,15 @@ export function assertInside(root: string, candidate: string) {
   return resolvedCandidate
 }
 
+export const assertInside = assertInsideRoot
+
 export function nodePath(workspaceSlug: string, type: string, title: string) {
   const root = vaultRoot(workspaceSlug)
   const file = path.join(root, typeFolder(type), `${title.replace(/[<>:"/\\|?*]/g, "-")}.md`)
-  return assertInside(root, file)
+  return assertInsideRoot(root, file)
 }
 
 export function backupPath(workspaceSlug: string, relativePath: string) {
   const root = workspaceRoot(workspaceSlug)
-  return assertInside(root, path.join(root, ".backups", `${Date.now()}-${relativePath.replace(/[\\/]/g, "__")}`))
+  return assertInsideRoot(root, path.join(root, ".backups", `${Date.now()}-${relativePath.replace(/[\\/]/g, "__")}`))
 }
-

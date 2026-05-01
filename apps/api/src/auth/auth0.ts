@@ -55,26 +55,41 @@ export async function verifyAuth0Token(token: string): Promise<AuthClaims> {
 }
 
 export async function findOrCreateUser(claims: AuthClaims) {
-  const user = await prisma.user.upsert({
-    where: { auth0Sub: claims.sub },
-    update: { email: claims.email ?? null },
-    create: { auth0Sub: claims.sub, email: claims.email ?? null, displayName: claims.email ?? claims.sub }
-  })
+  const existing = await prisma.user.findUnique({ where: { auth0Sub: claims.sub } })
+  const user = existing
+    ? await prisma.user.update({ where: { id: existing.id }, data: { email: claims.email ?? null } })
+    : await prisma.user.create({ data: { auth0Sub: claims.sub, email: claims.email ?? null, displayName: claims.email ?? claims.sub } })
 
-  const count = await prisma.workspace.count()
-  if (count === 0) {
+  if (!existing) {
     const safeName = (claims.email?.split("@")[0] ?? "user").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "user"
-    const privateWorkspace = await prisma.workspace.create({ data: { slug: `private-${safeName}`, name: "Private Research", type: "private", ownerUserId: user.id } })
-    const sharedWorkspace = await prisma.workspace.create({ data: { slug: "shared", name: "Shared Research", type: "shared", ownerUserId: user.id } })
-    await prisma.workspaceMember.createMany({
-      data: [
-        { workspaceId: privateWorkspace.id, userId: user.id, role: "owner" },
-        { workspaceId: sharedWorkspace.id, userId: user.id, role: "owner" }
-      ],
-      skipDuplicates: true
+    const shortUserId = user.id.slice(0, 8)
+    const privateSlug = `private-${safeName}-${shortUserId}`
+    const privateWorkspace = await prisma.workspace.upsert({
+      where: { slug: privateSlug },
+      update: {},
+      create: { slug: privateSlug, name: "Private Research", type: "private", ownerUserId: user.id }
     })
-    await seedWorkspaceVault(sharedWorkspace.slug)
+    await prisma.workspaceMember.upsert({
+      where: { workspaceId_userId: { workspaceId: privateWorkspace.id, userId: user.id } },
+      update: { role: "owner" },
+      create: { workspaceId: privateWorkspace.id, userId: user.id, role: "owner" }
+    })
   }
+
+  const sharedWorkspace = await prisma.workspace.upsert({
+    where: { slug: "shared" },
+    update: {},
+    create: { slug: "shared", name: "Shared Research", type: "shared", ownerUserId: user.id }
+  })
+  const sharedMembers = await prisma.workspaceMember.count({ where: { workspaceId: sharedWorkspace.id } })
+  if (sharedMembers === 0 || (!existing && config.autoJoinSharedWorkspace)) {
+    await prisma.workspaceMember.upsert({
+      where: { workspaceId_userId: { workspaceId: sharedWorkspace.id, userId: user.id } },
+      update: {},
+      create: { workspaceId: sharedWorkspace.id, userId: user.id, role: sharedMembers === 0 ? "owner" : "viewer" }
+    })
+  }
+  if (sharedMembers === 0) await seedWorkspaceVault(sharedWorkspace.slug)
 
   return user
 }

@@ -1,6 +1,7 @@
 import fs from "node:fs/promises"
 import path from "node:path"
 import { config } from "../config.js"
+import { assertInsideRoot } from "../vault/paths.js"
 
 export async function readTextIfExists(filePath: string) {
   try {
@@ -30,7 +31,6 @@ export async function listMarkdownFiles(root = config.skillsDir) {
 export async function loadSkill(pathParts: string[]) {
   const file = path.resolve(config.skillsDir, ...pathParts)
   const root = path.resolve(config.skillsDir)
-  if (!file.startsWith(root)) throw new Error("Skill path escapes skills root")
+  assertInsideRoot(root, file)
   return readTextIfExists(file.endsWith(".md") ? file : `${file}.md`)
 }
-

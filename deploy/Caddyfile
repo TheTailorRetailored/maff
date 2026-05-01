@@ -2,25 +2,28 @@
 	email off
 }
 
-:80 {
-	handle_path /app* {
+{$PUBLIC_BASE_URL_HOSTNAME} {
+	handle /api* {
+		reverse_proxy api:3001
+	}
+
+	handle /mcp {
+		reverse_proxy api:3001
+	}
+
+	handle /.well-known/oauth-protected-resource* {
+		reverse_proxy api:3001
+	}
+
+	handle /sites* {
+		reverse_proxy api:3001
+	}
+
+	handle /app* {
 		reverse_proxy web:3000
 	}
 
-	handle_path /api* {
-		reverse_proxy api:3001
-	}
-
-	handle /mcp* {
-		reverse_proxy api:3001
-	}
-
-	handle_path /sites* {
-		reverse_proxy api:3001
-	}
-
 	handle {
-		redir /app
+		reverse_proxy web:3000
 	}
 }
-

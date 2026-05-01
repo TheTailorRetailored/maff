@@ -3,8 +3,7 @@
     "build": "quartz build"
   },
   "dependencies": {
-    "@jackyzha0/quartz": "^4.5.1"
+    "@jackyzha0/quartz": "github:jackyzha0/quartz#v4"
   },
   "devDependencies": {}
 }
-

@@ -21,8 +21,22 @@ export async function getNeighbors(workspaceId: string, nodeId: string, depth = 
 export async function getOpenGaps(workspaceId: string, problemId?: string) {
   const gaps = await prisma.nodeIndex.findMany({ where: { workspaceId, type: { in: ["Gap", "FormalizationGap"] }, status: { in: ["open", "active", "seed"] } }, orderBy: { updatedAtFromFrontmatter: "desc" } })
   if (!problemId) return gaps
-  const edges = await prisma.edgeIndex.findMany({ where: { workspaceId, targetNodeId: problemId } })
-  const allowed = new Set(edges.map((e) => e.sourceNodeId))
+  const edges = await prisma.edgeIndex.findMany({
+    where: {
+      workspaceId,
+      OR: [
+        { targetNodeId: problemId },
+        { sourceNodeId: problemId }
+      ]
+    }
+  })
+  const related = new Set<string>([problemId])
+  for (const edge of edges) {
+    related.add(edge.sourceNodeId)
+    if (edge.targetNodeId) related.add(edge.targetNodeId)
+  }
+  const gapEdges = await prisma.edgeIndex.findMany({ where: { workspaceId, sourceNodeId: { in: gaps.map((g) => g.nodeId) }, targetNodeId: { in: [...related] } } })
+  const allowed = new Set(gapEdges.map((e) => e.sourceNodeId))
   return gaps.filter((g) => allowed.has(g.nodeId))
 }
 
@@ -38,4 +52,3 @@ export async function getStaleNodes(workspaceId: string, days: number) {
   const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000)
   return prisma.nodeIndex.findMany({ where: { workspaceId, OR: [{ updatedAtFromFrontmatter: { lt: cutoff } }, { updatedAtFromFrontmatter: null }] }, take: 100 })
 }
-

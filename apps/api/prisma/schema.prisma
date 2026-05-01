@@ -135,6 +135,9 @@ model TaskIndex {
 
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   assignedTo User?     @relation("AssignedTasks", fields: [assignedToUserId], references: [id])
+
+  @@unique([workspaceId, nodeId])
+  @@index([workspaceId, status, priority])
 }
 
 model Job {

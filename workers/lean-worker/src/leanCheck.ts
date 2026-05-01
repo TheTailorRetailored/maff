@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process"
+import fs from "node:fs/promises"
 import { assertInside, workspaceRoot } from "./leanProject.js"
 
 function run(command: string, args: string[], cwd: string, timeoutMs = 120000) {
@@ -22,14 +23,15 @@ function run(command: string, args: string[], cwd: string, timeoutMs = 120000) {
 export async function checkLean(workspaceSlug: string, filePath: string) {
   const root = workspaceRoot(workspaceSlug)
   const file = assertInside(root, filePath)
+  const source = await fs.readFile(file, "utf8")
   const result = await run("lake", ["env", "lean", file], root)
   const output = `${result.stdout}\n${result.stderr}`
   return {
     success: result.code === 0,
     diagnostics: output.split(/\r?\n/).filter(Boolean),
-    hasSorry: /sorry/i.test(output),
+    hasSorry: /\bsorry\b/.test(source),
+    hasAxiom: /^\s*axiom\s+/m.test(source),
     stdout: result.stdout,
     stderr: result.stderr
   }
 }
-

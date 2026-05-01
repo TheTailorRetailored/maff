@@ -3,8 +3,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl git ca-cer
 RUN curl https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh -sSf | sh -s -- -y
 ENV PATH="/root/.elan/bin:${PATH}"
 WORKDIR /worker
-COPY package.json package-lock.json* ./
-RUN npm install
+COPY package*.json ./
+RUN npm ci
 COPY tsconfig.json ./
 COPY src ./src
 COPY lean-template ./lean-template
@@ -21,4 +21,3 @@ COPY --from=build /worker/lean-template ./lean-template
 COPY package.json ./
 EXPOSE 8765
 CMD ["node", "dist/server.js"]
-

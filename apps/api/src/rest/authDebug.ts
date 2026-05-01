@@ -1,13 +1,14 @@
 import type { Router } from "express"
 import { requireUser } from "../auth/auth0.js"
 import { prisma } from "../db/prisma.js"
+import { asyncHandler } from "./asyncHandler.js"
 
 export function registerAuthDebugRoutes(router: Router) {
-  router.get("/me", async (req, res) => {
+  router.get("/me", asyncHandler(async (req, res) => {
     const user = requireUser(req)
     res.json({ user, workspaces: await prisma.workspace.findMany({ where: { members: { some: { userId: user.id } } } }) })
-  })
-  router.get("/auth/debug-token", async (req, res) => {
+  }))
+  router.get("/auth/debug-token", asyncHandler(async (req, res) => {
     const user = requireUser(req)
     const claims = req.auth!.claims
     res.json({
@@ -21,6 +22,5 @@ export function registerAuthDebugRoutes(router: Router) {
       internal_user_id: user.id,
       workspaces: await prisma.workspace.findMany({ where: { members: { some: { userId: user.id } } } })
     })
-  })
+  }))
 }
-

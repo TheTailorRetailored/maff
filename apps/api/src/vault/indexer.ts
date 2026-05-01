@@ -38,6 +38,7 @@ export async function reindexWorkspace(workspaceId: string, userId?: string) {
   await fs.mkdir(root, { recursive: true })
   const files = await walkMarkdown(root)
   const seen = new Set<string>()
+  const seenTasks = new Set<string>()
   const parsedFiles = []
 
   for (const file of files) {
@@ -79,9 +80,15 @@ export async function reindexWorkspace(workspaceId: string, userId?: string) {
     })
 
     if (String(parsed.metadata.type) === "Task") {
+      seenTasks.add(nodeId)
       await prisma.taskIndex.upsert({
-        where: { id: nodeId.length === 36 ? nodeId : "00000000-0000-0000-0000-000000000000" },
-        update: {},
+        where: { workspaceId_nodeId: { workspaceId, nodeId } },
+        update: {
+          targetNodeId: typeof parsed.metadata.target === "string" ? refKey(parsed.metadata.target) : null,
+          workflow: String(parsed.metadata.workflow ?? "triage_problem"),
+          priority: Number(parsed.metadata.priority ?? 0),
+          status: String(parsed.metadata.status ?? "open")
+        },
         create: {
           workspaceId,
           nodeId,
@@ -89,13 +96,6 @@ export async function reindexWorkspace(workspaceId: string, userId?: string) {
           workflow: String(parsed.metadata.workflow ?? "triage_problem"),
           priority: Number(parsed.metadata.priority ?? 0),
           status: String(parsed.metadata.status ?? "open")
-        }
-      }).catch(async () => {
-        const existing = await prisma.taskIndex.findFirst({ where: { workspaceId, nodeId } })
-        if (existing) {
-          await prisma.taskIndex.update({ where: { id: existing.id }, data: { workflow: String(parsed.metadata.workflow ?? existing.workflow), priority: Number(parsed.metadata.priority ?? existing.priority), status: String(parsed.metadata.status ?? existing.status) } })
-        } else {
-          await prisma.taskIndex.create({ data: { workspaceId, nodeId, targetNodeId: null, workflow: String(parsed.metadata.workflow ?? "triage_problem"), priority: Number(parsed.metadata.priority ?? 0), status: String(parsed.metadata.status ?? "open") } })
         }
       })
     }
@@ -115,6 +115,7 @@ export async function reindexWorkspace(workspaceId: string, userId?: string) {
   }
 
   await prisma.nodeIndex.updateMany({ where: { workspaceId, nodeId: { notIn: [...seen] } }, data: { stale: true } })
+  await prisma.taskIndex.updateMany({ where: { workspaceId, nodeId: { notIn: [...seenTasks] }, status: { notIn: ["closed", "cancelled"] } }, data: { status: "closed" } })
   await auditLog({ userId, workspaceId, action: "workspace.reindex", targetType: "Workspace", targetId: workspaceId, details: { files: files.length } })
   return { files: files.length, nodes: seen.size }
 }

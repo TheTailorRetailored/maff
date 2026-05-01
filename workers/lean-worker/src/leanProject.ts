@@ -10,8 +10,9 @@ export function workspaceRoot(workspaceSlug: string) {
 }
 
 export function assertInside(root: string, filePath: string) {
+  const resolvedRoot = path.resolve(root)
   const resolved = path.resolve(root, filePath)
-  if (resolved !== root && !resolved.startsWith(root + path.sep)) throw new Error("Path escapes Lean workspace")
+  if (resolved !== resolvedRoot && !resolved.startsWith(resolvedRoot + path.sep)) throw new Error("Path escapes Lean workspace")
   return resolved
 }
 
@@ -31,4 +32,3 @@ export async function writeLeanStub(workspaceSlug: string, filePath: string, imp
   await fs.writeFile(file, body)
   return { filePath, file }
 }
-

@@ -30,11 +30,15 @@ export async function startResearchSession(input: { userId: string; workspaceId:
 
   if (!node) return { resolved_node: null, recommended_workflow: "triage_problem", reason: "No node resolved", queued_task: queued }
   const neighbors = await prisma.edgeIndex.findMany({ where: { workspaceId: input.workspaceId, OR: [{ sourceNodeId: node.nodeId }, { targetNodeId: node.nodeId }] }, take: 50 })
-  const openGaps = await prisma.nodeIndex.findMany({ where: { workspaceId: input.workspaceId, type: { in: ["Gap", "FormalizationGap"] }, status: { in: ["open", "active", "seed"] } }, take: 10 })
+  const scopedGapEdges = await prisma.edgeIndex.findMany({ where: { workspaceId: input.workspaceId, targetNodeId: node.nodeId, edgeType: { in: ["target", "targets", "blocked_by", "problem"] } } })
+  const openGaps = await prisma.nodeIndex.findMany({ where: { workspaceId: input.workspaceId, nodeId: { in: scopedGapEdges.map((e) => e.sourceNodeId) }, type: { in: ["Gap", "FormalizationGap"] }, status: { in: ["open", "active", "seed"] } }, take: 10 })
   const recentAttempts = await prisma.nodeIndex.findMany({ where: { workspaceId: input.workspaceId, type: { in: ["ProofAttempt", "FormalizationAttempt"] } }, orderBy: { updatedAtFromFrontmatter: "desc" }, take: 5 })
+  const proofRouteCount = await prisma.nodeIndex.count({ where: { workspaceId: input.workspaceId, type: "ProofRoute", OR: [{ metadata: { path: ["target"], equals: node.nodeId } }, { metadata: { path: ["target"], equals: `[[${node.title}]]` } }] } })
+  const routeEdgeTypes = new Set(["route", "routes", "target", "targets"])
+  const hasRoutes = proofRouteCount > 0 || neighbors.some((e) => routeEdgeTypes.has(e.edgeType))
   const [workflow, reason] = input.userGoal?.toLowerCase().includes("lean")
     ? ["lean_handoff", "User goal mentions Lean"] as const
-    : workflowForNode(node, neighbors.some((e) => e.edgeType === "route"), openGaps.length > 0)
+    : workflowForNode(node, hasRoutes, openGaps.length > 0)
   return {
     resolved_node: node,
     recommended_workflow: queued?.workflow ?? workflow,

@@ -5,6 +5,8 @@ import { config } from "../config.js"
 import { prisma } from "../db/prisma.js"
 import { vaultRoot } from "../vault/paths.js"
 
+let quartzBuildLock: Promise<unknown> = Promise.resolve()
+
 async function copyDir(src: string, dst: string) {
   await fs.rm(dst, { recursive: true, force: true })
   await fs.mkdir(dst, { recursive: true })
@@ -23,20 +25,26 @@ function run(command: string, args: string[], cwd: string) {
 }
 
 export async function rebuildQuartzSite(workspaceId: string, userId: string) {
-  const workspace = await prisma.workspace.findUniqueOrThrow({ where: { id: workspaceId } })
-  const job = await prisma.job.create({ data: { workspaceId, createdByUserId: userId, type: "quartz_build", status: "running", input: { workspaceSlug: workspace.slug }, startedAt: new Date() } })
-  try {
-    await copyDir(vaultRoot(workspace.slug), path.join(config.quartzDir, "content"))
-    const outDir = path.join(config.dataDir, "quartz-sites", workspace.slug)
-    await run("npm", ["install"], config.quartzDir)
-    await run("npx", ["quartz", "build", "--output", outDir], config.quartzDir)
-    return prisma.job.update({ where: { id: job.id }, data: { status: "succeeded", output: { outDir }, finishedAt: new Date() } })
-  } catch (error) {
-    return prisma.job.update({ where: { id: job.id }, data: { status: "failed", error: error instanceof Error ? error.message : String(error), finishedAt: new Date() } })
+  const runBuild = async () => {
+    const workspace = await prisma.workspace.findUniqueOrThrow({ where: { id: workspaceId } })
+    const job = await prisma.job.create({ data: { workspaceId, createdByUserId: userId, type: "quartz_build", status: "running", input: { workspaceSlug: workspace.slug }, startedAt: new Date() } })
+    try {
+      const buildRoot = path.join(config.dataDir, "quartz-build", workspace.slug)
+      const contentDir = path.join(buildRoot, "content")
+      await copyDir(vaultRoot(workspace.slug), contentDir)
+      const outDir = path.join(config.dataDir, "quartz-sites", workspace.slug)
+      await fs.rm(path.join(config.quartzDir, "content"), { recursive: true, force: true })
+      await fs.cp(contentDir, path.join(config.quartzDir, "content"), { recursive: true })
+      await run("npm", ["exec", "quartz", "build", "--", "--output", outDir], config.quartzDir)
+      return prisma.job.update({ where: { id: job.id }, data: { status: "succeeded", output: { outDir }, finishedAt: new Date() } })
+    } catch (error) {
+      return prisma.job.update({ where: { id: job.id }, data: { status: "failed", error: error instanceof Error ? error.message : String(error), finishedAt: new Date() } })
+    }
   }
+  quartzBuildLock = quartzBuildLock.then(runBuild, runBuild)
+  return quartzBuildLock
 }
 
 export async function getQuartzStatus(workspaceId: string) {
   return prisma.job.findFirst({ where: { workspaceId, type: "quartz_build" }, orderBy: { createdAt: "desc" } })
 }
-

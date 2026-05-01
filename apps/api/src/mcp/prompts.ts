@@ -1,6 +1,7 @@
 import fs from "node:fs/promises"
 import path from "node:path"
 import { config } from "../config.js"
+import { assertInsideRoot } from "../vault/paths.js"
 
 export async function listPrompts() {
   try {
@@ -13,5 +14,6 @@ export async function listPrompts() {
 
 export async function getPrompt(name: string) {
   const safe = name.replace(/[^a-zA-Z0-9_-]/g, "")
-  return fs.readFile(path.join(config.promptsDir, `${safe}.md`), "utf8")
+  const root = path.resolve(config.promptsDir)
+  return fs.readFile(assertInsideRoot(root, path.join(root, `${safe}.md`)), "utf8")
 }

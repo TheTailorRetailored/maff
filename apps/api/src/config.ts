@@ -2,6 +2,8 @@ export const config = {
   port: Number(process.env.PORT ?? 3001),
   dataDir: process.env.DATA_DIR ?? "./data",
   publicBaseUrl: process.env.PUBLIC_BASE_URL ?? "http://localhost:3001",
+  corsOrigins: (process.env.CORS_ORIGINS ?? "http://localhost:3000,http://127.0.0.1:3000").split(",").map((s) => s.trim()).filter(Boolean),
+  autoJoinSharedWorkspace: (process.env.AUTO_JOIN_SHARED_WORKSPACE ?? "false").toLowerCase() === "true",
   auth0: {
     domain: process.env.AUTH0_DOMAIN ?? "",
     issuer: process.env.AUTH0_ISSUER ?? "",
@@ -16,4 +18,3 @@ export const config = {
   skillsDir: process.env.SKILLS_DIR ?? "./skills",
   promptsDir: process.env.PROMPTS_DIR ?? "./prompts"
 }
-

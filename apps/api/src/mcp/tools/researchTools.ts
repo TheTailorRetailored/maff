@@ -27,8 +27,19 @@ export async function createGap(input: { workspaceId: string; targetNodeId: stri
 
 export async function completeWorkflow(input: { workspaceId: string; nodeId: string; workflowType: string; summary: string; graphUpdates?: unknown; userId?: string }) {
   await appendToNodeTool({ workspaceId: input.workspaceId, nodeId: input.nodeId, section: "Decision log", content: `${new Date().toISOString().slice(0, 10)}: Completed ${input.workflowType}. ${input.summary}`, userId: input.userId })
-  await createTask({ workspaceId: input.workspaceId, targetNodeId: input.nodeId, workflowType: "gap_analysis", priority: 1, instructions: `Follow-up after ${input.workflowType}: ${input.summary}`, userId: input.userId })
-  return { ok: true, graphUpdates: input.graphUpdates ?? null }
+  const summary = input.summary.toLowerCase()
+  const followUp =
+    input.workflowType === "literature_check" ? "generate_routes" :
+    input.workflowType === "generate_routes" ? "attack_route" :
+    input.workflowType === "attack_route" && summary.includes("gap") ? "gap_analysis" :
+    input.workflowType === "attack_route" && summary.includes("proof candidate") ? "hostile_review" :
+    input.workflowType === "hostile_review" && (summary.includes("fatal") || summary.includes("gap")) ? "gap_analysis" :
+    input.workflowType === "hostile_review" && (summary.includes("passed") || summary.includes("ready")) ? "paper_outline" :
+    input.workflowType === "lean_handoff" ? "lean_stub_generation" :
+    input.workflowType === "lean_proof_repair" && summary.includes("failed") ? "formalization_gap_analysis" :
+    null
+  const task = followUp ? await createTask({ workspaceId: input.workspaceId, targetNodeId: input.nodeId, workflowType: followUp, priority: 1, instructions: `Follow-up after ${input.workflowType}: ${input.summary}`, userId: input.userId }) : null
+  return { ok: true, graphUpdates: input.graphUpdates ?? null, followUpTask: task }
 }
 
 export const researchExtras = {
