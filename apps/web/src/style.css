@@ -87,6 +87,14 @@ h2 { margin: 0 0 0.75rem; font-size: 1rem; }
   grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
   gap: 0.75rem;
 }
+.card-wrap, .stack-item {
+  display: grid;
+  gap: 0.35rem;
+}
+.card-wrap > small, .stack-item > small, .picker small {
+  color: #5d6f69;
+  font-size: 0.78rem;
+}
 .node-card {
   display: grid;
   gap: 0.45rem;
@@ -110,6 +118,23 @@ h2 { margin: 0 0 0.75rem; font-size: 1rem; }
   margin-bottom: 1rem;
 }
 .toolbar.compact { margin: 0.5rem 0 1rem; }
+.notice {
+  background: #ffffff;
+  border: 1px solid #dbe5e1;
+  border-radius: 6px;
+  color: #374c47;
+  margin: 0 0 1rem;
+  padding: 0.75rem 0.9rem;
+}
+.notice.error {
+  background: #fef2f2;
+  border-color: #fecaca;
+  color: #991b1b;
+}
+.picker {
+  display: grid;
+  gap: 0.25rem;
+}
 .panel {
   background: #edf3f1;
   border: 1px solid #d7e2de;

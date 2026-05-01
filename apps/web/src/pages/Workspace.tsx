@@ -8,30 +8,46 @@ export function Workspace({ workspaceId, setWorkspaceId, onOpenNode }: { workspa
   const [nodes, setNodes] = useState<NodeIndex[]>([])
   const [title, setTitle] = useState("")
   const [type, setType] = useState("Problem")
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState("")
 
   const refresh = () => {
     if (!workspaceId) return Promise.resolve()
-    return request<NodeIndex[]>(`/workspaces/${workspaceId}/nodes?limit=100`).then(setNodes)
+    setLoading(true)
+    setError("")
+    return request<NodeIndex[]>(`/workspaces/${workspaceId}/nodes?limit=100`)
+      .then(setNodes)
+      .catch((err) => setError(err instanceof Error ? err.message : String(err)))
+      .finally(() => setLoading(false))
   }
   useEffect(() => { void refresh() }, [workspaceId])
 
   async function createNode() {
     if (!title.trim()) return
-    await request(`/workspaces/${workspaceId}/nodes`, { method: "POST", body: JSON.stringify({ title, type, metadata: { status: type === "Task" ? "open" : "seed" }, body: `# ${type}: ${title}\n\n## Statement\n\n` }) })
-    setTitle("")
-    refresh()
+    try {
+      setError("")
+      await request(`/workspaces/${workspaceId}/nodes`, { method: "POST", body: JSON.stringify({ title, type, metadata: { status: type === "Task" ? "open" : "seed" }, body: `# ${type}: ${title}\n\n## Statement\n\n` }) })
+      setTitle("")
+      refresh()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    }
   }
 
   return (
     <section className="page">
       <header><h1>Workspace</h1><WorkspacePicker value={workspaceId} onChange={setWorkspaceId} /></header>
       <div className="toolbar">
-        <button onClick={() => request(`/workspaces/${workspaceId}/reindex`, { method: "POST" }).then(refresh)}>Reindex</button>
-        <button onClick={() => request(`/workspaces/${workspaceId}/quartz/rebuild`, { method: "POST" })}>Rebuild Quartz</button>
+        <button disabled={!workspaceId} onClick={() => request(`/workspaces/${workspaceId}/reindex`, { method: "POST" }).then(refresh).catch((err) => setError(err instanceof Error ? err.message : String(err)))}>Reindex</button>
+        <button disabled={!workspaceId} onClick={() => request(`/workspaces/${workspaceId}/quartz/rebuild`, { method: "POST" }).catch((err) => setError(err instanceof Error ? err.message : String(err)))}>Rebuild Quartz</button>
         <select value={type} onChange={(e) => setType(e.target.value)}><option>Problem</option><option>Conjecture</option><option>ProofRoute</option><option>Gap</option><option>Task</option><option>FormalizationTarget</option></select>
         <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="New node title" />
-        <button onClick={createNode}>New Node</button>
+        <button disabled={!workspaceId} onClick={createNode}>New Node</button>
       </div>
+      {!workspaceId && <p className="notice">Choose a workspace to view its graph nodes.</p>}
+      {loading && <p className="notice">Loading nodes...</p>}
+      {error && <p className="notice error">Could not load workspace data: {error}</p>}
+      {!loading && !error && workspaceId && nodes.length === 0 && <p className="notice">No indexed nodes in this workspace yet. If ChatGPT just created one, click Reindex.</p>}
       <div className="cards">{nodes.map((node) => <NodeCard key={node.nodeId} node={node} onOpen={onOpenNode} />)}</div>
     </section>
   )

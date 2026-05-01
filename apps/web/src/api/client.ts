@@ -9,7 +9,12 @@ export type TaskIndex = { id: string; nodeId: string; targetNodeId?: string; wor
 export function useApi() {
   const { getAccessTokenSilently } = useAuth0()
   async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-    const token = await getAccessTokenSilently({ authorizationParams: { audience: import.meta.env.VITE_AUTH0_AUDIENCE } })
+    const token = await getAccessTokenSilently({
+      authorizationParams: {
+        audience: import.meta.env.VITE_AUTH0_AUDIENCE,
+        scope: "openid profile email offline_access maff:access"
+      }
+    })
     const res = await fetch(`${baseUrl}${path}`, {
       ...init,
       headers: { "content-type": "application/json", authorization: `Bearer ${token}`, ...(init.headers ?? {}) }
@@ -19,4 +24,3 @@ export function useApi() {
   }
   return { request }
 }
-
