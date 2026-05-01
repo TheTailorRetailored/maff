@@ -8,6 +8,7 @@ export function MaffAuthProvider({ children }: { children: ReactNode }) {
       clientId={import.meta.env.VITE_AUTH0_CLIENT_ID}
       cacheLocation="localstorage"
       useRefreshTokens
+      useRefreshTokensFallback
       authorizationParams={{
         redirect_uri: window.location.origin,
         audience: import.meta.env.VITE_AUTH0_AUDIENCE,
