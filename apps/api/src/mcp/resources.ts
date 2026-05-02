@@ -82,12 +82,11 @@ export async function readResource(uri: string, ctx: ResourceContext) {
     }
     const nodes = await prisma.nodeIndex.findMany({ where: { workspaceId, stale: false, type: { in: ["Problem", "Claim", "Definition", "Paper", "KnownResult", "Experiment", "Draft"] }, status: { notIn: ["killed", "archived", "cancelled"] } } })
     const nodeIds = new Set(nodes.map((node) => node.nodeId))
-    const edges = await prisma.edgeIndex.findMany({ where: { workspaceId, edgeType: { in: ["problem", "main_claim", "depends_on", "supports", "cites", "related_papers"] } } })
+    const edges = await prisma.edgeIndex.findMany({ where: { workspaceId, edgeType: { in: ["main_claim", "depends_on", "cites", "related_papers"] } } })
     return {
       nodes,
       edges: edges
         .filter((edge) => nodeIds.has(edge.sourceNodeId) && edge.targetNodeId && nodeIds.has(edge.targetNodeId))
-        .map((edge) => edge.edgeType === "problem" ? { ...edge, id: `${edge.id}-reverse`, sourceNodeId: edge.targetNodeId, targetNodeId: edge.sourceNodeId } : edge)
     }
   }
   if (scheme === "skill") return loadSkill(rest.split("/"))

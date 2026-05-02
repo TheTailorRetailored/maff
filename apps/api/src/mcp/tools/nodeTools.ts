@@ -3,10 +3,32 @@ import { reindexWorkspace } from "../../vault/indexer.js"
 import { parseMarkdown } from "../../vault/parser.js"
 import { appendToSection, createNode, readNodeFile, replaceSection, updateMetadata, linkNodes, } from "../../vault/writer.js"
 
+const hiddenStatuses = ["killed", "archived", "cancelled", "completed"]
+
 export async function getNode(workspaceId: string, nodeId: string) {
   const file = await readNodeFile(workspaceId, nodeId)
   const parsed = parseMarkdown(file.raw)
-  return { metadata: parsed.metadata, body: parsed.body, path: file.node.path }
+  const usedByEdges = await prisma.edgeIndex.findMany({
+    where: { workspaceId, edgeType: "depends_on", targetNodeId: nodeId }
+  })
+  const usedByNodeIds = [...new Set(usedByEdges.map((edge) => edge.sourceNodeId))]
+  const usedBy = usedByNodeIds.length
+    ? await prisma.nodeIndex.findMany({
+        where: { workspaceId, nodeId: { in: usedByNodeIds }, type: "Claim", stale: false, status: { notIn: hiddenStatuses } },
+        orderBy: { updatedAtFromFrontmatter: "desc" }
+      })
+    : []
+  return {
+    metadata: parsed.metadata,
+    body: parsed.body,
+    path: file.node.path,
+    used_by: usedBy.map((node) => ({
+      node_id: node.nodeId,
+      title: node.title,
+      status: node.status,
+      claim_status: (node.metadata as Record<string, unknown> | null)?.claim_status ?? null
+    }))
+  }
 }
 
 export async function createNodeTool(input: { workspaceId: string; type: string; title: string; metadata?: Record<string, unknown>; body?: string; userId?: string }) {
@@ -45,4 +67,3 @@ export async function setNodeStatus(input: { workspaceId: string; nodeId: string
   await reindexWorkspace(input.workspaceId, input.userId)
   return prisma.nodeIndex.findUnique({ where: { workspaceId_nodeId: { workspaceId: input.workspaceId, nodeId: input.nodeId } } })
 }
-

@@ -3,9 +3,16 @@ import { useApi, type TaskIndex } from "../api/client"
 import { MarkdownRenderer } from "../components/MarkdownRenderer"
 import { TaskCard } from "../components/TaskCard"
 
-export function NodeView({ workspaceId, nodeId }: { workspaceId: string; nodeId: string; onOpenNode: (id: string) => void }) {
+type UsedByNode = {
+  node_id: string
+  title: string
+  status: string
+  claim_status?: unknown
+}
+
+export function NodeView({ workspaceId, nodeId, onOpenNode }: { workspaceId: string; nodeId: string; onOpenNode: (id: string) => void }) {
   const { request } = useApi()
-  const [node, setNode] = useState<{ metadata: Record<string, unknown>; body: string; path: string } | null>(null)
+  const [node, setNode] = useState<{ metadata: Record<string, unknown>; body: string; path: string; used_by?: UsedByNode[] } | null>(null)
   const [section, setSection] = useState("Decision log")
   const [content, setContent] = useState("")
   const [status, setStatus] = useState("")
@@ -30,6 +37,15 @@ export function NodeView({ workspaceId, nodeId }: { workspaceId: string; nodeId:
         <aside className="panel">
           <h2>Metadata</h2>
           <pre>{JSON.stringify(node.metadata, null, 2)}</pre>
+          <h2>Used by</h2>
+          <div className="stack">
+            {(!node.used_by || node.used_by.length === 0) && <p className="notice">No reverse dependencies.</p>}
+            {node.used_by?.map((usedBy) => (
+              <button className="link-button" key={usedBy.node_id} onClick={() => onOpenNode(usedBy.node_id)}>
+                {usedBy.title}
+              </button>
+            ))}
+          </div>
           <h2>Attached Tasks</h2>
           <div className="stack">
             {tasks.length === 0 && <p className="notice">No attached tasks.</p>}

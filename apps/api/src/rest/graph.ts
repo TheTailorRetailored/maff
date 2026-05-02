@@ -64,7 +64,7 @@ export function registerGraphRoutes(router: Router) {
     if (showRouteNodes) graphTypes.push("ProofRoute")
     if (showProofAttempts) graphTypes.push("ProofAttempt", "FormalizationAttempt")
     if (showGapNodes) graphTypes.push("Gap", "FormalizationGap")
-    const edgeTypes = ["problem", "main_claim", "depends_on", "supports", "cites", "related_papers"]
+    const edgeTypes = ["main_claim", "depends_on", "cites", "related_papers"]
     if (showContextEdges) edgeTypes.push("target", "targets", "formalizes")
     if (showBodyWikilinks) edgeTypes.push("links_to")
     const hiddenStatuses = ["killed", "archived", "cancelled", "completed"]
@@ -75,7 +75,6 @@ export function registerGraphRoutes(router: Router) {
       nodes,
       edges: edges
         .filter((edge) => nodeIds.has(edge.sourceNodeId) && !!edge.targetNodeId && nodeIds.has(edge.targetNodeId))
-        .map((edge) => edge.edgeType === "problem" ? { ...edge, id: `${edge.id}-reverse`, sourceNodeId: edge.targetNodeId, targetNodeId: edge.sourceNodeId } : edge)
     })
   }))
   router.get("/workspaces/:id/nodes/:nodeId/neighbors", asyncHandler(async (req, res) => {

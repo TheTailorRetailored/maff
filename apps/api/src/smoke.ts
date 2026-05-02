@@ -21,9 +21,10 @@ assert.ok((updateMetadata.inputSchema.properties as Record<string, unknown>).pat
 const createClaim = toolDefinitions.find((tool) => tool.name === "create_claim")
 assert.ok(createClaim, "missing MCP tool create_claim")
 const createClaimProps = createClaim.inputSchema.properties as Record<string, unknown>
-for (const prop of ["problem_id", "title", "statement", "claim_kind", "role", "claim_status", "proof_status", "lean_status", "depends_on", "supports", "blocked_by", "area", "short_title", "body_sections"]) {
+for (const prop of ["problem_id", "title", "statement", "claim_kind", "role", "claim_status", "proof_status", "lean_status", "depends_on", "blocked_by", "area", "short_title", "body_sections"]) {
   assert.ok(createClaimProps[prop], `create_claim schema must advertise ${prop}`)
 }
+assert.equal(createClaimProps.supports, undefined, "create_claim schema should not advertise reverse Claim-to-Claim supports")
 
 const routeTool = toolDefinitions.find((tool) => tool.name === "add_route_to_claim")
 assert.ok(routeTool, "missing MCP tool add_route_to_claim")
@@ -31,7 +32,7 @@ const routeProps = routeTool.inputSchema.properties as Record<string, unknown>
 assert.ok(routeProps.blockers, "add_route_to_claim schema must advertise blockers")
 assert.ok(routeProps.proposed_decomposition, "add_route_to_claim schema must advertise proposed_decomposition")
 
-assert.equal(mcpServerVersion, "0.3.0-claim-graph")
+assert.equal(mcpServerVersion, "0.3.1-depends-on-dag")
 const toolsList = mcpToolsListResult()
 const toolsListNames = new Set(toolsList.tools.map((tool) => tool.name))
 for (const name of ["create_claim", "add_route_to_claim", "append_proof_attempt_to_claim", "add_inline_gap_to_claim", "archive_node", "get_problem_graph", "list_problem_graphs"]) {

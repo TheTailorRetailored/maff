@@ -43,7 +43,6 @@ export async function createClaim(input: { workspaceId: string; problemId?: stri
     status: "active",
     role: input.role ?? "main_result",
     depends_on: [],
-    supports: [],
     blocked_by: [],
     proof_status: "none",
     lean_status: "not_started",
@@ -87,7 +86,6 @@ export async function createRichClaim(input: {
     status: input.claimStatus === "killed" ? "killed" : "active",
     role: input.role,
     depends_on: input.dependsOn ?? [],
-    supports: input.supports ?? [],
     blocked_by: input.blockedBy ?? [],
     proof_status: input.proofStatus ?? "none",
     lean_status: input.leanStatus ?? "not_started",
@@ -95,6 +93,7 @@ export async function createRichClaim(input: {
     lean_name: "",
     short_title: input.shortTitle ?? ""
   }
+  if (input.supports?.length) metadata.supports = input.supports
   if (input.problemId) metadata.problem = input.problemId
   if (input.area) metadata.area = input.area
   return createNodeTool({
@@ -242,7 +241,6 @@ export async function decomposeClaimRich(input: { workspaceId: string; claimId: 
         statement: subclaim.statement,
         claimKind: subclaim.claim_kind ?? "lemma",
         role: subclaim.role ?? "supporting_lemma",
-        supports: [`[[${parent.title}]]`],
         userId: input.userId
       })
       await appendMetadataList(input.workspaceId, input.claimId, "depends_on", [`[[${claim.metadata.title}]]`], input.userId)
@@ -258,8 +256,8 @@ export async function decomposeClaimRich(input: { workspaceId: string; claimId: 
 
 export async function promoteInlineSubclaimToClaim(input: { workspaceId: string; parentClaimId: string; statement: string; role?: string; userId?: string }) {
   const parent = await prisma.nodeIndex.findUniqueOrThrow({ where: { workspaceId_nodeId: { workspaceId: input.workspaceId, nodeId: input.parentClaimId } } })
-  const created = await createClaim({ workspaceId: input.workspaceId, title: shortTitle(input.statement, "Claim"), statement: input.statement, claimKind: "lemma", role: input.role ?? "supporting_lemma", userId: input.userId })
-  await appendMetadataList(input.workspaceId, created.id, "supports", [`[[${parent.title}]]`], input.userId)
+  const parentMd = parent.metadata && typeof parent.metadata === "object" ? parent.metadata as Record<string, unknown> : {}
+  const created = await createClaim({ workspaceId: input.workspaceId, problemId: typeof parentMd.problem === "string" ? parentMd.problem : undefined, title: shortTitle(input.statement, "Claim"), statement: input.statement, claimKind: "lemma", role: input.role ?? "supporting_lemma", userId: input.userId })
   await appendMetadataList(input.workspaceId, input.parentClaimId, "depends_on", [`[[${created.metadata.title}]]`], input.userId)
   await appendToNodeTool({ workspaceId: input.workspaceId, nodeId: input.parentClaimId, section: "Dependencies", content: `- [[${created.metadata.title}]]`, userId: input.userId })
   return created
@@ -267,7 +265,8 @@ export async function promoteInlineSubclaimToClaim(input: { workspaceId: string;
 
 export async function promoteInlineSubclaimToClaimRich(input: { workspaceId: string; parentClaimId: string; section?: string; itemText?: string; title: string; statement: string; claimKind?: string; role?: string; reason?: string; userId?: string }) {
   const parent = await prisma.nodeIndex.findUniqueOrThrow({ where: { workspaceId_nodeId: { workspaceId: input.workspaceId, nodeId: input.parentClaimId } } })
-  const created = await createRichClaim({ workspaceId: input.workspaceId, title: input.title, statement: input.statement, claimKind: input.claimKind ?? "lemma", role: input.role ?? "supporting_lemma", supports: [`[[${parent.title}]]`], userId: input.userId })
+  const parentMd = parent.metadata && typeof parent.metadata === "object" ? parent.metadata as Record<string, unknown> : {}
+  const created = await createRichClaim({ workspaceId: input.workspaceId, problemId: typeof parentMd.problem === "string" ? parentMd.problem : undefined, title: input.title, statement: input.statement, claimKind: input.claimKind ?? "lemma", role: input.role ?? "supporting_lemma", userId: input.userId })
   await appendToNodeTool({ workspaceId: input.workspaceId, nodeId: input.parentClaimId, section: input.section ?? "Dependencies", content: `- [[${created.metadata.title}]] promoted from inline item${input.itemText ? `: ${input.itemText}` : ""}. ${input.reason ?? ""}`, userId: input.userId })
   await appendMetadataList(input.workspaceId, input.parentClaimId, "depends_on", [`[[${created.metadata.title}]]`], input.userId)
   return created

@@ -3,7 +3,7 @@ import { prisma } from "../../db/prisma.js"
 const hiddenStatuses = ["killed", "archived", "cancelled", "completed"]
 const defaultGraphTypes = ["Problem", "Claim", "Definition", "Paper", "KnownResult", "Experiment", "Draft"]
 const optionalGraphTypes = ["Task", "ProofRoute", "ProofAttempt", "FormalizationAttempt", "Gap", "FormalizationGap"]
-const defaultEdgeTypes = ["main_claim", "depends_on", "supports", "cites", "related_papers", "uses_definition"]
+const defaultEdgeTypes = ["main_claim", "depends_on", "cites", "related_papers", "uses_definition"]
 
 function metadataOf(node: { metadata: unknown }) {
   return (node.metadata ?? {}) as Record<string, unknown>
@@ -119,9 +119,9 @@ async function getProblemClaimNodes(workspaceId: string, problemId: string, incl
   let changed = true
   while (changed) {
     changed = false
-    const edges = await prisma.edgeIndex.findMany({ where: { workspaceId, edgeType: { in: ["depends_on", "supports"] }, OR: [{ sourceNodeId: { in: [...included.keys()] } }, { targetNodeId: { in: [...included.keys()] } }] } })
+    const edges = await prisma.edgeIndex.findMany({ where: { workspaceId, edgeType: "depends_on", sourceNodeId: { in: [...included.keys()] } } })
     for (const edge of edges) {
-      for (const id of [edge.sourceNodeId, edge.targetNodeId].filter(Boolean) as string[]) {
+      for (const id of [edge.targetNodeId].filter(Boolean) as string[]) {
         if (!included.has(id)) {
           const node = nodes.find((candidate) => candidate.nodeId === id)
           if (node) {
@@ -135,14 +135,11 @@ async function getProblemClaimNodes(workspaceId: string, problemId: string, incl
   return [...included.values()]
 }
 
-function computeDepths(rootNodeId: string, nodes: { nodeId: string }[], edges: { sourceNodeId: string; targetNodeId: string | null; edgeType: string }[]) {
+function computeDepths(rootNodeId: string, nodes: { nodeId: string }[], edges: { source: string; target: string }[]) {
   const adjacency = new Map<string, string[]>()
   for (const node of nodes) adjacency.set(node.nodeId, [])
   for (const edge of edges) {
-    if (!edge.targetNodeId) continue
-    const source = edge.edgeType === "problem" ? edge.targetNodeId : edge.sourceNodeId
-    const target = edge.edgeType === "problem" ? edge.sourceNodeId : edge.targetNodeId
-    adjacency.get(source)?.push(target)
+    adjacency.get(edge.source)?.push(edge.target)
   }
   const depths = new Map<string, number>([[rootNodeId, 0]])
   const queue = [rootNodeId]
@@ -157,6 +154,17 @@ function computeDepths(rootNodeId: string, nodes: { nodeId: string }[], edges: {
     }
   }
   return depths
+}
+
+function nodeRefSet(node: { nodeId: string; slug: string; title: string }) {
+  return new Set([node.nodeId, node.slug, node.title, `[[${node.title}]]`].map(normalizeRef))
+}
+
+function matchesAnyRef(node: { nodeId: string; slug: string; title: string }, refs: Set<string>) {
+  for (const ref of nodeRefSet(node)) {
+    if (refs.has(ref)) return true
+  }
+  return false
 }
 
 export async function getProblemGraph(input: {
@@ -183,15 +191,33 @@ export async function getProblemGraph(input: {
     : await getProblemClaimNodes(input.workspaceId, input.problemId, Boolean(input.includeArchived))
   const nodes = baseNodes.filter((node) => graphTypes.includes(node.type) && (input.includeArchived || !hiddenStatuses.includes(node.status)))
   const nodeIds = new Set(nodes.map((node) => node.nodeId))
-  const edgeTypes = [...defaultEdgeTypes, "problem"]
+  const nodesById = new Map(nodes.map((node) => [node.nodeId, node]))
+  const problemMd = metadataOf(problem)
+  const mainClaimRefs = new Set((Array.isArray(problemMd.main_claims) ? problemMd.main_claims : []).map(normalizeRef))
+  const edgeTypes = [...defaultEdgeTypes]
+  if (input.mode === "exploratory") edgeTypes.push("supports")
   if (input.includeBodyWikilinks) edgeTypes.push("links_to")
   const rawEdges = await prisma.edgeIndex.findMany({ where: { workspaceId: input.workspaceId, edgeType: { in: edgeTypes } } })
-  const edges = rawEdges
+  const mainClaimEdges = nodes
+    .filter((node) => node.type === "Claim" && matchesAnyRef(node, mainClaimRefs))
+    .map((node) => ({ source: problem.nodeId, target: node.nodeId, edge_type: "main_claim", label: "main claim", visibility: "default", weight: 4 }))
+  const renderedEdges = rawEdges
     .filter((edge) => nodeIds.has(edge.sourceNodeId) && edge.targetNodeId && nodeIds.has(edge.targetNodeId))
-    .map((edge) => edge.edgeType === "problem"
-      ? { source: edge.targetNodeId!, target: edge.sourceNodeId, edge_type: "main_claim", label: "main claim", visibility: "default", weight: 2 }
-      : { source: edge.sourceNodeId, target: edge.targetNodeId!, edge_type: edge.edgeType, label: edge.edgeType.replace(/_/g, " "), visibility: "default", weight: edge.edgeType === "depends_on" ? 3 : 1 })
-  const depths = computeDepths(problem.nodeId, nodes, rawEdges)
+    .filter((edge) => {
+      if (edge.edgeType !== "supports") return true
+      const source = nodesById.get(edge.sourceNodeId)
+      const target = edge.targetNodeId ? nodesById.get(edge.targetNodeId) : null
+      return !(source?.type === "Claim" && target?.type === "Claim")
+    })
+    .map((edge) => ({ source: edge.sourceNodeId, target: edge.targetNodeId!, edge_type: edge.edgeType, label: edge.edgeType.replace(/_/g, " "), visibility: "default", weight: edge.edgeType === "depends_on" ? 3 : 1 }))
+  const seenEdges = new Set<string>()
+  const edges = [...mainClaimEdges, ...renderedEdges].filter((edge) => {
+    const key = `${edge.source}|${edge.target}|${edge.edge_type}`
+    if (seenEdges.has(key)) return false
+    seenEdges.add(key)
+    return true
+  })
+  const depths = computeDepths(problem.nodeId, nodes, edges)
   return {
     problem: { id: problem.nodeId, title: problem.title, short_title: nodeShortTitle(problem), status: problem.status },
     nodes: nodes.map((node) => {
