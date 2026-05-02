@@ -75,6 +75,8 @@ export async function createRichClaim(input: {
   dependsOn?: string[]
   supports?: string[]
   blockedBy?: string[]
+  area?: string
+  shortTitle?: string
   bodySections?: Record<string, string>
   userId?: string
 }) {
@@ -91,9 +93,11 @@ export async function createRichClaim(input: {
     proof_status: input.proofStatus ?? "none",
     lean_status: input.leanStatus ?? "not_started",
     lean_file: "",
-    lean_name: ""
+    lean_name: "",
+    short_title: input.shortTitle ?? ""
   }
   if (problem) metadata.problem = problem
+  if (input.area) metadata.area = input.area
   return createNodeTool({
     workspaceId: input.workspaceId,
     type: "Claim",
