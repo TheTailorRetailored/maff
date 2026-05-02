@@ -8,6 +8,7 @@ import { prisma } from "../db/prisma.js"
 import { assertInsideRoot } from "../vault/paths.js"
 import { listMarkdownFiles, loadSkill } from "../skills/skillLoader.js"
 import { getPrompt, listPrompts } from "../mcp/prompts.js"
+import { mcpServerVersion, mcpToolsListResult } from "../mcp/server.js"
 import { rebuildQuartz, quartzStatus } from "../mcp/tools/siteTools.js"
 import { registerAuthDebugRoutes } from "./authDebug.js"
 import { registerWorkspaceRoutes } from "./workspaces.js"
@@ -26,6 +27,16 @@ export function apiRouter() {
   registerGraphRoutes(router)
   registerTaskRoutes(router)
   registerLeanRoutes(router)
+
+  router.get("/mcp/debug-tools", asyncHandler(async (_req, res) => {
+    const result = mcpToolsListResult()
+    res.json({
+      serverVersion: mcpServerVersion,
+      toolCount: result.tools.length,
+      toolNames: result.tools.map((tool) => tool.name),
+      tools: result.tools
+    })
+  }))
 
   router.get("/skills", asyncHandler(async (_req, res) => {
     const files = await listMarkdownFiles()

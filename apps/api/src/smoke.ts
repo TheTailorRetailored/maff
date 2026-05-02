@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import path from "node:path"
 import { assertInsideRoot } from "./vault/paths.js"
 import { extractWikilinks } from "./vault/wikilinks.js"
-import { toolDefinitions } from "./mcp/server.js"
+import { mcpServerVersion, mcpToolsListResult, toolDefinitions } from "./mcp/server.js"
 
 const root = path.resolve("tmp-workspace")
 assert.equal(assertInsideRoot(root, path.join(root, "vault", "A.md")), path.resolve(root, "vault", "A.md"))
@@ -30,5 +30,17 @@ assert.ok(routeTool, "missing MCP tool add_route_to_claim")
 const routeProps = routeTool.inputSchema.properties as Record<string, unknown>
 assert.ok(routeProps.blockers, "add_route_to_claim schema must advertise blockers")
 assert.ok(routeProps.proposed_decomposition, "add_route_to_claim schema must advertise proposed_decomposition")
+
+assert.equal(mcpServerVersion, "0.3.0-claim-graph")
+const toolsList = mcpToolsListResult()
+const toolsListNames = new Set(toolsList.tools.map((tool) => tool.name))
+for (const name of ["create_claim", "add_route_to_claim", "append_proof_attempt_to_claim", "add_inline_gap_to_claim", "archive_node", "get_problem_graph", "list_problem_graphs"]) {
+  assert.ok(toolsListNames.has(name), `tools/list missing ${name}`)
+}
+const listedUpdateMetadata = toolsList.tools.find((tool) => tool.name === "update_node_metadata")
+const listedInputSchemaProps = listedUpdateMetadata?.inputSchema.properties as Record<string, unknown> | undefined
+const listedInputSnakeSchemaProps = listedUpdateMetadata?.input_schema.properties as Record<string, unknown> | undefined
+assert.ok(listedInputSchemaProps?.patch, "tools/list update_node_metadata must advertise inputSchema.patch")
+assert.ok(listedInputSnakeSchemaProps?.patch, "tools/list update_node_metadata must advertise input_schema.patch")
 
 console.log("Maff smoke checks passed")

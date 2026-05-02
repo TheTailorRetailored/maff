@@ -26,6 +26,7 @@ const strOrArray = { oneOf: [s, strArray] } as const
 
 type ToolDef = { name: string; description: string; scope: string; role: WorkspaceRole; inputSchema: JsonSchema }
 const tool = (name: string, description: string, role: WorkspaceRole, inputSchema: JsonSchema, scope = scopes.maffAccess): ToolDef => ({ name, description, scope, role, inputSchema })
+export const mcpServerVersion = "0.3.0-claim-graph"
 
 export const toolDefinitions: ToolDef[] = [
   tool("list_workspaces", "List workspaces visible to the authenticated user.", "viewer", objectSchema({})),
@@ -219,7 +220,18 @@ function resourceResult(uri: string, value: unknown) {
 
 function toolForList(definition: ToolDef) {
   const securitySchemes = [{ type: "oauth2", scopes: [definition.scope] }]
-  return { name: definition.name, description: definition.description, inputSchema: definition.inputSchema, securitySchemes, _meta: { securitySchemes } }
+  return {
+    name: definition.name,
+    description: definition.description,
+    inputSchema: definition.inputSchema,
+    input_schema: definition.inputSchema,
+    securitySchemes,
+    _meta: { securitySchemes }
+  }
+}
+
+export function mcpToolsListResult() {
+  return { tools: toolDefinitions.map(toolForList) }
 }
 
 export async function mcpHandler(req: Request, res: Response) {
@@ -236,8 +248,8 @@ export async function mcpHandler(req: Request, res: Response) {
       clientId: typeof req.auth.claims.client_id === "string" ? req.auth.claims.client_id : undefined
     }
     const resourceCtx = { userId: req.auth.user.id, claims: req.auth.claims }
-    if (method === "initialize") return res.json({ jsonrpc: "2.0", id, result: { protocolVersion: "2024-11-05", serverInfo: { name: "Maff", version: "0.1.0" }, capabilities: { tools: {}, resources: {}, prompts: {} } } })
-    if (method === "tools/list") return res.json({ jsonrpc: "2.0", id, result: { tools: toolDefinitions.map(toolForList) } })
+    if (method === "initialize") return res.json({ jsonrpc: "2.0", id, result: { protocolVersion: "2024-11-05", serverInfo: { name: "Maff", version: mcpServerVersion }, capabilities: { tools: { listChanged: true }, resources: {}, prompts: {} } } })
+    if (method === "tools/list") return res.json({ jsonrpc: "2.0", id, result: mcpToolsListResult() })
     if (method === "tools/call") return res.json({ jsonrpc: "2.0", id, result: contentResult(await callTool(params.name, params.arguments ?? {}, ctx)) })
     if (method === "resources/list") return res.json({ jsonrpc: "2.0", id, result: await listResources(resourceCtx) })
     if (method === "resources/read") return res.json({ jsonrpc: "2.0", id, result: resourceResult(params.uri, await readResource(params.uri, resourceCtx)) })
