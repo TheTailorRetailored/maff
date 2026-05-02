@@ -5,6 +5,7 @@ import { getPrompt } from "../prompts.js"
 import { createProblem } from "./researchTools.js"
 
 const maffIntro = "Maff is claim-centric. Problems organize projects; Claims are theorem/conjecture/lemma/reduction nodes and form the recursive proof graph. Routes, proof attempts, minor gaps, Lean notes, and tasks usually attach to Claim nodes instead of becoming graph nodes. Use maff_bootstrap first, then write durable progress back to Claim sections and operational task records."
+const hiddenStatuses = ["killed", "archived", "cancelled"]
 
 export const chatOutputContract = `When using Maff, keep the user informed.
 
@@ -44,16 +45,20 @@ export async function listWorkspaces(userId: string) {
 async function sessionContext(input: { userId: string; workspaceId: string; nodeRef?: string; userGoal?: string; workflowType?: string; useQueue?: boolean }) {
   const queued = input.useQueue ? await prisma.taskIndex.findFirst({ where: { workspaceId: input.workspaceId, OR: [{ status: "open" }, { status: "claimed", leaseExpiresAt: { lt: new Date() } }] }, orderBy: [{ priority: "desc" }, { createdAt: "asc" }] }) : null
   const node = input.nodeRef
-    ? await prisma.nodeIndex.findFirst({ where: { workspaceId: input.workspaceId, OR: [{ nodeId: input.nodeRef }, { title: { contains: input.nodeRef, mode: "insensitive" } }] } })
+    ? await prisma.nodeIndex.findFirst({ where: { workspaceId: input.workspaceId, status: { notIn: hiddenStatuses }, OR: [{ nodeId: input.nodeRef }, { title: { contains: input.nodeRef, mode: "insensitive" } }] } })
     : queued?.targetNodeId
-      ? await prisma.nodeIndex.findUnique({ where: { workspaceId_nodeId: { workspaceId: input.workspaceId, nodeId: queued.targetNodeId } } })
-      : await prisma.nodeIndex.findFirst({ where: { workspaceId: input.workspaceId, stale: false, status: { notIn: ["killed", "archived", "cancelled"] }, type: { in: ["Claim", "Problem"] } }, orderBy: { updatedAtFromFrontmatter: "desc" } })
+      ? await prisma.nodeIndex.findFirst({ where: { workspaceId: input.workspaceId, nodeId: queued.targetNodeId, status: { notIn: hiddenStatuses }, stale: false } })
+      : await prisma.nodeIndex.findFirst({ where: { workspaceId: input.workspaceId, stale: false, status: { notIn: hiddenStatuses }, type: { in: ["Claim", "Problem"] } }, orderBy: { updatedAtFromFrontmatter: "desc" } })
 
   if (!node) return { node: null, queued, workflow: input.workflowType ?? "capture_new_problem", reason: "No node resolved", neighbors: [], openGaps: [], recentAttempts: [] }
-  const neighbors = await prisma.edgeIndex.findMany({ where: { workspaceId: input.workspaceId, edgeType: { in: ["depends_on", "supports", "problem", "cites", "related_papers"] }, OR: [{ sourceNodeId: node.nodeId }, { targetNodeId: node.nodeId }] }, take: 50 })
+  const rawNeighbors = await prisma.edgeIndex.findMany({ where: { workspaceId: input.workspaceId, edgeType: { in: ["depends_on", "supports", "problem", "cites", "related_papers"] }, OR: [{ sourceNodeId: node.nodeId }, { targetNodeId: node.nodeId }] }, take: 50 })
+  const neighborIds = [...new Set(rawNeighbors.flatMap((edge) => [edge.sourceNodeId, edge.targetNodeId]).filter(Boolean) as string[])]
+  const visibleNeighborNodes = await prisma.nodeIndex.findMany({ where: { workspaceId: input.workspaceId, nodeId: { in: neighborIds }, status: { notIn: hiddenStatuses }, stale: false }, select: { nodeId: true } })
+  const visibleNeighborIds = new Set(visibleNeighborNodes.map((visible) => visible.nodeId))
+  const neighbors = rawNeighbors.filter((edge) => visibleNeighborIds.has(edge.sourceNodeId) && (!edge.targetNodeId || visibleNeighborIds.has(edge.targetNodeId)))
   const scopedGapEdges = await prisma.edgeIndex.findMany({ where: { workspaceId: input.workspaceId, targetNodeId: node.nodeId, edgeType: { in: ["target", "targets", "blocked_by", "problem"] } } })
   const openGaps = await prisma.nodeIndex.findMany({ where: { workspaceId: input.workspaceId, nodeId: { in: scopedGapEdges.map((e) => e.sourceNodeId) }, type: { in: ["Gap", "FormalizationGap"] }, status: { in: ["open", "active", "seed"] } }, take: 10 })
-  const recentAttempts = await prisma.nodeIndex.findMany({ where: { workspaceId: input.workspaceId, type: { in: ["ProofAttempt", "FormalizationAttempt"] } }, orderBy: { updatedAtFromFrontmatter: "desc" }, take: 5 })
+  const recentAttempts = await prisma.nodeIndex.findMany({ where: { workspaceId: input.workspaceId, type: { in: ["ProofAttempt", "FormalizationAttempt"] }, status: { notIn: hiddenStatuses }, stale: false }, orderBy: { updatedAtFromFrontmatter: "desc" }, take: 5 })
   const hasInlineRoutes = String(node.bodyPreview ?? "").toLowerCase().includes("route:")
   const proofRouteCount = await prisma.nodeIndex.count({ where: { workspaceId: input.workspaceId, type: "ProofRoute", status: { notIn: ["killed", "archived"] }, OR: [{ metadata: { path: ["target"], equals: node.nodeId } }, { metadata: { path: ["target"], equals: `[[${node.title}]]` } }] } })
   const routeEdgeTypes = new Set(["route", "routes", "target", "targets"])

@@ -19,6 +19,12 @@ function claimBody(title: string, statement: string, motivation = "") {
   return `# Claim: ${title}\n\n## Statement\n\n${statement}\n\n## Status\n\nIdea captured. Proof status: none.\n\n## Role in project\n\n${motivation}\n\n## Dependencies\n\n\n## Proof routes\n\n\n## Informal proof\n\n\n## Lean formalization\n\nLean status: not_started\nLean file:\nLean theorem name:\n\n## Attempts and notes\n\n\n## Tasks\n\n\n## Decision log\n\n${today()}: Created as a Claim node.\n`
 }
 
+function markdownList(value: unknown) {
+  if (Array.isArray(value)) return value.map(String).map((item) => `- ${item}`).join("\n")
+  if (typeof value === "string" && value.trim()) return value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).map((item) => item.startsWith("- ") ? item : `- ${item}`).join("\n")
+  return "- TBD"
+}
+
 async function appendMetadataList(workspaceId: string, nodeId: string, field: string, values: string[], userId?: string) {
   const node = await prisma.nodeIndex.findUnique({ where: { workspaceId_nodeId: { workspaceId, nodeId } } })
   const metadata = (node?.metadata ?? {}) as Record<string, unknown>
@@ -185,13 +191,12 @@ export async function createGap(input: { workspaceId: string; targetNodeId: stri
   return { ok: true, targetNodeId: input.targetNodeId, gap: input.statement }
 }
 
-export async function addRouteToClaim(input: { workspaceId: string; claimId: string; routeTitle: string; status: string; confidence: string; method: string; strategy: string; proposedDecomposition?: string[]; blockers?: string; userId?: string }) {
-  const decomposition = input.proposedDecomposition?.length ? input.proposedDecomposition.map((item) => `- ${item}`).join("\n") : "- TBD"
+export async function addRouteToClaim(input: { workspaceId: string; claimId: string; routeTitle: string; status: string; confidence?: string; method?: string; strategy: string; proposedDecomposition?: string[] | string; blockers?: string[] | string; userId?: string }) {
   await appendToNodeTool({
     workspaceId: input.workspaceId,
     nodeId: input.claimId,
     section: "Proof routes",
-    content: `### Route: ${input.routeTitle}\n\nStatus: ${input.status}\nConfidence: ${input.confidence}\nMethod: ${input.method}\n\nStrategy:\n${input.strategy}\n\nProposed decomposition:\n${decomposition}\n\nBlockers:\n${input.blockers ?? "TBD"}\n\nAttempts:\n`,
+    content: `### Route: ${input.routeTitle}\n\nStatus: ${input.status}\nConfidence: ${input.confidence ?? "medium"}\nMethod: ${input.method ?? "unspecified"}\n\nStrategy:\n${input.strategy}\n\nProposed decomposition:\n${markdownList(input.proposedDecomposition)}\n\nBlockers:\n${markdownList(input.blockers)}\n\nAttempts:\n`,
     userId: input.userId
   })
   await updateNodeMetadataTool({ workspaceId: input.workspaceId, nodeId: input.claimId, patch: { claim_status: input.status === "successful" ? "proof_sketch" : "route_active" }, userId: input.userId })

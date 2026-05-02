@@ -22,6 +22,7 @@ const s = { type: "string" } as const
 const n = { type: "number" } as const
 const anyObj = { type: "object", additionalProperties: true } as const
 const strArray = { type: "array", items: s } as const
+const strOrArray = { oneOf: [s, strArray] } as const
 
 type ToolDef = { name: string; description: string; scope: string; role: WorkspaceRole; inputSchema: JsonSchema }
 const tool = (name: string, description: string, role: WorkspaceRole, inputSchema: JsonSchema, scope = scopes.maffAccess): ToolDef => ({ name, description, scope, role, inputSchema })
@@ -51,7 +52,7 @@ export const toolDefinitions: ToolDef[] = [
   tool("create_conjecture", "Alias for create_claim with claim_kind=conjecture.", "editor", objectSchema({ workspace_id: s, problem_id: s, statement: s, motivation: s, confidence: n }, ["workspace_id", "problem_id", "statement", "motivation", "confidence"])),
   tool("create_theorem_candidate", "Alias for create_claim with claim_kind=theorem.", "editor", objectSchema({ workspace_id: s, problem_id: s, statement: s, motivation: s, confidence: n }, ["workspace_id", "statement"])),
   tool("create_lemma_candidate", "Alias for create_claim with claim_kind=lemma.", "editor", objectSchema({ workspace_id: s, problem_id: s, statement: s, motivation: s, confidence: n }, ["workspace_id", "statement"])),
-  tool("add_route_to_claim", "Add a structured proof route inside a Claim note. Routes stay inline by default and do not become graph nodes.", "editor", objectSchema({ workspace_id: s, claim_id: s, route_title: s, status: s, confidence: s, method: s, strategy: s, proposed_decomposition: strArray, blockers: s }, ["workspace_id", "claim_id", "route_title", "status", "confidence", "method", "strategy"])),
+  tool("add_route_to_claim", "Add a structured proof route inside a Claim note. Routes stay inline by default and do not become graph nodes.", "editor", objectSchema({ workspace_id: s, claim_id: s, route_title: s, status: s, confidence: s, method: s, strategy: s, proposed_decomposition: strOrArray, blockers: strOrArray }, ["workspace_id", "claim_id", "route_title", "status", "strategy"])),
   tool("update_claim_route", "Append an update to a structured route inside a Claim note.", "editor", objectSchema({ workspace_id: s, claim_id: s, route_title_or_id: s, patch: anyObj }, ["workspace_id", "claim_id", "route_title_or_id", "patch"])),
   tool("promote_route_to_node", "Promote an inline route to a standalone ProofRoute node only when it is substantial or explicitly requested.", "editor", objectSchema({ workspace_id: s, claim_id: s, route_title_or_id: s, reason: s }, ["workspace_id", "claim_id", "route_title_or_id"])),
   tool("update_claim_metadata", "Patch Claim frontmatter and append a decision-log entry.", "editor", objectSchema({ workspace_id: s, claim_id: s, patch: anyObj }, ["workspace_id", "claim_id", "patch"])),
