@@ -19,6 +19,13 @@ function claimBody(title: string, statement: string, motivation = "") {
   return `# Claim: ${title}\n\n## Statement\n\n${statement}\n\n## Status\n\nIdea captured. Proof status: none.\n\n## Role in project\n\n${motivation}\n\n## Dependencies\n\n\n## Proof routes\n\n\n## Informal proof\n\n\n## Lean formalization\n\nLean status: not_started\nLean file:\nLean theorem name:\n\n## Attempts and notes\n\n\n## Tasks\n\n\n## Decision log\n\n${today()}: Created as a Claim node.\n`
 }
 
+async function appendMetadataList(workspaceId: string, nodeId: string, field: string, values: string[], userId?: string) {
+  const node = await prisma.nodeIndex.findUnique({ where: { workspaceId_nodeId: { workspaceId, nodeId } } })
+  const metadata = (node?.metadata ?? {}) as Record<string, unknown>
+  const current = Array.isArray(metadata[field]) ? metadata[field].map(String) : metadata[field] ? [String(metadata[field])] : []
+  await updateNodeMetadataTool({ workspaceId, nodeId, patch: { [field]: [...new Set([...current, ...values])] }, userId })
+}
+
 export async function createProblem(input: { workspaceId: string; title: string; area: string; roughStatement: string; motivation: string; initialSources?: string[]; userId?: string }) {
   return createNodeTool({ workspaceId: input.workspaceId, type: "Problem", title: input.title, metadata: { area: input.area, status: "seed", initial_sources: input.initialSources ?? [] }, body: `# Problem: ${input.title}\n\n## Statement\n\n${input.roughStatement}\n\n## Motivation\n\n${input.motivation}\n\n## Decision log\n\n`, userId: input.userId })
 }
@@ -53,6 +60,108 @@ export async function createClaim(input: { workspaceId: string; problemId?: stri
     body: claimBody(title, input.statement, input.motivation),
     userId: input.userId
   })
+}
+
+export async function createRichClaim(input: {
+  workspaceId: string
+  problemId?: string
+  title: string
+  statement: string
+  claimKind: string
+  role: string
+  claimStatus?: string
+  proofStatus?: string
+  leanStatus?: string
+  dependsOn?: string[]
+  supports?: string[]
+  blockedBy?: string[]
+  bodySections?: Record<string, string>
+  userId?: string
+}) {
+  const problem = input.problemId ? await wikilinkFor(input.workspaceId, input.problemId) : undefined
+  const section = (name: string, fallback = "") => input.bodySections?.[name] ?? fallback
+  const metadata: Record<string, unknown> = {
+    claim_kind: input.claimKind,
+    claim_status: input.claimStatus ?? "idea",
+    status: input.claimStatus === "killed" ? "killed" : "active",
+    role: input.role,
+    depends_on: input.dependsOn ?? [],
+    supports: input.supports ?? [],
+    blocked_by: input.blockedBy ?? [],
+    proof_status: input.proofStatus ?? "none",
+    lean_status: input.leanStatus ?? "not_started",
+    lean_file: "",
+    lean_name: ""
+  }
+  if (problem) metadata.problem = problem
+  return createNodeTool({
+    workspaceId: input.workspaceId,
+    type: "Claim",
+    title: input.title,
+    metadata,
+    body: `# Claim: ${input.title}
+
+## Statement
+
+${input.statement}
+
+## Role in project
+
+${section("Role in project")}
+
+## Status
+
+Claim status: ${metadata.claim_status}
+Proof status: ${metadata.proof_status}
+
+## Dependencies
+
+${section("Dependencies", (input.dependsOn ?? []).map((dep) => `- ${dep}`).join("\n"))}
+
+## Proof routes
+
+${section("Proof routes")}
+
+## Informal proof
+
+${section("Informal proof")}
+
+## Lean formalization
+
+Lean status: ${metadata.lean_status}
+Lean file:
+Lean theorem name:
+
+${section("Lean formalization")}
+
+## Attempts and notes
+
+${section("Attempts and notes")}
+
+## Tasks
+
+${section("Tasks")}
+
+## Decision log
+
+${today()}: Created as a claim-centric node.
+`,
+    userId: input.userId
+  })
+}
+
+export async function updateClaimMetadata(input: { workspaceId: string; claimId: string; patch: Record<string, unknown>; userId?: string }) {
+  const result = await updateNodeMetadataTool({ workspaceId: input.workspaceId, nodeId: input.claimId, patch: input.patch, userId: input.userId })
+  await appendToNodeTool({ workspaceId: input.workspaceId, nodeId: input.claimId, section: "Decision log", content: `${today()}: Updated claim metadata: ${Object.keys(input.patch).join(", ")}`, userId: input.userId })
+  return result
+}
+
+export async function updateClaimProofStatus(input: { workspaceId: string; claimId: string; proofStatus: string; claimStatus?: string; reason: string; userId?: string }) {
+  const patch: Record<string, unknown> = { proof_status: input.proofStatus }
+  if (input.claimStatus) patch.claim_status = input.claimStatus
+  await updateNodeMetadataTool({ workspaceId: input.workspaceId, nodeId: input.claimId, patch, userId: input.userId })
+  await appendToNodeTool({ workspaceId: input.workspaceId, nodeId: input.claimId, section: "Decision log", content: `${today()}: Proof status set to ${input.proofStatus}${input.claimStatus ? `; claim status set to ${input.claimStatus}` : ""}. ${input.reason}`, userId: input.userId })
+  return { ok: true, claimId: input.claimId, proofStatus: input.proofStatus, claimStatus: input.claimStatus ?? null }
 }
 
 export async function createProofRoute(input: { workspaceId: string; targetNodeId: string; method: string; plan: string; killCondition: string; userId?: string }) {
@@ -90,9 +199,9 @@ export async function updateClaimRoute(input: { workspaceId: string; claimId: st
   return { ok: true, claimId: input.claimId, route: input.routeTitleOrId }
 }
 
-export async function promoteRouteToNode(input: { workspaceId: string; claimId: string; routeTitleOrId: string; userId?: string }) {
+export async function promoteRouteToNode(input: { workspaceId: string; claimId: string; routeTitleOrId: string; reason?: string; userId?: string }) {
   const claim = await prisma.nodeIndex.findUniqueOrThrow({ where: { workspaceId_nodeId: { workspaceId: input.workspaceId, nodeId: input.claimId } } })
-  return createNodeTool({ workspaceId: input.workspaceId, type: "ProofRoute", title: `Route - ${input.routeTitleOrId}`, metadata: { target: `[[${claim.title}]]`, status: "active", promoted_from_claim: `[[${claim.title}]]` }, body: `# Route: ${input.routeTitleOrId}\n\nPromoted from [[${claim.title}]].\n\n## Plan\n\n`, userId: input.userId })
+  return createNodeTool({ workspaceId: input.workspaceId, type: "ProofRoute", title: `Route - ${input.routeTitleOrId}`, metadata: { target: `[[${claim.title}]]`, status: "active", promoted_from_claim: `[[${claim.title}]]`, promotion_reason: input.reason ?? "" }, body: `# Route: ${input.routeTitleOrId}\n\nPromoted from [[${claim.title}]].\n\nReason: ${input.reason ?? "Substantial route promoted for independent tracking."}\n\n## Plan\n\n`, userId: input.userId })
 }
 
 export async function addInformalProofToClaim(input: { workspaceId: string; claimId: string; proof: string; remainingCaveats?: string[]; userId?: string }) {
@@ -107,17 +216,75 @@ export async function updateClaimLeanStatus(input: { workspaceId: string; claimI
   return { ok: true, claimId: input.claimId }
 }
 
+export async function updateClaimLeanStatusWithReason(input: { workspaceId: string; claimId: string; leanStatus: string; leanFile?: string; leanName?: string; reason?: string; userId?: string }) {
+  await updateClaimLeanStatus({ workspaceId: input.workspaceId, claimId: input.claimId, leanStatus: input.leanStatus, leanFile: input.leanFile, leanName: input.leanName, notes: input.reason, userId: input.userId })
+  await appendToNodeTool({ workspaceId: input.workspaceId, nodeId: input.claimId, section: "Decision log", content: `${today()}: Lean status set to ${input.leanStatus}. ${input.reason ?? ""}`, userId: input.userId })
+  return { ok: true, claimId: input.claimId, leanStatus: input.leanStatus }
+}
+
 export async function decomposeClaim(input: { workspaceId: string; claimId: string; subclaims: string[]; userId?: string }) {
   await appendToNodeTool({ workspaceId: input.workspaceId, nodeId: input.claimId, section: "Dependencies", content: input.subclaims.map((claim) => `- ${claim}`).join("\n"), userId: input.userId })
   return { ok: true, claimId: input.claimId, subclaims: input.subclaims }
 }
 
+export async function decomposeClaimRich(input: { workspaceId: string; claimId: string; routeTitleOrId?: string; subclaims: Array<{ title: string; statement: string; claim_kind?: string; role?: string; create_as_node?: boolean; reason?: string }>; userId?: string }) {
+  const parent = await prisma.nodeIndex.findUniqueOrThrow({ where: { workspaceId_nodeId: { workspaceId: input.workspaceId, nodeId: input.claimId } } })
+  const created = []
+  const lines = []
+  for (const subclaim of input.subclaims) {
+    if (subclaim.create_as_node) {
+      const claim = await createRichClaim({
+        workspaceId: input.workspaceId,
+        problemId: typeof parent.metadata === "object" && parent.metadata && "problem" in parent.metadata ? String((parent.metadata as Record<string, unknown>).problem) : undefined,
+        title: subclaim.title,
+        statement: subclaim.statement,
+        claimKind: subclaim.claim_kind ?? "lemma",
+        role: subclaim.role ?? "supporting_lemma",
+        supports: [`[[${parent.title}]]`],
+        userId: input.userId
+      })
+      await appendMetadataList(input.workspaceId, input.claimId, "depends_on", [`[[${claim.metadata.title}]]`], input.userId)
+      created.push(claim)
+      lines.push(`- [[${claim.metadata.title}]]: ${subclaim.reason ?? subclaim.statement}`)
+    } else {
+      lines.push(`- ${subclaim.title}: ${subclaim.statement}${subclaim.reason ? ` Reason: ${subclaim.reason}` : ""}`)
+    }
+  }
+  await appendToNodeTool({ workspaceId: input.workspaceId, nodeId: input.claimId, section: input.routeTitleOrId ? "Proof routes" : "Dependencies", content: `### Decomposition${input.routeTitleOrId ? ` for ${input.routeTitleOrId}` : ""} (${today()})\n\n${lines.join("\n")}`, userId: input.userId })
+  return { ok: true, claimId: input.claimId, createdClaims: created }
+}
+
 export async function promoteInlineSubclaimToClaim(input: { workspaceId: string; parentClaimId: string; statement: string; role?: string; userId?: string }) {
   const parent = await prisma.nodeIndex.findUniqueOrThrow({ where: { workspaceId_nodeId: { workspaceId: input.workspaceId, nodeId: input.parentClaimId } } })
   const created = await createClaim({ workspaceId: input.workspaceId, title: shortTitle(input.statement, "Claim"), statement: input.statement, claimKind: "lemma", role: input.role ?? "supporting_lemma", userId: input.userId })
-  await updateNodeMetadataTool({ workspaceId: input.workspaceId, nodeId: created.id, patch: { supports: [`[[${parent.title}]]`] }, userId: input.userId })
+  await appendMetadataList(input.workspaceId, created.id, "supports", [`[[${parent.title}]]`], input.userId)
+  await appendMetadataList(input.workspaceId, input.parentClaimId, "depends_on", [`[[${created.metadata.title}]]`], input.userId)
   await appendToNodeTool({ workspaceId: input.workspaceId, nodeId: input.parentClaimId, section: "Dependencies", content: `- [[${created.metadata.title}]]`, userId: input.userId })
   return created
+}
+
+export async function promoteInlineSubclaimToClaimRich(input: { workspaceId: string; parentClaimId: string; section?: string; itemText?: string; title: string; statement: string; claimKind?: string; role?: string; reason?: string; userId?: string }) {
+  const parent = await prisma.nodeIndex.findUniqueOrThrow({ where: { workspaceId_nodeId: { workspaceId: input.workspaceId, nodeId: input.parentClaimId } } })
+  const created = await createRichClaim({ workspaceId: input.workspaceId, title: input.title, statement: input.statement, claimKind: input.claimKind ?? "lemma", role: input.role ?? "supporting_lemma", supports: [`[[${parent.title}]]`], userId: input.userId })
+  await appendToNodeTool({ workspaceId: input.workspaceId, nodeId: input.parentClaimId, section: input.section ?? "Dependencies", content: `- [[${created.metadata.title}]] promoted from inline item${input.itemText ? `: ${input.itemText}` : ""}. ${input.reason ?? ""}`, userId: input.userId })
+  await appendMetadataList(input.workspaceId, input.parentClaimId, "depends_on", [`[[${created.metadata.title}]]`], input.userId)
+  return created
+}
+
+export async function appendProofAttemptToClaim(input: { workspaceId: string; claimId: string; routeTitleOrId?: string; summary: string; result: string; details?: string; nextSteps?: string[]; userId?: string }) {
+  await appendToNodeTool({ workspaceId: input.workspaceId, nodeId: input.claimId, section: "Attempts and notes", content: `### Proof attempt: ${input.result} (${today()})\n\nRoute: ${input.routeTitleOrId ?? "unspecified"}\n\nSummary:\n${input.summary}\n\nDetails:\n${input.details ?? ""}\n\nNext steps:\n${input.nextSteps?.map((s) => `- ${s}`).join("\n") ?? "- TBD"}`, userId: input.userId })
+  return { ok: true, claimId: input.claimId }
+}
+
+export async function addInlineGapToClaim(input: { workspaceId: string; claimId: string; routeTitleOrId?: string; severity: string; statement: string; possibleResolutions?: string[]; userId?: string }) {
+  await appendToNodeTool({ workspaceId: input.workspaceId, nodeId: input.claimId, section: "Attempts and notes", content: `### Inline gap: ${input.statement.slice(0, 72)} (${today()})\n\nRoute: ${input.routeTitleOrId ?? "unspecified"}\nSeverity: ${input.severity}\n\n${input.statement}\n\nPossible resolutions:\n${input.possibleResolutions?.map((r) => `- ${r}`).join("\n") ?? "- TBD"}`, userId: input.userId })
+  return { ok: true, claimId: input.claimId }
+}
+
+export async function archiveNode(input: { workspaceId: string; nodeId: string; reason: string; userId?: string }) {
+  await updateNodeMetadataTool({ workspaceId: input.workspaceId, nodeId: input.nodeId, patch: { status: "archived", claim_status: "killed", archived: true }, userId: input.userId })
+  await appendToNodeTool({ workspaceId: input.workspaceId, nodeId: input.nodeId, section: "Decision log", content: `${today()}: Archived. ${input.reason}`, userId: input.userId })
+  return { ok: true, nodeId: input.nodeId }
 }
 
 export async function computeClaimReadiness(input: { workspaceId: string; claimId: string }) {

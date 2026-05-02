@@ -118,6 +118,13 @@ h2 { margin: 0 0 0.75rem; font-size: 1rem; }
   margin-bottom: 1rem;
 }
 .toolbar.compact { margin: 0.5rem 0 1rem; }
+.check {
+  align-items: center;
+  display: inline-flex;
+  gap: 0.35rem;
+  white-space: nowrap;
+}
+.check input { min-width: auto; }
 .notice {
   background: #ffffff;
   border: 1px solid #dbe5e1;

@@ -4,14 +4,14 @@ import { getSkillPack } from "../../skills/skillRouter.js"
 import { getPrompt } from "../prompts.js"
 import { createProblem } from "./researchTools.js"
 
-const maffIntro = "Maff is a private math research graph. Use tools first, resources as read-only references, and write durable progress back to Markdown nodes, gaps, attempts, and tasks."
+const maffIntro = "Maff is claim-centric. Problems organize projects; Claims are theorem/conjecture/lemma/reduction nodes and form the recursive proof graph. Routes, proof attempts, minor gaps, Lean notes, and tasks usually attach to Claim nodes instead of becoming graph nodes. Use maff_bootstrap first, then write durable progress back to Claim sections and operational task records."
 
 export const chatOutputContract = `When using Maff, keep the user informed.
 
 At the start, say:
 "I'm using the <workflow_name> workflow on <node_title> to <goal>."
 
-During the workflow, briefly mention major tool actions: found/resolved node; checked gaps/routes/tasks; created or updated a node; logged a proof attempt; created a follow-up task.
+During the workflow, briefly mention major tool actions: found/resolved Problem or Claim; checked dependencies/routes/tasks; added or updated a Claim route/attempt/gap; created a supporting Claim; created a follow-up task.
 
 At the end, summarize: what was done; which node(s) were created or updated; the main mathematical content; what the next task is.
 
@@ -20,7 +20,12 @@ Do not dump raw JSON, full metadata, or the entire graph unless the user asks.`
 function workflowForNode(node: { type: string; status: string; metadata: unknown; updatedAtFromFrontmatter?: Date | null }, hasRoutes: boolean, hasGaps: boolean) {
   const md = node.metadata as Record<string, unknown>
   if (node.type === "Problem" && node.status === "seed") return ["triage_problem", "Seed problem needs triage"] as const
-  if (node.type === "Problem" && node.status === "active" && !hasRoutes) return ["refine_statement", "Active problem needs a precise claim"] as const
+  if (node.type === "Problem" && node.status === "active" && !hasRoutes) return ["refine_statement", "Active problem needs a precise main Claim"] as const
+  if (node.type === "Claim" && (md.claim_status ?? "idea") === "idea") return ["refine_statement", "Claim needs a precise statement/status"] as const
+  if (node.type === "Claim" && (md.claim_status ?? "") === "precise" && !hasRoutes) return ["generate_routes", "Precise Claim has no route section yet"] as const
+  if (node.type === "Claim" && (md.claim_status ?? "") === "route_active") return hasGaps ? ["gap_analysis", "Claim has active route blockers"] as const : ["attack_route", "Claim has an active route"] as const
+  if (node.type === "Claim" && (md.claim_status ?? "") === "proof_sketch") return ["hostile_review", "Claim proof sketch needs skeptical review"] as const
+  if (node.type === "Claim" && (md.claim_status ?? "") === "informally_proved") return ["lean_handoff", "Claim is ready for Lean handoff"] as const
   if (node.type === "Conjecture" && (md.novelty_status ?? "unknown") === "unknown") return ["literature_check", "Novelty is unknown"] as const
   if (node.type === "Conjecture" && !hasRoutes) return ["generate_routes", "No active proof route is indexed"] as const
   if (node.type === "ProofRoute" && node.status === "active") return ["attack_route", "Active route should be attacked"] as const
@@ -42,16 +47,17 @@ async function sessionContext(input: { userId: string; workspaceId: string; node
     ? await prisma.nodeIndex.findFirst({ where: { workspaceId: input.workspaceId, OR: [{ nodeId: input.nodeRef }, { title: { contains: input.nodeRef, mode: "insensitive" } }] } })
     : queued?.targetNodeId
       ? await prisma.nodeIndex.findUnique({ where: { workspaceId_nodeId: { workspaceId: input.workspaceId, nodeId: queued.targetNodeId } } })
-      : await prisma.nodeIndex.findFirst({ where: { workspaceId: input.workspaceId, stale: false }, orderBy: { updatedAtFromFrontmatter: "desc" } })
+      : await prisma.nodeIndex.findFirst({ where: { workspaceId: input.workspaceId, stale: false, status: { notIn: ["killed", "archived", "cancelled"] }, type: { in: ["Claim", "Problem"] } }, orderBy: { updatedAtFromFrontmatter: "desc" } })
 
   if (!node) return { node: null, queued, workflow: input.workflowType ?? "capture_new_problem", reason: "No node resolved", neighbors: [], openGaps: [], recentAttempts: [] }
-  const neighbors = await prisma.edgeIndex.findMany({ where: { workspaceId: input.workspaceId, OR: [{ sourceNodeId: node.nodeId }, { targetNodeId: node.nodeId }] }, take: 50 })
+  const neighbors = await prisma.edgeIndex.findMany({ where: { workspaceId: input.workspaceId, edgeType: { in: ["depends_on", "supports", "problem", "cites", "related_papers"] }, OR: [{ sourceNodeId: node.nodeId }, { targetNodeId: node.nodeId }] }, take: 50 })
   const scopedGapEdges = await prisma.edgeIndex.findMany({ where: { workspaceId: input.workspaceId, targetNodeId: node.nodeId, edgeType: { in: ["target", "targets", "blocked_by", "problem"] } } })
   const openGaps = await prisma.nodeIndex.findMany({ where: { workspaceId: input.workspaceId, nodeId: { in: scopedGapEdges.map((e) => e.sourceNodeId) }, type: { in: ["Gap", "FormalizationGap"] }, status: { in: ["open", "active", "seed"] } }, take: 10 })
   const recentAttempts = await prisma.nodeIndex.findMany({ where: { workspaceId: input.workspaceId, type: { in: ["ProofAttempt", "FormalizationAttempt"] } }, orderBy: { updatedAtFromFrontmatter: "desc" }, take: 5 })
-  const proofRouteCount = await prisma.nodeIndex.count({ where: { workspaceId: input.workspaceId, type: "ProofRoute", OR: [{ metadata: { path: ["target"], equals: node.nodeId } }, { metadata: { path: ["target"], equals: `[[${node.title}]]` } }] } })
+  const hasInlineRoutes = String(node.bodyPreview ?? "").toLowerCase().includes("route:")
+  const proofRouteCount = await prisma.nodeIndex.count({ where: { workspaceId: input.workspaceId, type: "ProofRoute", status: { notIn: ["killed", "archived"] }, OR: [{ metadata: { path: ["target"], equals: node.nodeId } }, { metadata: { path: ["target"], equals: `[[${node.title}]]` } }] } })
   const routeEdgeTypes = new Set(["route", "routes", "target", "targets"])
-  const hasRoutes = proofRouteCount > 0 || neighbors.some((e) => routeEdgeTypes.has(e.edgeType))
+  const hasRoutes = hasInlineRoutes || proofRouteCount > 0 || neighbors.some((e) => routeEdgeTypes.has(e.edgeType))
   const [routedWorkflow, routedReason] = input.userGoal?.toLowerCase().includes("lean")
     ? ["lean_handoff", "User goal mentions Lean"] as const
     : workflowForNode(node, hasRoutes, openGaps.length > 0)
@@ -73,7 +79,7 @@ export async function startResearchSession(input: { userId: string; workspaceId:
     relevant_skills: await getSkillPack(input.workspaceId, context.node.nodeId, context.workflow),
     workflow_prompt_text: await getPrompt(context.workflow).catch(() => ""),
     chat_output_contract: chatOutputContract,
-    suggested_tools: ["get_node", "get_neighbors", "complete_workflow", "create_gap", "log_proof_attempt"],
+    suggested_tools: ["get_node", "add_route_to_claim", "append_proof_attempt_to_claim", "add_inline_gap_to_claim", "create_task", "complete_workflow"],
     instruction: "If the user did not specify a workflow, follow recommended_workflow."
   }
 }
@@ -86,7 +92,7 @@ export async function startWorkflow(workspaceId: string, nodeId: string, workflo
     workflow_prompt_text: await getPrompt(workflowType).catch(() => ""),
     chat_output_contract: chatOutputContract,
     expected_completion_format: "summary plus graph_updates",
-    allowed_tools: ["complete_workflow", "create_node", "create_gap", "log_proof_attempt"]
+    allowed_tools: ["complete_workflow", "create_claim", "add_route_to_claim", "append_proof_attempt_to_claim", "add_inline_gap_to_claim", "create_task"]
   }
 }
 
@@ -129,8 +135,8 @@ export async function maffBootstrap(input: {
     workflow_prompt_text: promptText,
     relevant_skills: skills,
     context_bundle: { neighbors: context.neighbors, open_gaps: context.openGaps, recent_attempts: context.recentAttempts, resources: { workspace: `workspace://${workspace.id}/manifest`, node: nodeId ? `node://${workspace.id}/${nodeId}` : null } },
-    suggested_tools: ["get_node", "create_node", "create_proof_route", "log_proof_attempt", "create_gap", "create_task", "complete_workflow"],
-    writeback_plan: ["Run one focused workflow.", "Write durable progress with create/update/log tools.", "Create or complete a follow-up task."],
+    suggested_tools: ["get_node", "create_claim", "add_route_to_claim", "append_proof_attempt_to_claim", "add_inline_gap_to_claim", "decompose_claim", "create_task", "complete_workflow"],
+    writeback_plan: ["Run one focused workflow.", "Write routes, attempts, gaps, proof text, and Lean status into the relevant Claim.", "Create supporting Claim nodes only for substantial mathematical statements.", "Create or complete an attached operational task."],
     chat_output_contract: chatOutputContract,
     completion_instruction: "Do one focused workflow, write back durable progress, then summarize the changed nodes and next task."
   }

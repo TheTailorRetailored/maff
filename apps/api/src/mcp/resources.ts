@@ -11,7 +11,7 @@ import { config } from "../config.js"
 import path from "node:path"
 
 type ResourceContext = { userId: string; claims: AuthClaims }
-const introText = "Maff is a tool-first private math research graph. Use maff_bootstrap first for workflow orchestration; resources are read-only references for browsing and linking."
+const introText = "Maff is a tool-first, claim-centric private math research graph. Problems organize projects; Claims represent conjectures, theorems, lemmas, reductions, and counterexample statements; Claims form the recursive proof-dependency graph. Routes, proof attempts, minor gaps, Lean notes, and tasks usually attach to Claim nodes instead of becoming graph nodes."
 
 async function requireViewer(ctx: ResourceContext, workspaceId: string) {
   return requireWorkspaceRole(ctx.userId, workspaceId, "viewer")
@@ -80,7 +80,15 @@ export async function readResource(uri: string, ctx: ResourceContext) {
       const nodeIds = [...new Set([id, ...edges.flatMap((e) => [e.sourceNodeId, e.targetNodeId]).filter(Boolean) as string[]])]
       return { nodes: await prisma.nodeIndex.findMany({ where: { workspaceId, nodeId: { in: nodeIds } } }), edges }
     }
-    return { nodes: await prisma.nodeIndex.findMany({ where: { workspaceId } }), edges: await prisma.edgeIndex.findMany({ where: { workspaceId } }) }
+    const nodes = await prisma.nodeIndex.findMany({ where: { workspaceId, stale: false, type: { in: ["Problem", "Claim", "Definition", "Paper", "KnownResult", "Experiment", "Draft"] }, status: { notIn: ["killed", "archived", "cancelled"] } } })
+    const nodeIds = new Set(nodes.map((node) => node.nodeId))
+    const edges = await prisma.edgeIndex.findMany({ where: { workspaceId, edgeType: { in: ["problem", "depends_on", "supports", "cites", "related_papers"] } } })
+    return {
+      nodes,
+      edges: edges
+        .filter((edge) => nodeIds.has(edge.sourceNodeId) && edge.targetNodeId && nodeIds.has(edge.targetNodeId))
+        .map((edge) => edge.edgeType === "problem" ? { ...edge, id: `${edge.id}-reverse`, sourceNodeId: edge.targetNodeId, targetNodeId: edge.sourceNodeId } : edge)
+    }
   }
   if (scheme === "skill") return loadSkill(rest.split("/"))
   if (scheme === "prompt") return getPrompt(rest)

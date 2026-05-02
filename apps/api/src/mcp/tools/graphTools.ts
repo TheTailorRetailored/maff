@@ -2,6 +2,7 @@ import { prisma } from "../../db/prisma.js"
 
 export async function searchNodes(workspaceId: string, query = "", filters: Record<string, unknown> = {}) {
   const where: Record<string, unknown> = { workspaceId, stale: false }
+  if (!filters.includeArchived) where.status = { notIn: ["killed", "archived", "cancelled"] }
   if (query) where.OR = [{ title: { contains: query, mode: "insensitive" } }, { bodyPreview: { contains: query, mode: "insensitive" } }]
   if (Array.isArray(filters.type)) where.type = { in: filters.type }
   if (Array.isArray(filters.status)) where.status = { in: filters.status }

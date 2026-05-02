@@ -135,6 +135,7 @@ model TaskIndex {
   assignedToUserId String? @db.Uuid
   claimedSessionId String?
   leaseExpiresAt DateTime?
+  snoozedUntil DateTime?
   completedAt DateTime?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt

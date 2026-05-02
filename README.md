@@ -23,6 +23,8 @@ Routes, proof attempts, minor gaps, informal proof updates, Lean status, and rou
 
 Tasks are operational queue records stored in PostgreSQL and attached to a target node/section. They appear in the queue and node detail views, but they do not appear in the default graph.
 
+Migration note: on 2026-05-02, the Galton-Watson conductance project was migrated from a star-shaped graph of Conjecture/ProofRoute/Gap/Task nodes into a claim-centric graph. Old nodes are marked killed for audit/history. Active work should use the new Claim nodes.
+
 ## Local Dev
 
 ```bash

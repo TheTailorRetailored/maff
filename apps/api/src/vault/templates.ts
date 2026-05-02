@@ -7,7 +7,7 @@ export const supportedTypes = [
 export const supportedStatuses = [
   "seed", "active", "lit_checked", "route_active", "proof_candidate", "informally_proved", "formalizing", "lean_verified",
   "paused", "killed", "paper_pipeline", "open", "closed", "queued", "running", "failed", "succeeded", "created", "snoozed",
-  "lean_checked", "temporary_axiom", "unproved_dependency", "idea", "precise", "proof_sketch", "false", "claimed", "cancelled"
+  "lean_checked", "temporary_axiom", "unproved_dependency", "idea", "precise", "proof_sketch", "false", "claimed", "cancelled", "archived"
 ]
 
 export function defaultBody(type: string, title: string, body?: string) {

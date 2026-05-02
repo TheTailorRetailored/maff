@@ -49,8 +49,8 @@ export async function completeTask(workspaceId: string, taskId: string, outcomeS
   return prisma.taskIndex.update({ where: { id: taskId }, data: { status: "completed", leaseExpiresAt: null, completedAt: new Date() } })
 }
 
-export async function snoozeTask(workspaceId: string, taskId: string, reason: string) {
-  return prisma.taskIndex.update({ where: { id: taskId }, data: { status: "snoozed", leaseExpiresAt: null } })
+export async function snoozeTask(workspaceId: string, taskId: string, reason: string, until?: string) {
+  return prisma.taskIndex.update({ where: { id: taskId }, data: { status: "snoozed", leaseExpiresAt: null, snoozedUntil: until ? new Date(until) : null } })
 }
 
 export async function releaseTask(workspaceId: string, taskId: string, claimedSessionId?: string) {

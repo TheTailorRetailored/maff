@@ -4,7 +4,7 @@ const baseUrl = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3001/api"
 
 export type Workspace = { id: string; slug: string; name: string; type: string }
 export type NodeIndex = { nodeId: string; title: string; type: string; status: string; area?: string; bodyPreview: string; metadata: Record<string, unknown> }
-export type TaskIndex = { id: string; nodeId: string; targetNodeId?: string; targetSection?: string; workflow: string; title?: string; instructions?: string; priority: number; status: string; claimedSessionId?: string; leaseExpiresAt?: string; completedAt?: string }
+export type TaskIndex = { id: string; nodeId: string; targetNodeId?: string; targetSection?: string; workflow: string; title?: string; instructions?: string; priority: number; status: string; claimedSessionId?: string; leaseExpiresAt?: string; snoozedUntil?: string; completedAt?: string }
 
 const apiAuthorizationParams = {
   audience: import.meta.env.VITE_AUTH0_AUDIENCE,

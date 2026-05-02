@@ -93,6 +93,7 @@ export async function reindexWorkspace(workspaceId: string, userId?: string) {
           status: String(parsed.metadata.status ?? "open"),
           claimedSessionId: typeof parsed.metadata.claimed_session_id === "string" ? parsed.metadata.claimed_session_id : null,
           leaseExpiresAt: dateOrNull(parsed.metadata.lease_expires_at),
+          snoozedUntil: dateOrNull(parsed.metadata.snoozed_until),
           completedAt: dateOrNull(parsed.metadata.completed_at)
         },
         create: {
@@ -107,6 +108,7 @@ export async function reindexWorkspace(workspaceId: string, userId?: string) {
           status: String(parsed.metadata.status ?? "open"),
           claimedSessionId: typeof parsed.metadata.claimed_session_id === "string" ? parsed.metadata.claimed_session_id : null,
           leaseExpiresAt: dateOrNull(parsed.metadata.lease_expires_at),
+          snoozedUntil: dateOrNull(parsed.metadata.snoozed_until),
           completedAt: dateOrNull(parsed.metadata.completed_at)
         }
       })
