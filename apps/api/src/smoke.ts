@@ -9,7 +9,7 @@ assert.equal(assertInsideRoot(root, path.join(root, "vault", "A.md")), path.reso
 assert.throws(() => assertInsideRoot(root, path.resolve(root, "..", "escape.md")), /escapes/)
 assert.deepEqual(extractWikilinks("See [[Problem - A]] and [[Lemma|alias]]."), ["Problem - A", "Lemma"])
 
-for (const name of ["maff_bootstrap", "start_research_session", "create_conjecture", "create_claim", "add_route_to_claim", "append_proof_attempt_to_claim", "add_inline_gap_to_claim", "archive_node"]) {
+for (const name of ["maff_bootstrap", "start_research_session", "create_conjecture", "create_claim", "add_route_to_claim", "append_proof_attempt_to_claim", "add_inline_gap_to_claim", "archive_node", "get_problem_graph", "list_problem_graphs"]) {
   if (name === "tools/list") continue
   assert.ok(toolDefinitions.some((tool) => tool.name === name), `missing MCP tool ${name}`)
 }

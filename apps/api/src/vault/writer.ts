@@ -43,6 +43,7 @@ export async function createNode(input: {
     type: input.type,
     status: input.metadata?.status ?? (input.type === "Task" ? "open" : "seed"),
     workspace: workspace.slug,
+    workspace_id: input.workspaceId,
     created: input.metadata?.created ?? now,
     updated: now,
     title: input.title,

@@ -2,7 +2,7 @@ import { prisma } from "../db/prisma.js"
 import type { AuthClaims } from "../auth/auth0.js"
 import { requireWorkspaceRole } from "../auth/permissions.js"
 import { getNode } from "./tools/nodeTools.js"
-import { getNeighbors, getOpenGaps, getActiveRoutes } from "./tools/graphTools.js"
+import { getNeighbors, getOpenGaps, getActiveRoutes, getProblemGraph } from "./tools/graphTools.js"
 import { getPrompt } from "./prompts.js"
 import { listPrompts } from "./prompts.js"
 import { loadSkill } from "../skills/skillLoader.js"
@@ -74,7 +74,7 @@ export async function readResource(uri: string, ctx: ResourceContext) {
   if (scheme === "graph") {
     const [workspaceId, kind, id] = rest.split("/")
     await requireViewer(ctx, workspaceId)
-    if (kind === "problem" && id) return { nodes: await prisma.nodeIndex.findMany({ where: { workspaceId, OR: [{ nodeId: id }, { metadata: { path: ["problem"], equals: id } }, { metadata: { path: ["target"], equals: id } }] } }), edges: await prisma.edgeIndex.findMany({ where: { workspaceId, OR: [{ sourceNodeId: id }, { targetNodeId: id }, { targetNodeRef: id }] } }) }
+    if (kind === "problem" && id) return getProblemGraph({ workspaceId, problemId: id })
     if (kind === "claim" && id) {
       const edges = await prisma.edgeIndex.findMany({ where: { workspaceId, OR: [{ sourceNodeId: id }, { targetNodeId: id }] } })
       const nodeIds = [...new Set([id, ...edges.flatMap((e) => [e.sourceNodeId, e.targetNodeId]).filter(Boolean) as string[]])]
@@ -82,7 +82,7 @@ export async function readResource(uri: string, ctx: ResourceContext) {
     }
     const nodes = await prisma.nodeIndex.findMany({ where: { workspaceId, stale: false, type: { in: ["Problem", "Claim", "Definition", "Paper", "KnownResult", "Experiment", "Draft"] }, status: { notIn: ["killed", "archived", "cancelled"] } } })
     const nodeIds = new Set(nodes.map((node) => node.nodeId))
-    const edges = await prisma.edgeIndex.findMany({ where: { workspaceId, edgeType: { in: ["problem", "depends_on", "supports", "cites", "related_papers"] } } })
+    const edges = await prisma.edgeIndex.findMany({ where: { workspaceId, edgeType: { in: ["problem", "main_claim", "depends_on", "supports", "cites", "related_papers"] } } })
     return {
       nodes,
       edges: edges

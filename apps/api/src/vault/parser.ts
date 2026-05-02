@@ -15,7 +15,8 @@ export const typedEdgeFields: Record<string, string> = {
   related_papers: "cites",
   formalizes: "formalizes",
   source_proof: "formalizes",
-  target: "targets"
+  target: "targets",
+  main_claims: "main_claim"
 }
 
 export type ParsedNode = {
@@ -57,4 +58,3 @@ export async function parseMarkdownFile(filePath: string) {
 export function dumpMarkdown(metadata: Record<string, unknown>, body: string) {
   return matter.stringify(body.trimStart(), metadata).trimEnd() + "\n"
 }
-

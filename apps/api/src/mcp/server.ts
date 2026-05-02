@@ -5,7 +5,7 @@ import { requireWorkspaceRole } from "../auth/permissions.js"
 import { config } from "../config.js"
 import { readResource, listResources } from "./resources.js"
 import { listWorkspaces, maffBootstrap, startResearchSession, startWorkflow } from "./tools/sessionTools.js"
-import { getActiveRoutes, getNeighbors, getOpenGaps, getStaleNodes, searchNodes } from "./tools/graphTools.js"
+import { getActiveRoutes, getNeighbors, getOpenGaps, getProblemGraph, getStaleNodes, listProblemGraphs, searchNodes } from "./tools/graphTools.js"
 import { appendToNodeTool, createNodeTool, getNode, linkNodesTool, replaceNodeSectionTool, setNodeStatus, updateNodeMetadataTool } from "./tools/nodeTools.js"
 import { claimTask, completeTask, createTask, getNextTask, heartbeatTask, releaseTask, snoozeTask } from "./tools/taskTools.js"
 import { addInformalProofToClaim, addInlineGapToClaim, addRouteToClaim, appendProofAttemptToClaim, archiveNode, completeWorkflow, computeClaimReadiness, createClaim, createConjecture, createGap, createProblem, createProofRoute, createRichClaim, decomposeClaim, decomposeClaimRich, logProofAttempt, promoteInlineSubclaimToClaim, promoteInlineSubclaimToClaimRich, promoteRouteToNode, researchExtras, updateClaimLeanStatus, updateClaimLeanStatusWithReason, updateClaimMetadata, updateClaimProofStatus, updateClaimRoute } from "./tools/researchTools.js"
@@ -38,6 +38,8 @@ export const toolDefinitions: ToolDef[] = [
   tool("search_nodes", "Search indexed research nodes.", "viewer", objectSchema({ workspace_id: s, query: s, filters: anyObj }, ["workspace_id"])),
   tool("get_node", "Read a parsed Markdown node.", "viewer", objectSchema({ workspace_id: s, node_id: s }, ["workspace_id", "node_id"])),
   tool("get_neighbors", "Read local graph neighbors for a node.", "viewer", objectSchema({ workspace_id: s, node_id: s, depth: n, edge_types: strArray }, ["workspace_id", "node_id"])),
+  tool("list_problem_graphs", "List Problem graph roots in a workspace with summary counts. Use this before opening a graph when the workspace has multiple problems.", "viewer", objectSchema({ workspace_id: s, status_filter: strArray }, ["workspace_id"])),
+  tool("get_problem_graph", "Return a problem-scoped claim graph with nodes, edges, and layout hints. Default graph mode is one Problem plus its Claim dependency graph.", "viewer", objectSchema({ workspace_id: s, problem_id: s, mode: s, selected_node_id: s, depth: n, include_archived: { type: "boolean" }, include_tasks: { type: "boolean" }, include_routes: { type: "boolean" }, include_attempts: { type: "boolean" }, include_gaps: { type: "boolean" }, include_body_wikilinks: { type: "boolean" } }, ["workspace_id", "problem_id"])),
   tool("get_open_gaps", "Read open gaps, optionally scoped to a problem or target.", "viewer", objectSchema({ workspace_id: s, problem_id: s }, ["workspace_id"])),
   tool("get_active_routes", "Read active proof routes.", "viewer", objectSchema({ workspace_id: s, problem_id: s }, ["workspace_id"])),
   tool("get_stale_nodes", "Read stale indexed nodes.", "viewer", objectSchema({ workspace_id: s, days: n }, ["workspace_id", "days"])),
@@ -140,6 +142,8 @@ async function callTool(toolName: string, args: any, ctx: ToolContext) {
     case "search_nodes": return searchNodes(workspaceId, args.query, args.filters)
     case "get_node": return getNode(workspaceId, args.node_id)
     case "get_neighbors": return getNeighbors(workspaceId, args.node_id, args.depth, args.edge_types)
+    case "list_problem_graphs": return listProblemGraphs(workspaceId, args.status_filter)
+    case "get_problem_graph": return getProblemGraph({ workspaceId, problemId: args.problem_id, mode: args.mode, selectedNodeId: args.selected_node_id, depth: args.depth, includeArchived: args.include_archived, includeTasks: args.include_tasks, includeRoutes: args.include_routes, includeAttempts: args.include_attempts, includeGaps: args.include_gaps, includeBodyWikilinks: args.include_body_wikilinks })
     case "get_open_gaps": return getOpenGaps(workspaceId, args.problem_id)
     case "get_active_routes": return getActiveRoutes(workspaceId, args.problem_id)
     case "get_stale_nodes": return getStaleNodes(workspaceId, args.days)

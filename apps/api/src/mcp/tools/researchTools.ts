@@ -10,11 +10,6 @@ function shortTitle(text: string, prefix = "Claim") {
   return `${prefix} - ${text.replace(/\s+/g, " ").trim().slice(0, 72)}`
 }
 
-async function wikilinkFor(workspaceId: string, nodeId: string) {
-  const node = await prisma.nodeIndex.findUnique({ where: { workspaceId_nodeId: { workspaceId, nodeId } } })
-  return node ? `[[${node.title}]]` : nodeId
-}
-
 function claimBody(title: string, statement: string, motivation = "") {
   return `# Claim: ${title}\n\n## Statement\n\n${statement}\n\n## Status\n\nIdea captured. Proof status: none.\n\n## Role in project\n\n${motivation}\n\n## Dependencies\n\n\n## Proof routes\n\n\n## Informal proof\n\n\n## Lean formalization\n\nLean status: not_started\nLean file:\nLean theorem name:\n\n## Attempts and notes\n\n\n## Tasks\n\n\n## Decision log\n\n${today()}: Created as a Claim node.\n`
 }
@@ -33,7 +28,7 @@ async function appendMetadataList(workspaceId: string, nodeId: string, field: st
 }
 
 export async function createProblem(input: { workspaceId: string; title: string; area: string; roughStatement: string; motivation: string; initialSources?: string[]; userId?: string }) {
-  return createNodeTool({ workspaceId: input.workspaceId, type: "Problem", title: input.title, metadata: { area: input.area, status: "seed", initial_sources: input.initialSources ?? [] }, body: `# Problem: ${input.title}\n\n## Statement\n\n${input.roughStatement}\n\n## Motivation\n\n${input.motivation}\n\n## Decision log\n\n`, userId: input.userId })
+  return createNodeTool({ workspaceId: input.workspaceId, type: "Problem", title: input.title, metadata: { area: input.area, status: "seed", initial_sources: input.initialSources ?? [], main_claims: [], graph_model: "claim_centric" }, body: `# Problem: ${input.title}\n\n## Statement\n\n${input.roughStatement}\n\n## Motivation\n\n${input.motivation}\n\n## Decision log\n\n`, userId: input.userId })
 }
 
 export async function createConjecture(input: { workspaceId: string; problemId: string; statement: string; motivation: string; confidence: number; userId?: string }) {
@@ -41,7 +36,6 @@ export async function createConjecture(input: { workspaceId: string; problemId: 
 }
 
 export async function createClaim(input: { workspaceId: string; problemId?: string; title?: string; statement: string; motivation?: string; claimKind?: string; role?: string; confidence?: number; userId?: string }) {
-  const problem = input.problemId ? await wikilinkFor(input.workspaceId, input.problemId) : undefined
   const title = input.title ?? shortTitle(input.statement, "Claim")
   const metadata: Record<string, unknown> = {
     claim_kind: input.claimKind ?? "conjecture",
@@ -56,7 +50,7 @@ export async function createClaim(input: { workspaceId: string; problemId?: stri
     lean_file: "",
     lean_name: ""
   }
-  if (problem) metadata.problem = problem
+  if (input.problemId) metadata.problem = input.problemId
   if (input.confidence !== undefined) metadata.confidence = input.confidence
   return createNodeTool({
     workspaceId: input.workspaceId,
@@ -86,7 +80,6 @@ export async function createRichClaim(input: {
   bodySections?: Record<string, string>
   userId?: string
 }) {
-  const problem = input.problemId ? await wikilinkFor(input.workspaceId, input.problemId) : undefined
   const section = (name: string, fallback = "") => input.bodySections?.[name] ?? fallback
   const metadata: Record<string, unknown> = {
     claim_kind: input.claimKind,
@@ -102,7 +95,7 @@ export async function createRichClaim(input: {
     lean_name: "",
     short_title: input.shortTitle ?? ""
   }
-  if (problem) metadata.problem = problem
+  if (input.problemId) metadata.problem = input.problemId
   if (input.area) metadata.area = input.area
   return createNodeTool({
     workspaceId: input.workspaceId,
