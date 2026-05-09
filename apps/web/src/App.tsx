@@ -1,5 +1,5 @@
 import { useAuth0 } from "@auth0/auth0-react"
-import { BookOpen, CheckSquare, GitBranch, Home, LogOut, Settings, Sigma, TerminalSquare } from "lucide-react"
+import { BookOpen, CheckSquare, ClipboardList, GitBranch, Home, LogOut, Network, Settings, Sigma, TerminalSquare } from "lucide-react"
 import { useEffect, useState } from "react"
 import { Dashboard } from "./pages/Dashboard"
 import { Workspace } from "./pages/Workspace"
@@ -9,14 +9,24 @@ import { Tasks } from "./pages/Tasks"
 import { Skills } from "./pages/Skills"
 import { LeanJobs } from "./pages/LeanJobs"
 import { SettingsPage } from "./pages/Settings"
+import { Projects } from "./pages/Projects"
+import { ProjectControlRoom } from "./pages/ProjectControlRoom"
+import { WorkstreamView } from "./pages/WorkstreamView"
+import { ReportView } from "./pages/ReportView"
+import { ReviewQueue } from "./pages/ReviewQueue"
+import { ObjectGraph } from "./pages/ObjectGraph"
+import { AgentRunView } from "./pages/AgentRunView"
 
-type Page = "dashboard" | "workspace" | "node" | "graph" | "tasks" | "skills" | "lean" | "settings"
+type Page = "dashboard" | "projects" | "control" | "workstream" | "report" | "agentRun" | "reviews" | "objectGraph" | "workspace" | "node" | "graph" | "tasks" | "skills" | "lean" | "settings"
 
 export function App() {
   const { isAuthenticated, isLoading, loginWithRedirect, logout, user } = useAuth0()
   const [page, setPage] = useState<Page>("dashboard")
   const [workspaceId, setWorkspaceId] = useState<string>("")
   const [nodeId, setNodeId] = useState<string>("")
+  const [projectId, setProjectId] = useState<string>("")
+  const [workstreamId, setWorkstreamId] = useState<string>("")
+  const [reportId, setReportId] = useState<string>("")
 
   useEffect(() => {
     const params = new URLSearchParams(location.search)
@@ -42,9 +52,13 @@ export function App() {
 
   const nav = [
     ["dashboard", Home, "Dashboard"],
+    ["projects", BookOpen, "Projects"],
+    ["control", ClipboardList, "Control"],
+    ["reviews", CheckSquare, "Reviews"],
+    ["objectGraph", Network, "Objects"],
     ["workspace", BookOpen, "Workspace"],
     ["graph", GitBranch, "Graph"],
-    ["tasks", CheckSquare, "Tasks"],
+    ["tasks", CheckSquare, "Legacy Tasks"],
     ["skills", Sigma, "Skills"],
     ["lean", TerminalSquare, "Lean"],
     ["settings", Settings, "Settings"]
@@ -66,7 +80,14 @@ export function App() {
         </button>
       </aside>
       <main>
-        {page === "dashboard" && <Dashboard onOpenWorkspace={(id) => { setWorkspaceId(id); setPage("workspace") }} onOpenNode={(id, wid) => { setWorkspaceId(wid); setNodeId(id); setPage("node") }} />}
+        {page === "dashboard" && <Dashboard onOpenWorkspace={(id) => { setWorkspaceId(id); setPage("projects") }} onOpenProject={(id, wid) => { setWorkspaceId(wid); setProjectId(id); setPage("control") }} onOpenWorkstream={(id, wid) => { setWorkspaceId(wid); setWorkstreamId(id); setPage("workstream") }} />}
+        {page === "projects" && <Projects workspaceId={workspaceId} setWorkspaceId={setWorkspaceId} onOpenProject={(id) => { setProjectId(id); setPage("control") }} />}
+        {page === "control" && <ProjectControlRoom workspaceId={workspaceId} setWorkspaceId={setWorkspaceId} projectId={projectId} onOpenWorkstream={(id) => { setWorkstreamId(id); setPage("workstream") }} />}
+        {page === "workstream" && <WorkstreamView workspaceId={workspaceId} workstreamId={workstreamId} onOpenReport={(id) => { setReportId(id); setPage("report") }} />}
+        {page === "report" && <ReportView workspaceId={workspaceId} reportId={reportId} />}
+        {page === "agentRun" && <AgentRunView />}
+        {page === "reviews" && <ReviewQueue workspaceId={workspaceId} setWorkspaceId={setWorkspaceId} onOpenWorkstream={(id) => { setWorkstreamId(id); setPage("workstream") }} />}
+        {page === "objectGraph" && <ObjectGraph workspaceId={workspaceId} setWorkspaceId={setWorkspaceId} />}
         {page === "workspace" && <Workspace workspaceId={workspaceId} setWorkspaceId={setWorkspaceId} onOpenNode={(id) => { setNodeId(id); setPage("node") }} />}
         {page === "node" && <NodeView workspaceId={workspaceId} nodeId={nodeId} onOpenNode={setNodeId} />}
         {page === "graph" && <GraphView workspaceId={workspaceId} setWorkspaceId={setWorkspaceId} onOpenNode={(id) => { setNodeId(id); setPage("node") }} />}
@@ -78,4 +99,3 @@ export function App() {
     </div>
   )
 }
-

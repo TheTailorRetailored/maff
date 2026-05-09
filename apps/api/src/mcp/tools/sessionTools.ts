@@ -4,7 +4,7 @@ import { getSkillPack } from "../../skills/skillRouter.js"
 import { getPrompt } from "../prompts.js"
 import { createProblem } from "./researchTools.js"
 
-const maffIntro = "Maff is claim-centric. Problems organize projects; Claims are theorem/conjecture/lemma/reduction nodes and form the recursive proof graph. Routes, proof attempts, minor gaps, Lean notes, and tasks usually attach to Claim nodes instead of becoming graph nodes. Use maff_bootstrap first, then write durable progress back to Claim sections and operational task records."
+const maffIntro = "Maff v2 is a Co-Mathematician-style research operating system. Projects have explicit approved goals; specialist work happens in first-class Workstreams; every agent run writes durable Reports and review-gated outputs; mathematical objects such as Claims, ProofRoutes, ProofAttempts, Gaps, Papers, Assumptions, and LeanTheorems are typed records. maff_bootstrap is deprecated: prefer get_project_control_room, claim_agent_assignment, get_agent_briefing, submit_workstream_report, and record_review_round."
 const hiddenStatuses = ["killed", "archived", "cancelled"]
 
 export const chatOutputContract = `When using Maff, keep the user informed.
@@ -84,8 +84,8 @@ export async function startResearchSession(input: { userId: string; workspaceId:
     relevant_skills: await getSkillPack(input.workspaceId, context.node.nodeId, context.workflow),
     workflow_prompt_text: await getPrompt(context.workflow).catch(() => ""),
     chat_output_contract: chatOutputContract,
-    suggested_tools: ["get_node", "add_route_to_claim", "append_proof_attempt_to_claim", "add_inline_gap_to_claim", "create_task", "complete_workflow"],
-    instruction: "If the user did not specify a workflow, follow recommended_workflow."
+    suggested_tools: ["list_projects", "get_project_control_room", "claim_agent_assignment", "get_agent_briefing", "create_or_update_workstream_report", "submit_report_for_review"],
+    instruction: "Deprecated NodeIndex session. Prefer a Project/Goal/Workstream assignment before doing new specialist work."
   }
 }
 
@@ -96,8 +96,8 @@ export async function startWorkflow(workspaceId: string, nodeId: string, workflo
     skills: await getSkillPack(workspaceId, nodeId, workflowType),
     workflow_prompt_text: await getPrompt(workflowType).catch(() => ""),
     chat_output_contract: chatOutputContract,
-    expected_completion_format: "summary plus graph_updates",
-    allowed_tools: ["complete_workflow", "create_claim", "add_route_to_claim", "append_proof_attempt_to_claim", "add_inline_gap_to_claim", "create_task"]
+    expected_completion_format: "WorkstreamReport plus ReviewRound-gated completion",
+    allowed_tools: ["create_workstream", "claim_agent_assignment", "get_agent_briefing", "create_claim", "create_proof_route", "create_proof_attempt", "create_gap", "submit_workstream_report", "record_review_round", "complete_workstream"]
   }
 }
 
@@ -140,9 +140,9 @@ export async function maffBootstrap(input: {
     workflow_prompt_text: promptText,
     relevant_skills: skills,
     context_bundle: { neighbors: context.neighbors, open_gaps: context.openGaps, recent_attempts: context.recentAttempts, resources: { workspace: `workspace://${workspace.id}/manifest`, node: nodeId ? `node://${workspace.id}/${nodeId}` : null } },
-    suggested_tools: ["get_node", "create_claim", "add_route_to_claim", "append_proof_attempt_to_claim", "add_inline_gap_to_claim", "decompose_claim", "create_task", "complete_workflow"],
-    writeback_plan: ["Run one focused workflow.", "Write routes, attempts, gaps, proof text, and Lean status into the relevant Claim.", "Create supporting Claim nodes only for substantial mathematical statements.", "Create or complete an attached operational task."],
+    suggested_tools: ["list_projects", "get_project_control_room", "claim_agent_assignment", "get_agent_briefing", "create_claim", "create_proof_route", "create_gap", "submit_workstream_report", "record_review_round", "complete_workstream"],
+    writeback_plan: ["Prefer a Project/Goal/Workstream before specialist work.", "Write mathematical outputs as typed records, not Claim sections.", "Submit a WorkstreamReport for review.", "Complete only after the review policy passes."],
     chat_output_contract: chatOutputContract,
-    completion_instruction: "Do one focused workflow, write back durable progress, then summarize the changed nodes and next task."
+    completion_instruction: "Deprecated bootstrap path: create or claim a Workstream, write a report, obtain review, then complete through complete_workstream."
   }
 }

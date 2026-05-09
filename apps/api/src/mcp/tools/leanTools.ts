@@ -1,6 +1,7 @@
 import { prisma } from "../../db/prisma.js"
 import { leanClient } from "../../lean/leanClient.js"
 import { createNodeTool, setNodeStatus } from "./nodeTools.js"
+import * as runtime from "../../research/runtime.js"
 
 async function workspaceSlug(workspaceId: string) {
   return (await prisma.workspace.findUniqueOrThrow({ where: { id: workspaceId } })).slug
@@ -13,11 +14,29 @@ export async function createLeanProject(input: { workspaceId: string; projectNam
 export async function createLeanStub(input: { workspaceId: string; formalizationTargetId: string; theoremStatement: string; imports?: string[]; userId?: string }) {
   const filePath = `ResearchGraph/Generated/${input.formalizationTargetId.replace(/[^a-zA-Z0-9_-]/g, "_")}.lean`
   const result = await leanClient.createStub({ workspaceSlug: await workspaceSlug(input.workspaceId), filePath, imports: input.imports ?? ["Mathlib"], theoremStatement: input.theoremStatement })
+  const typedTarget = await prisma.formalizationTarget.findFirst({ where: { workspaceId: input.workspaceId, id: input.formalizationTargetId } })
+  if (typedTarget) {
+    const leanName = input.theoremStatement.match(/\btheorem\s+([A-Za-z0-9_'.]+)/)?.[1] ?? `maff_${typedTarget.id.replace(/-/g, "_")}`
+    const leanTheorem = await runtime.createLeanTheorem({
+      workspaceId: input.workspaceId,
+      projectId: typedTarget.projectId,
+      formalizationTargetId: typedTarget.id,
+      leanName,
+      proofFile: filePath,
+      statementMarkdown: input.theoremStatement,
+      status: "draft",
+      hasSorry: /\bsorry\b/.test(input.theoremStatement),
+      hasAxiom: /^\s*axiom\s+/m.test(input.theoremStatement)
+    })
+    return { result, leanTheorem }
+  }
   const node = await createNodeTool({ workspaceId: input.workspaceId, type: "LeanTheorem", title: `Lean Theorem - ${input.formalizationTargetId}`, metadata: { formalizes: input.formalizationTargetId, status: "formalizing", proof_file: filePath }, body: `# Lean Theorem\n\n\`\`\`lean\n${input.theoremStatement}\n\`\`\`\n`, userId: input.userId })
   return { result, node }
 }
 
-export async function leanCheck(input: { workspaceId: string; leanFileId: string }) {
+export async function leanCheck(input: { workspaceId: string; leanFileId?: string; leanTheoremId?: string; userId?: string }) {
+  if (input.leanTheoremId) return runtime.runLeanTheoremCheck({ workspaceId: input.workspaceId, leanTheoremId: input.leanTheoremId, userId: input.userId })
+  if (!input.leanFileId) throw new Error("lean_check requires leanTheoremId for typed checks or leanFileId for deprecated NodeIndex checks.")
   const node = await prisma.nodeIndex.findUniqueOrThrow({ where: { workspaceId_nodeId: { workspaceId: input.workspaceId, nodeId: input.leanFileId } } })
   const filePath = String((node.metadata as Record<string, unknown>).proof_file ?? input.leanFileId)
   const result = await leanClient.check({ workspaceSlug: await workspaceSlug(input.workspaceId), filePath })

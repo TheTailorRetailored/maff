@@ -9,6 +9,15 @@ export type ProblemSummary = { id: string; title: string; short_title: string; s
 export type GraphNode = { id: string; nodeId?: string; title: string; short_title?: string; type: string; status: string; depth?: number; importance?: number; metadata?: Record<string, unknown> }
 export type GraphEdge = { id?: string; source?: string; target?: string; sourceNodeId?: string; targetNodeId?: string; edge_type?: string; edgeType?: string; label?: string; weight?: number }
 export type ProblemGraph = { problem?: { id: string; title: string; short_title?: string; status: string }; nodes: GraphNode[]; edges: GraphEdge[]; layout_hint?: { mode: string; root_node_id?: string; selected_node_id?: string | null } }
+export type Project = { id: string; workspaceId: string; slug: string; title: string; area?: string; statement: string; status: string; coordinatorSummary?: string; updatedAt: string }
+export type ProjectGoal = { id: string; projectId: string; title: string; statement: string; status: string; priority: number; successCriteria: unknown[]; updatedAt: string }
+export type Workstream = { id: string; projectId: string; goalId?: string; title: string; kind: string; coordinatorRole: string; status: string; priority: number; instructions: string; targetObjectType?: string; targetObjectId?: string; reportId?: string; escalationMessage?: string; updatedAt: string }
+export type AgentRun = { id: string; workstreamId: string; role: string; status: string; model?: string; sessionId: string; outputSummary?: string; startedAt: string; finishedAt?: string }
+export type WorkstreamReport = { id: string; workstreamId: string; title: string; status: string; bodyMarkdown: string; linkedObjectRefs: unknown[]; artifactRefs: unknown[]; updatedAt: string; submittedAt?: string }
+export type ReviewRound = { id: string; workstreamId: string; reportId?: string; reviewerRole: string; verdict: string; issues: unknown[]; requiredChanges: unknown[]; bodyMarkdown: string; createdAt: string }
+export type Claim = { id: string; title: string; statementMarkdown: string; kind: string; status: string; updatedAt: string }
+export type Gap = { id: string; title: string; descriptionMarkdown: string; severity: string; status: string; updatedAt: string }
+export type ControlRoom = { project: Project; goals_by_status: Record<string, ProjectGoal[]>; workstreams_by_status: Record<string, Workstream[]>; needs_review: Workstream[]; blocked_or_escalated: Workstream[]; recent_agent_runs: AgentRun[]; key_claims: Claim[]; open_gaps: Gap[]; recent_reviews: ReviewRound[]; suggested_next_assignment?: Workstream | null }
 
 const apiAuthorizationParams = {
   audience: import.meta.env.VITE_AUTH0_AUDIENCE,

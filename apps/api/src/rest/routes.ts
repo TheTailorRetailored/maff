@@ -16,6 +16,7 @@ import { registerNodeRoutes } from "./nodes.js"
 import { registerGraphRoutes } from "./graph.js"
 import { registerTaskRoutes } from "./tasks.js"
 import { registerLeanRoutes } from "./lean.js"
+import { registerResearchRuntimeRoutes } from "./research.js"
 import { asyncHandler } from "./asyncHandler.js"
 
 export function apiRouter() {
@@ -27,6 +28,7 @@ export function apiRouter() {
   registerGraphRoutes(router)
   registerTaskRoutes(router)
   registerLeanRoutes(router)
+  registerResearchRuntimeRoutes(router)
 
   router.get("/mcp/debug-tools", asyncHandler(async (_req, res) => {
     const result = mcpToolsListResult()

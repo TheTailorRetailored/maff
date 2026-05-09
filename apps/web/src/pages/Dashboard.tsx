@@ -1,13 +1,14 @@
 import { useEffect, useState } from "react"
-import { useApi, type NodeIndex, type TaskIndex, type Workspace } from "../api/client"
-import { NodeCard } from "../components/NodeCard"
-import { TaskCard } from "../components/TaskCard"
+import { useApi, type ControlRoom, type Project, type Workspace, type Workstream } from "../api/client"
+import { StatusBadge } from "../components/StatusBadge"
 
-export function Dashboard({ onOpenWorkspace, onOpenNode }: { onOpenWorkspace: (id: string) => void; onOpenNode: (id: string, workspaceId: string) => void }) {
+export function Dashboard({ onOpenWorkspace, onOpenProject, onOpenWorkstream }: { onOpenWorkspace: (id: string) => void; onOpenProject: (projectId: string, workspaceId: string) => void; onOpenWorkstream: (workstreamId: string, workspaceId: string) => void }) {
   const { request } = useApi()
   const [workspaces, setWorkspaces] = useState<Workspace[]>([])
-  const [recent, setRecent] = useState<Record<string, NodeIndex[]>>({})
-  const [tasks, setTasks] = useState<Record<string, TaskIndex[]>>({})
+  const [projects, setProjects] = useState<Array<Project & { workspaceName: string }>>([])
+  const [needsReview, setNeedsReview] = useState<Array<{ workspaceId: string; project: Project; workstream: Workstream }>>([])
+  const [blocked, setBlocked] = useState<Array<{ workspaceId: string; project: Project; workstream: Workstream }>>([])
+  const [suggested, setSuggested] = useState<Array<{ workspaceId: string; project: Project; workstream: Workstream }>>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState("")
 
@@ -21,15 +22,15 @@ export function Dashboard({ onOpenWorkspace, onOpenNode }: { onOpenWorkspace: (i
         if (cancelled) return
         setWorkspaces(ws)
         const loaded = await Promise.all(ws.map(async (w) => {
-          const [nodes, workspaceTasks] = await Promise.all([
-            request<NodeIndex[]>(`/workspaces/${w.id}/nodes?limit=6`),
-            request<TaskIndex[]>(`/workspaces/${w.id}/tasks`)
-          ])
-          return { workspaceId: w.id, nodes, tasks: workspaceTasks.slice(0, 5) }
+          const workspaceProjects = await request<Project[]>(`/workspaces/${w.id}/projects`)
+          const rooms = await Promise.all(workspaceProjects.slice(0, 8).map((project) => request<ControlRoom>(`/workspaces/${w.id}/projects/${project.id}/control-room`)))
+          return { workspace: w, projects: workspaceProjects, rooms }
         }))
         if (cancelled) return
-        setRecent(Object.fromEntries(loaded.map((item) => [item.workspaceId, item.nodes])))
-        setTasks(Object.fromEntries(loaded.map((item) => [item.workspaceId, item.tasks])))
+        setProjects(loaded.flatMap((item) => item.projects.map((project) => ({ ...project, workspaceName: item.workspace.name }))))
+        setNeedsReview(loaded.flatMap((item) => item.rooms.flatMap((room) => room.needs_review.map((workstream) => ({ workspaceId: item.workspace.id, project: room.project, workstream })))))
+        setBlocked(loaded.flatMap((item) => item.rooms.flatMap((room) => room.blocked_or_escalated.map((workstream) => ({ workspaceId: item.workspace.id, project: room.project, workstream })))))
+        setSuggested(loaded.flatMap((item) => item.rooms.flatMap((room) => room.suggested_next_assignment ? [{ workspaceId: item.workspace.id, project: room.project, workstream: room.suggested_next_assignment }] : [])))
       } catch (err) {
         if (!cancelled) setError(err instanceof Error ? err.message : String(err))
       } finally {
@@ -40,14 +41,10 @@ export function Dashboard({ onOpenWorkspace, onOpenNode }: { onOpenWorkspace: (i
     return () => { cancelled = true }
   }, [])
 
-  const workspaceById = new Map(workspaces.map((w) => [w.id, w]))
-  const allTasks = Object.entries(tasks).flatMap(([wid, list]) => list.map((task) => ({ wid, task })))
-  const allNodes = Object.entries(recent).flatMap(([wid, nodes]) => nodes.map((node) => ({ wid, node })))
-
   return (
     <section className="page">
       <header><h1>Dashboard</h1></header>
-      {loading && <p className="notice">Loading workspaces, nodes, and tasks...</p>}
+      {loading && <p className="notice">Loading projects and workstream state...</p>}
       {error && <p className="notice error">Could not load Maff data: {error}</p>}
       <div className="grid two">
         <section>
@@ -56,15 +53,28 @@ export function Dashboard({ onOpenWorkspace, onOpenNode }: { onOpenWorkspace: (i
           <div className="stack">{workspaces.map((w) => <button className="workspace-row" key={w.id} onClick={() => onOpenWorkspace(w.id)}><strong>{w.name}</strong><span>{w.slug}</span></button>)}</div>
         </section>
         <section>
-          <h2>Active Tasks</h2>
-          {!loading && !error && allTasks.length === 0 && <p className="notice">No tasks are indexed yet.</p>}
-          <div className="stack">{allTasks.map(({ wid, task }) => <div key={task.id} className="stack-item"><small>{workspaceById.get(wid)?.name ?? wid}</small><TaskCard task={task} /></div>)}</div>
+          <h2>Suggested Assignments</h2>
+          {!loading && !error && suggested.length === 0 && <p className="notice">No ready workstreams found.</p>}
+          <div className="stack">{suggested.map(({ workspaceId, project, workstream }) => <button className="task-card" key={`${workspaceId}-${workstream.id}`} onClick={() => onOpenWorkstream(workstream.id, workspaceId)}><div><strong>{workstream.title}</strong><span>{project.title} · {workstream.coordinatorRole}</span></div><StatusBadge status={workstream.status} /></button>)}</div>
         </section>
       </div>
       <section>
-        <h2>Recent Nodes</h2>
-        {!loading && !error && allNodes.length === 0 && <p className="notice">No indexed nodes yet. Open a workspace and click Reindex if nodes were created outside the web UI.</p>}
-        <div className="cards">{allNodes.map(({ wid, node }) => <div key={`${wid}-${node.nodeId}`} className="card-wrap"><small>{workspaceById.get(wid)?.name ?? wid}</small><NodeCard node={node} onOpen={(id) => onOpenNode(id, wid)} /></div>)}</div>
+        <h2>Projects</h2>
+        {!loading && !error && projects.length === 0 && <p className="notice">No v2 projects yet. Create one from Projects.</p>}
+        <div className="cards">{projects.map((project) => <button key={project.id} className="node-card" onClick={() => onOpenProject(project.id, project.workspaceId)}><strong>{project.title}</strong><StatusBadge status={project.status} /><span>{project.workspaceName} · {project.area || project.slug}</span><p>{project.coordinatorSummary || project.statement}</p></button>)}</div>
+      </section>
+      <div className="grid two">
+        <section>
+          <h2>Needs Review</h2>
+          <div className="stack">{needsReview.map(({ workspaceId, project, workstream }) => <button className="task-card" key={`${workspaceId}-${workstream.id}`} onClick={() => onOpenWorkstream(workstream.id, workspaceId)}><div><strong>{workstream.title}</strong><span>{project.title}</span></div><StatusBadge status={workstream.status} /></button>)}</div>
+        </section>
+        <section>
+          <h2>Blocked Or Escalated</h2>
+          <div className="stack">{blocked.map(({ workspaceId, project, workstream }) => <button className="task-card" key={`${workspaceId}-${workstream.id}`} onClick={() => onOpenWorkstream(workstream.id, workspaceId)}><div><strong>{workstream.title}</strong><span>{project.title}</span></div><StatusBadge status={workstream.status} /></button>)}</div>
+        </section>
+      </div>
+      <section className="notice">
+        Legacy NodeIndex and TaskIndex pages remain available for migration and Quartz compatibility, but v2 Projects and Workstreams are now the primary runtime.
       </section>
     </section>
   )

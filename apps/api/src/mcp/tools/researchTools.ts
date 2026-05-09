@@ -28,7 +28,7 @@ async function appendMetadataList(workspaceId: string, nodeId: string, field: st
 }
 
 export async function createProblem(input: { workspaceId: string; title: string; area: string; roughStatement: string; motivation: string; initialSources?: string[]; userId?: string }) {
-  return createNodeTool({ workspaceId: input.workspaceId, type: "Problem", title: input.title, metadata: { area: input.area, status: "seed", initial_sources: input.initialSources ?? [], main_claims: [], graph_model: "claim_centric" }, body: `# Problem: ${input.title}\n\n## Statement\n\n${input.roughStatement}\n\n## Motivation\n\n${input.motivation}\n\n## Decision log\n\n`, userId: input.userId })
+  return createNodeTool({ workspaceId: input.workspaceId, type: "Problem", title: input.title, metadata: { area: input.area, status: "seed", initial_sources: input.initialSources ?? [], main_claims: [], graph_model: "deprecated_nodeindex_render_index" }, body: `# Problem: ${input.title}\n\n## Statement\n\n${input.roughStatement}\n\n## Motivation\n\n${input.motivation}\n\n## Decision log\n\n${today()}: Created through deprecated Problem compatibility path. Prefer typed Project records for new work.\n`, userId: input.userId })
 }
 
 export async function createConjecture(input: { workspaceId: string; problemId: string; statement: string; motivation: string; confidence: number; userId?: string }) {
