@@ -73,9 +73,6 @@ export function Dashboard({ onOpenWorkspace, onOpenProject, onOpenWorkstream }: 
           <div className="stack">{blocked.map(({ workspaceId, project, workstream }) => <button className="task-card" key={`${workspaceId}-${workstream.id}`} onClick={() => onOpenWorkstream(workstream.id, workspaceId)}><div><strong>{workstream.title}</strong><span>{project.title}</span></div><StatusBadge status={workstream.status} /></button>)}</div>
         </section>
       </div>
-      <section className="notice">
-        Legacy NodeIndex and TaskIndex pages remain available for migration and Quartz compatibility, but v2 Projects and Workstreams are now the primary runtime.
-      </section>
     </section>
   )
 }

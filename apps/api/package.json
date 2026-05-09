@@ -8,9 +8,13 @@
     "start": "node dist/index.js",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate deploy",
+    "prisma:baseline:v2": "prisma migrate resolve --applied 20260509000000_maff_v2_runtime",
     "typecheck": "tsc --noEmit",
-    "test:smoke": "tsx src/smoke.ts",
-    "test:smoke:db": "tsx src/smokeRuntimeDb.ts"
+    "test:smoke": "node dist/smoke.js",
+    "test:smoke:src": "tsx src/smoke.ts",
+    "test:smoke:db": "tsx src/smokeRuntimeDb.ts",
+    "admin:reset-legacy": "node dist/admin/resetLegacyResearch.js",
+    "admin:reset-legacy:src": "tsx src/admin/resetLegacyResearch.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.13.0",

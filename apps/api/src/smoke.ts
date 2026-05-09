@@ -26,21 +26,16 @@ for (const name of [
   "update_claim_status",
   "create_lean_theorem",
   "mark_lean_verified",
-  "get_project_control_room",
-  "maff_bootstrap"
+  "get_project_control_room"
 ]) {
   if (name === "tools/list") continue
   assert.ok(toolDefinitions.some((tool) => tool.name === name), `missing MCP tool ${name}`)
 }
 
-const updateMetadata = toolDefinitions.find((tool) => tool.name === "update_node_metadata")
-assert.ok(updateMetadata, "missing MCP tool update_node_metadata")
-assert.ok((updateMetadata.inputSchema.properties as Record<string, unknown>).patch, "update_node_metadata schema must advertise patch")
-
 const createClaim = toolDefinitions.find((tool) => tool.name === "create_claim")
 assert.ok(createClaim, "missing MCP tool create_claim")
 const createClaimProps = createClaim.inputSchema.properties as Record<string, unknown>
-for (const prop of ["project_id", "problem_id", "title", "statement", "statement_markdown", "claim_kind", "kind", "status", "actor_role", "role", "claim_status", "proof_status", "lean_status", "depends_on", "blocked_by", "area", "short_title", "body_sections"]) {
+for (const prop of ["project_id", "title", "statement", "statement_markdown", "claim_kind", "kind", "status", "actor_role", "metadata"]) {
   assert.ok(createClaimProps[prop], `create_claim schema must advertise ${prop}`)
 }
 assert.equal(createClaimProps.supports, undefined, "create_claim schema should not advertise reverse Claim-to-Claim supports")
@@ -58,14 +53,9 @@ const toolsListNames = new Set(toolsList.tools.map((tool) => tool.name))
 for (const name of ["create_project", "propose_project_goal", "approve_project_goal", "create_workstream", "claim_agent_assignment", "start_agent_run", "submit_workstream_report", "record_review_round", "complete_workstream", "create_claim", "create_proof_route", "create_proof_attempt", "create_gap"]) {
   assert.ok(toolsListNames.has(name), `tools/list missing ${name}`)
 }
-const listedUpdateMetadata = toolsList.tools.find((tool) => tool.name === "update_node_metadata")
-const listedInputSchemaProps = listedUpdateMetadata?.inputSchema.properties as Record<string, unknown> | undefined
-const listedInputSnakeSchemaProps = listedUpdateMetadata?.input_schema.properties as Record<string, unknown> | undefined
-assert.ok(listedInputSchemaProps?.patch, "tools/list update_node_metadata must advertise inputSchema.patch")
-assert.ok(listedInputSnakeSchemaProps?.patch, "tools/list update_node_metadata must advertise input_schema.patch")
-
-const completeWorkflow = toolDefinitions.find((tool) => tool.name === "complete_workflow")
-assert.ok(String(completeWorkflow?.description ?? "").includes("Deprecated"), "complete_workflow should be deprecated")
+for (const name of ["maff_bootstrap", "start_workflow", "complete_workflow", "create_task", "claim_task", "get_node", "search_nodes", "list_problem_graphs", "update_node_metadata", "get_skill_pack"]) {
+  assert.equal(toolsListNames.has(name), false, `${name} should not be exposed in Maff v2 tools/list`)
+}
 
 const markLeanVerified = toolDefinitions.find((tool) => tool.name === "mark_lean_verified")
 assert.ok(markLeanVerified, "missing mark_lean_verified")

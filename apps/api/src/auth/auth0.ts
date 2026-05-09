@@ -1,6 +1,4 @@
 import type { NextFunction, Request, Response } from "express"
-import fs from "node:fs/promises"
-import path from "node:path"
 import type { WorkspaceRole } from "@prisma/client"
 import { createRemoteJWKSet, jwtVerify, type JWTPayload } from "jose"
 import { config } from "../config.js"
@@ -93,24 +91,7 @@ export async function findOrCreateUser(claims: AuthClaims) {
       create: { workspaceId: sharedWorkspace.id, userId: user.id, role: sharedMembers === 0 ? "owner" : configuredRole }
     })
   }
-  if (sharedMembers === 0) await seedWorkspaceVault(sharedWorkspace.slug)
-
   return user
-}
-
-async function seedWorkspaceVault(workspaceSlug: string) {
-  const root = path.join(config.dataDir, "workspaces", workspaceSlug, "vault", "Problems")
-  await fs.mkdir(root, { recursive: true })
-  const seeds = [
-    ["Problem - Product condition cutoff", "markov_chains_cutoff", "Understand when product conditions force cutoff in structured Markov chains."],
-    ["Problem - Galton Watson conductance regularity", "branching", "Find conductance regularity principles for Galton-Watson process state spaces."],
-    ["Problem - Distributional predictions in queues", "queueing", "Use calibrated service-time distributions to improve queue scheduling policies."]
-  ]
-  for (const [title, area, statement] of seeds) {
-    const id = title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")
-    const file = path.join(root, `${title}.md`)
-    await fs.writeFile(file, `---\nid: ${id}\ntype: Problem\nstatus: seed\nworkspace: ${workspaceSlug}\narea: ${area}\ncreated: ${new Date().toISOString().slice(0, 10)}\nupdated: ${new Date().toISOString().slice(0, 10)}\ntitle: ${title}\n---\n\n# ${title}\n\n## Statement\n\n${statement}\n\n## Motivation\n\nSeeded by Maff first-run initialization.\n\n## Decision log\n\n`)
-  }
 }
 
 export function requireAuth(requiredScope?: string) {

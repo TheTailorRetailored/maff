@@ -12,9 +12,6 @@ import { mcpServerVersion, mcpToolsListResult } from "../mcp/server.js"
 import { rebuildQuartz, quartzStatus } from "../mcp/tools/siteTools.js"
 import { registerAuthDebugRoutes } from "./authDebug.js"
 import { registerWorkspaceRoutes } from "./workspaces.js"
-import { registerNodeRoutes } from "./nodes.js"
-import { registerGraphRoutes } from "./graph.js"
-import { registerTaskRoutes } from "./tasks.js"
 import { registerLeanRoutes } from "./lean.js"
 import { registerResearchRuntimeRoutes } from "./research.js"
 import { asyncHandler } from "./asyncHandler.js"
@@ -24,9 +21,6 @@ export function apiRouter() {
   router.use(requireAuth())
   registerAuthDebugRoutes(router)
   registerWorkspaceRoutes(router)
-  registerNodeRoutes(router)
-  registerGraphRoutes(router)
-  registerTaskRoutes(router)
   registerLeanRoutes(router)
   registerResearchRuntimeRoutes(router)
 
