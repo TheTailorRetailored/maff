@@ -50,6 +50,11 @@ for (const prop of ["project_id", "claim_id", "strategy_markdown", "required_lem
   assert.ok(routeProps[prop], `create_proof_route schema must advertise ${prop}`)
 }
 
+const submitReport = toolDefinitions.find((tool) => tool.name === "submit_report_for_review")
+assert.ok(submitReport, "missing MCP tool submit_report_for_review")
+assert.deepEqual((submitReport.inputSchema as { required?: string[] }).required, ["workspace_id"])
+assert.deepEqual((submitReport.inputSchema as { anyOf?: unknown[] }).anyOf, [{ required: ["report_id"] }, { required: ["workstream_id"] }], "submit_report_for_review must require report_id or workstream_id")
+
 assert.equal(mcpServerVersion, "0.4.0-co-mathematician-runtime")
 const toolsList = mcpToolsListResult()
 const toolsListNames = new Set(toolsList.tools.map((tool) => tool.name))

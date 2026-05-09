@@ -633,12 +633,22 @@ export async function createOrUpdateWorkstreamReport(input: { workspaceId: strin
 }
 
 export async function submitReportForReview(input: { workspaceId: string; reportId?: string; workstreamId?: string }) {
+  if (!input.reportId && !input.workstreamId) {
+    throw new Error("submitReportForReview requires reportId or workstreamId.")
+  }
   const report = input.reportId
     ? await prisma.workstreamReport.findFirstOrThrow({ where: { workspaceId: input.workspaceId, id: input.reportId } })
     : await prisma.workstreamReport.findFirstOrThrow({ where: { workspaceId: input.workspaceId, workstreamId: input.workstreamId }, orderBy: { updatedAt: "desc" } })
   const submitted = await prisma.workstreamReport.update({ where: { id: report.id, workspaceId: input.workspaceId }, data: { status: "submitted", submittedAt: new Date() } })
-  await prisma.workstream.update({ where: { id: submitted.workstreamId, workspaceId: input.workspaceId }, data: { status: "needs_review", reportId: submitted.id } })
-  return submitted
+  const workstream = await prisma.workstream.update({ where: { id: submitted.workstreamId, workspaceId: input.workspaceId }, data: { status: "needs_review", reportId: submitted.id } })
+  return {
+    ok: true,
+    report_id: submitted.id,
+    workstream_id: submitted.workstreamId,
+    report_status: submitted.status,
+    submitted_at: submitted.submittedAt,
+    workstream_status: workstream.status
+  }
 }
 
 export async function submitWorkstreamReport(input: Parameters<typeof createOrUpdateWorkstreamReport>[0]) {
