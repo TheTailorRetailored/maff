@@ -23,6 +23,10 @@ const tool = (name: string, description: string, role: WorkspaceRole, inputSchem
 export const mcpServerVersion = "0.4.0-co-mathematician-runtime"
 
 export const toolDefinitions: ToolDef[] = [
+  tool("get_my_maff_context", "Recover where the user is up to. Infers the user's workspace, summarizes active projects, ready assignments, reports needing review, and suggested simple chat prompts.", "viewer", objectSchema({ workspace: s, project: s })),
+  tool("claim_next_assignment", "No-id specialist entrypoint. Infers workspace and project, claims the next ready assignment by natural project name and optional role/kind, starts an AgentRun by default, and returns the briefing.", "editor", objectSchema({ workspace: s, project: s, role: s, kind: s, session_id: s, model: s, lease_minutes: n, start_run: { type: "boolean" } })),
+  tool("claim_next_review", "No-id reviewer entrypoint. Infers workspace and project, finds the next report needing review, starts a HostileReviewer AgentRun by default, and returns a review-only briefing.", "editor", objectSchema({ workspace: s, project: s, session_id: s, model: s, lease_minutes: n, start_run: { type: "boolean" } })),
+
   tool("list_workspaces", "List workspaces visible to the authenticated user.", "viewer", objectSchema({})),
   tool("create_project", "Create a Maff research project. Projects coordinate approved goals and workstreams.", "editor", objectSchema({ workspace_id: s, title: s, area: s, statement: s, slug: s }, ["workspace_id", "title", "statement"])),
   tool("get_project", "Read a Maff project.", "viewer", objectSchema({ workspace_id: s, project_id: s }, ["workspace_id", "project_id"])),
@@ -113,6 +117,9 @@ async function callTool(toolName: string, args: any, ctx: ToolContext) {
   const workspaceId = workspaceIdFrom(args)
   const userId = ctx.userId
   switch (toolName) {
+    case "get_my_maff_context": return runtime.getMyMaffContext({ userId, workspaceRef: args.workspace, project: args.project })
+    case "claim_next_assignment": return runtime.claimNextAssignment({ userId, workspaceRef: args.workspace, project: args.project, role: args.role, kind: args.kind, sessionId: args.session_id, model: args.model, leaseMinutes: args.lease_minutes, startRun: args.start_run })
+    case "claim_next_review": return runtime.claimNextReview({ userId, workspaceRef: args.workspace, project: args.project, sessionId: args.session_id, model: args.model, leaseMinutes: args.lease_minutes, startRun: args.start_run })
     case "list_workspaces": return runtime.listWorkspacesForUser(userId)
     case "create_project": return runtime.createProject({ workspaceId, slug: args.slug, title: args.title, area: args.area, statement: args.statement, userId })
     case "get_project": return runtime.getProject(workspaceId, args.project_id)

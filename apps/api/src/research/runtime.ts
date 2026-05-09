@@ -1,9 +1,11 @@
 import fs from "node:fs/promises"
 import path from "node:path"
+import { randomUUID } from "node:crypto"
 import type { AgentRole, ClaimStatus, Prisma, WorkstreamKind } from "@prisma/client"
 import { prisma } from "../db/prisma.js"
 import { config } from "../config.js"
 import { leanClient } from "../lean/leanClient.js"
+import { requireWorkspaceRole } from "../auth/permissions.js"
 
 const roleRecipeFiles: Record<AgentRole, string> = {
   ProjectCoordinator: "project_coordinator.md",
@@ -38,6 +40,8 @@ const roleByKind: Record<WorkstreamKind, AgentRole> = {
   triage: "TriageAgent"
 }
 
+const kindByRole = Object.fromEntries(Object.entries(roleByKind).map(([kind, role]) => [role, kind])) as Partial<Record<AgentRole, WorkstreamKind>>
+
 const allowedWritesByRole: Record<AgentRole, string[]> = {
   ProjectCoordinator: ["Project", "ProjectGoal", "Workstream", "AgentMessage"],
   WorkstreamCoordinator: ["Workstream", "WorkstreamReport", "AgentMessage"],
@@ -57,6 +61,85 @@ const allowedWritesByRole: Record<AgentRole, string[]> = {
 
 function slugify(value: string) {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 80) || `project-${Date.now()}`
+}
+
+function normalizeLookup(value?: string) {
+  return value?.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim().replace(/\s+/g, " ")
+}
+
+function normalizeEnumToken(value?: string) {
+  return value?.trim().replace(/[\s-]+/g, "_")
+}
+
+function asAgentRole(value?: string): AgentRole | undefined {
+  if (!value) return undefined
+  const token = normalizeEnumToken(value)
+  const roles = Object.keys(roleRecipeFiles) as AgentRole[]
+  return roles.find((role) => role.toLowerCase() === token?.toLowerCase() || role.toLowerCase() === `${token}Agent`.toLowerCase())
+}
+
+function asWorkstreamKind(value?: string): WorkstreamKind | undefined {
+  if (!value) return undefined
+  const token = normalizeEnumToken(value)
+  const kinds = Object.keys(roleByKind) as WorkstreamKind[]
+  return kinds.find((kind) => kind.toLowerCase() === token?.toLowerCase())
+}
+
+function agentChatPrompt(projectTitle: string, role: AgentRole) {
+  return `Use Maff. I am a ${role} for ${projectTitle}. Claim my next assignment and follow the briefing.`
+}
+
+function reviewerChatPrompt(projectTitle: string) {
+  return `Use Maff. I am a HostileReviewer for ${projectTitle}. Review the next report needing review.`
+}
+
+function coordinatorChatPrompt(projectTitle: string) {
+  return `Use Maff. Coordinate the ${projectTitle} project and tell me what needs attention next. Include short prompts I can paste into specialist or reviewer chats.`
+}
+
+function workstreamWhereForRole(role?: AgentRole, kind?: WorkstreamKind) {
+  const inferredKind = kind ?? (role ? kindByRole[role] : undefined)
+  return {
+    ...(inferredKind ? { kind: inferredKind } : {}),
+    ...(role ? { coordinatorRole: role } : {})
+  }
+}
+
+async function resolveWorkspaceForUser(userId: string, workspaceRef?: string) {
+  if (workspaceRef) {
+    const workspace = await prisma.workspace.findFirst({
+      where: {
+        OR: [{ id: workspaceRef }, { slug: workspaceRef }],
+        members: { some: { userId } }
+      }
+    })
+    if (!workspace) throw new Error(`No accessible workspace found for ${workspaceRef}.`)
+    return workspace
+  }
+
+  const workspaces = await prisma.workspace.findMany({
+    where: { members: { some: { userId } } },
+    orderBy: [{ type: "asc" }, { createdAt: "asc" }]
+  })
+  const privateWorkspace = workspaces.find((workspace) => workspace.type === "private")
+  const workspace = privateWorkspace ?? workspaces[0]
+  if (!workspace) throw new Error("No accessible Maff workspace found.")
+  return workspace
+}
+
+async function resolveProject(workspaceId: string, projectRef?: string) {
+  if (!projectRef) return undefined
+  const normalized = normalizeLookup(projectRef)
+  const projects = await prisma.project.findMany({ where: { workspaceId }, orderBy: { updatedAt: "desc" } })
+  const project = projects.find((candidate) => candidate.id === projectRef)
+    ?? projects.find((candidate) => candidate.slug === projectRef)
+    ?? projects.find((candidate) => normalizeLookup(candidate.title) === normalized)
+    ?? projects.find((candidate) => normalizeLookup(candidate.title)?.includes(normalized ?? ""))
+  if (!project) {
+    const options = projects.map((candidate) => candidate.title).slice(0, 8)
+    throw new Error(`No project matched "${projectRef}". Available projects: ${options.join("; ") || "none"}.`)
+  }
+  return project
 }
 
 function jsonArray(value: unknown): Prisma.InputJsonValue {
@@ -320,6 +403,177 @@ export async function claimAgentAssignment(input: { workspaceId: string; project
     data: { status: "claimed", claimedSessionId: input.sessionId, assignedToUserId: input.userId, leaseExpiresAt }
   })
   return { assignment: claimed, briefing: await getAgentBriefing(input.workspaceId, claimed.id) }
+}
+
+export async function getMyMaffContext(input: { userId: string; workspaceRef?: string; project?: string }) {
+  const workspace = await resolveWorkspaceForUser(input.userId, input.workspaceRef)
+  const project = await resolveProject(workspace.id, input.project)
+  const projects = project ? [project] : await prisma.project.findMany({ where: { workspaceId: workspace.id }, orderBy: { updatedAt: "desc" }, take: 12 })
+  const controlRooms = await Promise.all(projects.slice(0, 4).map((item) => getProjectControlRoom(workspace.id, item.id)))
+  const nextAssignments = await prisma.workstream.findMany({
+    where: {
+      workspaceId: workspace.id,
+      projectId: project?.id,
+      status: { in: ["ready", "planned", "revision_required"] }
+    },
+    include: { project: true, goal: true },
+    orderBy: [{ priority: "desc" }, { updatedAt: "asc" }],
+    take: 8
+  })
+  const reviewQueue = await prisma.workstream.findMany({
+    where: { workspaceId: workspace.id, projectId: project?.id, status: "needs_review" },
+    include: { project: true, reports: { orderBy: { updatedAt: "desc" }, take: 1 } },
+    orderBy: { updatedAt: "asc" },
+    take: 8
+  })
+  const running = await prisma.workstream.findMany({
+    where: { workspaceId: workspace.id, projectId: project?.id, status: { in: ["claimed", "running", "blocked", "escalated"] } },
+    include: { project: true },
+    orderBy: { updatedAt: "desc" },
+    take: 8
+  })
+  return {
+    workspace,
+    active_project: project ?? null,
+    projects,
+    control_rooms: controlRooms,
+    next_assignments: nextAssignments,
+    review_queue: reviewQueue,
+    attention: {
+      needs_review: reviewQueue.length,
+      ready_or_revision_assignments: nextAssignments.length,
+      running_or_blocked: running
+    },
+    suggested_chat_prompts: {
+      coordinator: project ? coordinatorChatPrompt(project.title) : "Use Maff. Show me my active projects, what needs attention next, and short prompts I can paste into project coordinator, specialist, or reviewer chats.",
+      specialist: nextAssignments[0] ? agentChatPrompt(nextAssignments[0].project.title, nextAssignments[0].coordinatorRole) : null,
+      reviewer: reviewQueue[0] ? reviewerChatPrompt(reviewQueue[0].project.title) : null
+    }
+  }
+}
+
+export async function claimNextAssignment(input: {
+  userId: string
+  workspaceRef?: string
+  project?: string
+  role?: string
+  kind?: string
+  sessionId?: string
+  model?: string
+  leaseMinutes?: number
+  startRun?: boolean
+}) {
+  const workspace = await resolveWorkspaceForUser(input.userId, input.workspaceRef)
+  await requireWorkspaceRole(input.userId, workspace.id, "editor")
+  const sessionId = input.sessionId ?? `maff-${randomUUID()}`
+  const role = asAgentRole(input.role)
+  const kind = asWorkstreamKind(input.kind)
+  const project = await resolveProject(workspace.id, input.project)
+  const filters = workstreamWhereForRole(role, kind)
+  const workstream = await prisma.workstream.findFirst({
+    where: {
+      workspaceId: workspace.id,
+      projectId: project?.id,
+      status: { in: ["ready", "planned", "revision_required"] },
+      ...filters
+    },
+    include: { project: true, goal: true },
+    orderBy: [{ priority: "desc" }, { updatedAt: "asc" }]
+  })
+  if (!workstream) {
+    const available = await prisma.workstream.findMany({
+      where: { workspaceId: workspace.id, projectId: project?.id, status: { in: ["ready", "planned", "revision_required", "needs_review", "blocked", "escalated"] } },
+      include: { project: true },
+      orderBy: [{ status: "asc" }, { priority: "desc" }, { updatedAt: "asc" }],
+      take: 10
+    })
+    return {
+      workspace,
+      project: project ?? null,
+      assignment: null,
+      briefing: null,
+      message: "No ready assignment matched that project/role/kind.",
+      available_workstreams: available
+    }
+  }
+  const claimed = await claimAgentAssignment({ workspaceId: workspace.id, projectId: project?.id, workstreamId: workstream.id, sessionId, userId: input.userId, leaseMinutes: input.leaseMinutes })
+  const agentRun = input.startRun === false ? null : await startAgentRun({ workspaceId: workspace.id, workstreamId: claimed.assignment.id, sessionId, model: input.model })
+  return {
+    workspace,
+    project: workstream.project,
+    assignment: claimed.assignment,
+    briefing: agentRun?.briefing ?? claimed.briefing,
+    agent_run: agentRun?.agentRun ?? null,
+    session_id: sessionId,
+    prompt_to_agent: "Follow the returned briefing. Create only allowed objects. Submit a WorkstreamReport for review. Do not complete the workstream or mark claims proved."
+  }
+}
+
+export async function claimNextReview(input: { userId: string; workspaceRef?: string; project?: string; sessionId?: string; model?: string; leaseMinutes?: number; startRun?: boolean }) {
+  const workspace = await resolveWorkspaceForUser(input.userId, input.workspaceRef)
+  await requireWorkspaceRole(input.userId, workspace.id, "editor")
+  const sessionId = input.sessionId ?? `maff-${randomUUID()}`
+  const project = await resolveProject(workspace.id, input.project)
+  const leaseExpiresAt = new Date(Date.now() + (input.leaseMinutes ?? 120) * 60_000)
+  const workstream = await prisma.workstream.findFirst({
+    where: { workspaceId: workspace.id, projectId: project?.id, status: "needs_review" },
+    include: { project: true, goal: true, reports: { orderBy: { updatedAt: "desc" }, take: 1 } },
+    orderBy: [{ priority: "desc" }, { updatedAt: "asc" }]
+  })
+  if (!workstream) {
+    return {
+      workspace,
+      project: project ?? null,
+      assignment: null,
+      briefing: null,
+      message: "No report currently needs review for that scope."
+    }
+  }
+  await prisma.workstream.update({
+    where: { id: workstream.id, workspaceId: workspace.id },
+    data: { claimedSessionId: sessionId, assignedToUserId: input.userId, leaseExpiresAt }
+  })
+  const baseBriefing = await getAgentBriefing(workspace.id, workstream.id)
+  const briefing = {
+    ...baseBriefing,
+    role: "HostileReviewer",
+    report: workstream.reports[0] ?? null,
+    allowed_writes: ["ReviewRound", "AgentMessage"],
+    forbidden_actions: [
+      "Do not edit the report or reviewed mathematical objects.",
+      "Do not approve your own work from the same AgentRun.",
+      "Do not complete the Workstream directly."
+    ],
+    output_contract: {
+      required_sections: ["Verdict", "Major issues", "Required changes", "Checked references"],
+      required_tool_calls: ["record_review_round"]
+    },
+    completion_options: ["record_review_round"]
+  }
+  const agentRun = input.startRun === false ? null : await prisma.agentRun.create({
+    data: {
+      workspaceId: workspace.id,
+      projectId: workstream.projectId,
+      workstreamId: workstream.id,
+      role: "HostileReviewer",
+      status: "running",
+      model: input.model,
+      sessionId,
+      inputBriefing: briefing as Prisma.InputJsonValue,
+      toolCalls: [],
+      createdObjectRefs: [],
+      updatedObjectRefs: []
+    }
+  })
+  return {
+    workspace,
+    project: workstream.project,
+    assignment: workstream,
+    briefing,
+    agent_run: agentRun,
+    session_id: sessionId,
+    prompt_to_agent: "Review the submitted report only and create a ReviewRound. Do not edit the reviewed objects."
+  }
 }
 
 export async function startAgentRun(input: { workspaceId: string; workstreamId: string; sessionId: string; model?: string }) {
@@ -700,6 +954,16 @@ export async function getProjectControlRoom(workspaceId: string, projectId: stri
     prisma.reviewRound.findMany({ where: { workspaceId, projectId }, orderBy: { createdAt: "desc" }, take: 12 })
   ])
   const suggested = workstreams.find((w) => ["ready", "planned", "revision_required"].includes(w.status)) ?? null
+  const suggestedPrompts = {
+    coordinator: coordinatorChatPrompt(project.title),
+    next_specialist: suggested ? agentChatPrompt(project.title, suggested.coordinatorRole) : null,
+    next_reviewer: needsReview[0] ? reviewerChatPrompt(project.title) : null,
+    ready_specialists: workstreams
+      .filter((w) => ["ready", "planned", "revision_required"].includes(w.status))
+      .slice(0, 6)
+      .map((w) => ({ workstreamId: w.id, title: w.title, role: w.coordinatorRole, kind: w.kind, prompt: agentChatPrompt(project.title, w.coordinatorRole) })),
+    review_chats: needsReview.slice(0, 6).map((w) => ({ workstreamId: w.id, title: w.title, prompt: reviewerChatPrompt(project.title) }))
+  }
   const groupedGoals = goals.reduce<Record<string, typeof goals>>((acc, goal) => {
     ;(acc[goal.status] ??= []).push(goal)
     return acc
@@ -708,5 +972,5 @@ export async function getProjectControlRoom(workspaceId: string, projectId: stri
     ;(acc[workstream.status] ??= []).push(workstream)
     return acc
   }, {})
-  return { project, goals_by_status: groupedGoals, workstreams_by_status: groupedWorkstreams, needs_review: needsReview, blocked_or_escalated: blocked, recent_agent_runs: recentAgentRuns, key_claims: keyClaims, open_gaps: openGaps, recent_reviews: reviews, suggested_next_assignment: suggested }
+  return { project, goals_by_status: groupedGoals, workstreams_by_status: groupedWorkstreams, needs_review: needsReview, blocked_or_escalated: blocked, recent_agent_runs: recentAgentRuns, key_claims: keyClaims, open_gaps: openGaps, recent_reviews: reviews, suggested_next_assignment: suggested, suggested_chat_prompts: suggestedPrompts }
 }

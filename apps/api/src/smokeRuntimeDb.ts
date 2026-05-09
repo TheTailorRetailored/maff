@@ -19,9 +19,14 @@ const goal = await runtime.approveProjectGoal({ workspaceId: workspace.id, goalI
 assert.equal(goal.status, "approved")
 
 const workstream = await runtime.createWorkstream({ workspaceId: workspace.id, projectId: project.id, goalId: goal.id, title: "Proof route generation", kind: "proof_route_generation", instructions: "Create claims and routes." })
-const assignment = await runtime.claimAgentAssignment({ workspaceId: workspace.id, projectId: project.id, workstreamId: workstream.id, sessionId: `session-${suffix}`, userId: user.id })
+const context = await runtime.getMyMaffContext({ userId: user.id, project: "vertical slice" })
+assert.equal(context.active_project?.id, project.id)
+const ergonomicClaim = await runtime.claimNextAssignment({ userId: user.id, project: "vertical slice", role: "ProofRouteAgent", sessionId: `session-${suffix}`, model: "smoke" })
+assert.equal(ergonomicClaim.assignment?.id, workstream.id)
+assert.equal(ergonomicClaim.agent_run?.role, "ProofRouteAgent")
+const assignment = await runtime.claimAgentAssignment({ workspaceId: workspace.id, projectId: project.id, workstreamId: workstream.id, sessionId: `session-${suffix}-direct`, userId: user.id })
 assert.equal(assignment.briefing.role, "ProofRouteAgent")
-const run = await runtime.startAgentRun({ workspaceId: workspace.id, workstreamId: workstream.id, sessionId: `session-${suffix}`, model: "smoke" })
+const run = await runtime.startAgentRun({ workspaceId: workspace.id, workstreamId: workstream.id, sessionId: `session-${suffix}-direct`, model: "smoke" })
 assert.equal(run.agentRun.role, "ProofRouteAgent")
 
 const claim = await runtime.createClaim({ workspaceId: workspace.id, projectId: project.id, title: "Smoke claim", statementMarkdown: "Every smoke test has a review gate.", kind: "conjecture", actorRole: "ProofRouteAgent" })

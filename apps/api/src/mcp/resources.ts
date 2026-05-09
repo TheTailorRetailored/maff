@@ -9,7 +9,7 @@ import * as runtime from "../research/runtime.js"
 
 type ResourceContext = { userId: string; claims: AuthClaims }
 
-const introText = "Maff is a Co-Mathematician-style mathematical research operating system. Projects have explicit goals; specialist chats claim Workstreams; AgentRuns produce Reports; ReviewRounds gate completion; typed mathematical objects form the durable research graph."
+const introText = "Maff is a Co-Mathematician-style mathematical research operating system. Projects have explicit goals; specialist chats claim Workstreams; AgentRuns produce Reports; ReviewRounds gate completion; typed mathematical objects form the durable research graph. For simple new chats, start with get_my_maff_context, claim_next_assignment, or claim_next_review instead of asking the user for internal ids."
 
 async function requireViewer(ctx: ResourceContext, workspaceId: string) {
   return requireWorkspaceRole(ctx.userId, workspaceId, "viewer")
@@ -24,6 +24,7 @@ export async function listResources(ctx: ResourceContext) {
   return {
     resources: [
       { uri: "maff://intro", name: "Maff v2 introduction", mimeType: "text/plain" },
+      { uri: "maff://my-context", name: "My Maff context", mimeType: "application/json" },
       ...workspaces.flatMap((workspace) => [
         { uri: `workspace://${workspace.id}/manifest`, name: `${workspace.name} manifest`, mimeType: "application/json" },
         { uri: `workspace://${workspace.id}/projects`, name: `${workspace.name} projects`, mimeType: "application/json" },
@@ -41,6 +42,7 @@ export async function listResources(ctx: ResourceContext) {
 export async function readResource(uri: string, ctx: ResourceContext) {
   const [scheme, rest] = uri.split("://")
   if (scheme === "maff" && rest === "intro") return introText
+  if (scheme === "maff" && rest === "my-context") return runtime.getMyMaffContext({ userId: ctx.userId })
   if (scheme === "workspace") {
     const [workspaceId, kind] = rest.split("/")
     const membership = await requireViewer(ctx, workspaceId)

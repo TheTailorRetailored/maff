@@ -11,6 +11,9 @@ assert.deepEqual(extractWikilinks("See [[Problem - A]] and [[Lemma|alias]]."), [
 
 for (const name of [
   "create_project",
+  "get_my_maff_context",
+  "claim_next_assignment",
+  "claim_next_review",
   "propose_project_goal",
   "approve_project_goal",
   "create_workstream",
@@ -50,7 +53,7 @@ for (const prop of ["project_id", "claim_id", "strategy_markdown", "required_lem
 assert.equal(mcpServerVersion, "0.4.0-co-mathematician-runtime")
 const toolsList = mcpToolsListResult()
 const toolsListNames = new Set(toolsList.tools.map((tool) => tool.name))
-for (const name of ["create_project", "propose_project_goal", "approve_project_goal", "create_workstream", "claim_agent_assignment", "start_agent_run", "submit_workstream_report", "record_review_round", "complete_workstream", "create_claim", "create_proof_route", "create_proof_attempt", "create_gap"]) {
+for (const name of ["get_my_maff_context", "claim_next_assignment", "claim_next_review", "create_project", "propose_project_goal", "approve_project_goal", "create_workstream", "claim_agent_assignment", "start_agent_run", "submit_workstream_report", "record_review_round", "complete_workstream", "create_claim", "create_proof_route", "create_proof_attempt", "create_gap"]) {
   assert.ok(toolsListNames.has(name), `tools/list missing ${name}`)
 }
 for (const name of ["maff_bootstrap", "start_workflow", "complete_workflow", "create_task", "claim_task", "get_node", "search_nodes", "list_problem_graphs", "update_node_metadata", "get_skill_pack"]) {

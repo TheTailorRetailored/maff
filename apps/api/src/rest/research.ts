@@ -5,6 +5,43 @@ import * as runtime from "../research/runtime.js"
 import { asyncHandler } from "./asyncHandler.js"
 
 export function registerResearchRuntimeRoutes(router: Router) {
+  router.get("/research/context", asyncHandler(async (req, res) => {
+    const user = requireUser(req)
+    res.json(await runtime.getMyMaffContext({
+      userId: user.id,
+      workspaceRef: typeof req.query.workspace === "string" ? req.query.workspace : undefined,
+      project: typeof req.query.project === "string" ? req.query.project : undefined
+    }))
+  }))
+
+  router.post("/research/claim-next-assignment", asyncHandler(async (req, res) => {
+    const user = requireUser(req)
+    res.json(await runtime.claimNextAssignment({
+      userId: user.id,
+      workspaceRef: req.body.workspace,
+      project: req.body.project,
+      role: req.body.role,
+      kind: req.body.kind,
+      sessionId: req.body.sessionId,
+      model: req.body.model,
+      leaseMinutes: req.body.leaseMinutes,
+      startRun: req.body.startRun
+    }))
+  }))
+
+  router.post("/research/claim-next-review", asyncHandler(async (req, res) => {
+    const user = requireUser(req)
+    res.json(await runtime.claimNextReview({
+      userId: user.id,
+      workspaceRef: req.body.workspace,
+      project: req.body.project,
+      sessionId: req.body.sessionId,
+      model: req.body.model,
+      leaseMinutes: req.body.leaseMinutes,
+      startRun: req.body.startRun
+    }))
+  }))
+
   router.get("/workspaces/:id/projects", asyncHandler(async (req, res) => {
     const user = requireUser(req)
     await requireWorkspaceRole(user.id, req.params.id, "viewer")
