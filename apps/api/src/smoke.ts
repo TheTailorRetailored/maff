@@ -2,7 +2,7 @@ import assert from "node:assert/strict"
 import path from "node:path"
 import { assertInsideRoot } from "./vault/paths.js"
 import { extractWikilinks } from "./vault/wikilinks.js"
-import { mcpServerVersion, mcpToolsListResult, toolDefinitions } from "./mcp/server.js"
+import { compactToolResult, mcpServerVersion, mcpToolsListResult, toolDefinitions } from "./mcp/server.js"
 
 const root = path.resolve("tmp-workspace")
 assert.equal(assertInsideRoot(root, path.join(root, "vault", "A.md")), path.resolve(root, "vault", "A.md"))
@@ -75,5 +75,38 @@ assert.ok((markLeanVerified.inputSchema.properties as Record<string, unknown>).l
 const leanCheck = toolDefinitions.find((tool) => tool.name === "lean_check")
 assert.ok(leanCheck, "missing lean_check")
 assert.ok((leanCheck.inputSchema.properties as Record<string, unknown>).lean_theorem_id, "lean_check must advertise typed lean_theorem_id")
+
+const compactReviewClaim = compactToolResult("claim_next_review", {
+  workspace: { id: "w", slug: "s", name: "Workspace", type: "private", ownerUserId: "u" },
+  project: { id: "p", slug: "proj", title: "Project", area: "math", statement: "Long statement", status: "active", coordinatorSummary: "Long summary" },
+  assignment: { id: "ws", title: "review", kind: "literature_review", status: "needs_review", priority: 1, coordinatorRole: "LiteratureAgent", reportId: "r", instructions: "Long instructions" },
+  briefing: {
+    role: "HostileReviewer",
+    project: { id: "p", slug: "proj", title: "Project", area: "math", statement: "Long statement", status: "active", coordinatorSummary: "Long summary" },
+    workstream: { id: "ws", title: "review", kind: "literature_review", status: "needs_review", priority: 1, coordinatorRole: "LiteratureAgent", reportId: "r", instructions: "Long instructions" },
+    report: { id: "r", title: "Report", status: "submitted", bodyMarkdown: "Very long body", linkedObjectRefs: ["a"], artifactRefs: [], uncertaintyNotes: [] },
+    related_known_results: [{ id: "k1" }, { id: "k2" }]
+  },
+  agent_run: { id: "run", role: "HostileReviewer", status: "running", model: "gpt", sessionId: "sess", startedAt: "now" },
+  session_id: "sess"
+}) as Record<string, any>
+assert.equal(compactReviewClaim.assignment.report_id, "r")
+assert.equal(compactReviewClaim.briefing.report.bodyMarkdown, undefined)
+assert.equal(compactReviewClaim.briefing.related_known_result_count, 2)
+
+const compactReport = compactToolResult("get_report", {
+  id: "r",
+  title: "Report",
+  status: "submitted",
+  bodyMarkdown: "A".repeat(500),
+  linkedObjectRefs: ["a", "b"],
+  artifactRefs: [],
+  uncertaintyNotes: ["u"],
+  workstream: { id: "ws", title: "w", kind: "literature_review", status: "needs_review", priority: 1, coordinatorRole: "LiteratureAgent" },
+  reviews: [{ id: "rev", verdict: "approved", bodyMarkdown: "Looks good" }]
+}) as Record<string, any>
+assert.equal(compactReport.report.bodyMarkdown, undefined)
+assert.equal(compactReport.report.review_count, 1)
+assert.equal(compactReport.workstream.id, "ws")
 
 console.log("Maff v2 smoke checks passed")

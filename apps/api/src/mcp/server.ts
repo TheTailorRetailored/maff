@@ -186,6 +186,11 @@ function contentResult(value: unknown) {
   }
 }
 
+function clip(text: unknown, max = 280) {
+  if (typeof text !== "string") return undefined
+  return text.length > max ? `${text.slice(0, max - 1)}...` : text
+}
+
 function compactWorkspace(workspace: any) {
   if (!workspace) return workspace
   return { id: workspace.id, slug: workspace.slug, name: workspace.name, type: workspace.type }
@@ -193,7 +198,29 @@ function compactWorkspace(workspace: any) {
 
 function compactProject(project: any) {
   if (!project) return project
-  return { id: project.id, slug: project.slug, title: project.title, status: project.status }
+  return {
+    id: project.id,
+    slug: project.slug,
+    title: project.title,
+    area: project.area,
+    status: project.status,
+    statement_preview: clip(project.statement, 220),
+    coordinator_summary_preview: clip(project.coordinatorSummary, 220),
+    current_working_paper_id: project.currentWorkingPaperId
+  }
+}
+
+function compactGoal(goal: any) {
+  if (!goal) return goal
+  return {
+    id: goal.id,
+    title: goal.title,
+    status: goal.status,
+    priority: goal.priority,
+    statement_preview: clip(goal.statement, 220),
+    success_criteria_count: Array.isArray(goal.successCriteria) ? goal.successCriteria.length : undefined,
+    dependency_count: Array.isArray(goal.dependencies) ? goal.dependencies.length : undefined
+  }
 }
 
 function compactWorkstream(workstream: any) {
@@ -205,7 +232,14 @@ function compactWorkstream(workstream: any) {
     status: workstream.status,
     priority: workstream.priority,
     coordinator_role: workstream.coordinatorRole,
-    report_id: workstream.reportId
+    report_id: workstream.reportId,
+    goal_id: workstream.goalId,
+    target_object_type: workstream.targetObjectType,
+    target_object_id: workstream.targetObjectId,
+    instructions_preview: clip(workstream.instructions, 220),
+    success_criteria_count: Array.isArray(workstream.successCriteria) ? workstream.successCriteria.length : undefined,
+    allowed_write_count: Array.isArray(workstream.allowedWrites) ? workstream.allowedWrites.length : undefined,
+    forbidden_action_count: Array.isArray(workstream.forbiddenActions) ? workstream.forbiddenActions.length : undefined
   }
 }
 
@@ -220,9 +254,28 @@ function compactReport(report: any) {
     status: report.status,
     submitted_at: report.submittedAt,
     updated_at: report.updatedAt,
+    body_preview: clip(report.bodyMarkdown, 220),
     linked_object_ref_count: linkedRefs,
     artifact_ref_count: artifactRefs,
-    uncertainty_note_count: uncertaintyNotes
+    uncertainty_note_count: uncertaintyNotes,
+    review_count: Array.isArray(report.reviews) ? report.reviews.length : undefined
+  }
+}
+
+function compactReview(review: any) {
+  if (!review) return review
+  return {
+    id: review.id,
+    report_id: review.reportId,
+    target_object_type: review.targetObjectType,
+    target_object_id: review.targetObjectId,
+    reviewer_role: review.reviewerRole,
+    verdict: review.verdict,
+    issue_count: Array.isArray(review.issues) ? review.issues.length : undefined,
+    required_change_count: Array.isArray(review.requiredChanges) ? review.requiredChanges.length : undefined,
+    checked_ref_count: Array.isArray(review.checkedRefs) ? review.checkedRefs.length : undefined,
+    body_preview: clip(review.bodyMarkdown, 220),
+    created_at: review.createdAt
   }
 }
 
@@ -234,7 +287,10 @@ function compactAgentRun(agentRun: any) {
     status: agentRun.status,
     model: agentRun.model,
     session_id: agentRun.sessionId,
-    started_at: agentRun.startedAt
+    started_at: agentRun.startedAt,
+    finished_at: agentRun.finishedAt,
+    output_summary_preview: clip(agentRun.outputSummary, 220),
+    tool_call_count: Array.isArray(agentRun.toolCalls) ? agentRun.toolCalls.length : undefined
   }
 }
 
@@ -242,16 +298,208 @@ function compactBriefing(briefing: any) {
   if (!briefing) return briefing
   return {
     role: briefing.role,
-    project_title: briefing.project_title,
-    workstream_title: briefing.workstream_title,
-    instructions: briefing.instructions,
+    project: compactProject(briefing.project),
+    goal: compactGoal(briefing.goal),
+    workstream: compactWorkstream(briefing.workstream),
+    parent_context: compactWorkstream(briefing.parent_context),
+    role_recipe_preview: clip(briefing.role_recipe, 220),
     report: compactReport(briefing.report),
+    target_objects: Array.isArray(briefing.target_objects) ? briefing.target_objects.map(compactResearchObject) : undefined,
+    relevant_reports: Array.isArray(briefing.relevant_reports) ? briefing.relevant_reports.map(compactReport) : undefined,
+    open_gaps: Array.isArray(briefing.open_gaps) ? briefing.open_gaps.map(compactResearchObject) : undefined,
     allowed_writes: briefing.allowed_writes,
     forbidden_actions: briefing.forbidden_actions,
     success_criteria: briefing.success_criteria,
     output_contract: briefing.output_contract,
     completion_options: briefing.completion_options,
     related_known_result_count: Array.isArray(briefing.related_known_results) ? briefing.related_known_results.length : undefined
+  }
+}
+
+function compactMessage(message: any) {
+  if (!message) return message
+  return {
+    id: message.id,
+    from_role: message.fromRole,
+    to_role: message.toRole,
+    kind: message.kind,
+    body_preview: clip(message.body, 220),
+    artifact_ref_count: Array.isArray(message.artifactRefs) ? message.artifactRefs.length : undefined,
+    created_at: message.createdAt
+  }
+}
+
+function compactArtifact(artifact: any) {
+  if (!artifact) return artifact
+  return {
+    id: artifact.id,
+    kind: artifact.kind,
+    title: artifact.title,
+    uri: artifact.uri,
+    path: artifact.path,
+    created_at: artifact.createdAt
+  }
+}
+
+function compactGraphEdge(edge: any) {
+  if (!edge) return edge
+  return {
+    source_type: edge.sourceType,
+    source_id: edge.sourceId,
+    target_type: edge.targetType,
+    target_id: edge.targetId,
+    edge_type: edge.edgeType
+  }
+}
+
+function compactLeanCheckResult(value: any) {
+  return {
+    result: value.result ? {
+      success: value.result.success,
+      has_sorry: value.result.hasSorry,
+      has_axiom: value.result.hasAxiom,
+      diagnostics_count: Array.isArray(value.result.diagnostics) ? value.result.diagnostics.length : undefined
+    } : undefined,
+    job: value.job ? {
+      id: value.job.id,
+      type: value.job.type,
+      status: value.job.status,
+      started_at: value.job.startedAt,
+      finished_at: value.job.finishedAt
+    } : undefined,
+    lean_theorem: compactResearchObject(value.leanTheorem),
+    verification_gate: value.verificationGate ? {
+      has_sorry: value.verificationGate.hasSorry,
+      has_axiom: value.verificationGate.hasAxiom,
+      active_temporary_or_unproved_assumptions: value.verificationGate.activeTemporaryOrUnprovedAssumptions
+    } : undefined
+  }
+}
+
+function compactResearchObject(value: any) {
+  if (!value) return value
+  if ("claimKind" in value || "confidence" in value) {
+    return { id: value.id, type: "Claim", title: value.title, status: value.status, kind: value.kind, confidence: value.confidence, statement_preview: clip(value.statementMarkdown, 180) }
+  }
+  if ("strategyMarkdown" in value) {
+    return { id: value.id, type: "ProofRoute", title: value.title, status: value.status, first_testable_step: value.firstTestableStep, kill_condition: value.killCondition, strategy_preview: clip(value.strategyMarkdown, 180) }
+  }
+  if ("descriptionMarkdown" in value && "severity" in value) {
+    return { id: value.id, type: "Gap", title: value.title, status: value.status, severity: value.severity, description_preview: clip(value.descriptionMarkdown, 180) }
+  }
+  if ("statementMarkdown" in value && "applicabilityMarkdown" in value) {
+    return { id: value.id, type: "KnownResult", title: value.title, status: value.status, statement_preview: clip(value.statementMarkdown, 180), applicability_preview: clip(value.applicabilityMarkdown, 180) }
+  }
+  if ("notesMarkdown" in value && "authors" in value) {
+    return { id: value.id, type: "Paper", title: value.title, year: value.year, venue: value.venue, url: value.url, notes_preview: clip(value.notesMarkdown, 180) }
+  }
+  if ("statementMarkdown" in value && "type" in value) {
+    return { id: value.id, type: value.type, title: value.title, status: value.status, statement_preview: clip(value.statementMarkdown, 180) }
+  }
+  if ("bodyMarkdown" in value && "routeId" in value) {
+    return { id: value.id, type: "ProofAttempt", status: value.status, gap_summary: clip(value.gapSummary, 180), body_preview: clip(value.bodyMarkdown, 180) }
+  }
+  if ("constructionMarkdown" in value) {
+    return { id: value.id, type: "Counterexample", title: value.title, status: value.status, construction_preview: clip(value.constructionMarkdown, 180) }
+  }
+  if ("hypothesisMarkdown" in value && "methodMarkdown" in value) {
+    return { id: value.id, type: "Experiment", title: value.title, status: value.status, hypothesis_preview: clip(value.hypothesisMarkdown, 180), method_preview: clip(value.methodMarkdown, 180) }
+  }
+  if ("dischargePlan" in value) {
+    return { id: value.id, type: "Assumption", status: value.status, statement_preview: clip(value.statementMarkdown, 180), owner: value.owner, discharge_plan_preview: clip(value.dischargePlan, 180) }
+  }
+  if ("theoremStub" in value) {
+    return { id: value.id, type: "FormalizationTarget", status: value.status, feasibility: value.feasibility, statement_preview: clip(value.statementMarkdown, 180), theorem_stub_preview: clip(value.theoremStub, 180) }
+  }
+  if ("leanName" in value) {
+    return { id: value.id, type: "LeanTheorem", lean_name: value.leanName, status: value.status, proof_file: value.proofFile, has_sorry: value.hasSorry, has_axiom: value.hasAxiom, statement_preview: clip(value.statementMarkdown, 180) }
+  }
+  return value
+}
+
+function compactList(values: any[] | undefined, itemCompactor: (value: any) => any) {
+  return Array.isArray(values) ? values.map(itemCompactor) : values
+}
+
+function takeList(values: any[] | undefined, limit: number, itemCompactor: (value: any) => any) {
+  return Array.isArray(values) ? values.slice(0, limit).map(itemCompactor) : values
+}
+
+function compactContext(value: any) {
+  return {
+    workspace: compactWorkspace(value.workspace),
+    active_project: compactProject(value.active_project),
+    projects: takeList(value.projects, 5, compactProject),
+    control_rooms: takeList(value.control_rooms, 3, compactControlRoomSummary),
+    next_assignments: takeList(value.next_assignments, 5, compactWorkstream),
+    review_queue: takeList(value.review_queue, 5, compactReviewQueueItem),
+    attention: {
+      needs_review: value.attention?.needs_review,
+      ready_or_revision_assignments: value.attention?.ready_or_revision_assignments,
+      running_or_blocked_count: Array.isArray(value.attention?.running_or_blocked) ? value.attention.running_or_blocked.length : undefined,
+      running_or_blocked: takeList(value.attention?.running_or_blocked, 5, compactWorkstream)
+    },
+    suggested_chat_prompts: value.suggested_chat_prompts
+  }
+}
+
+function compactReviewQueueItem(workstream: any) {
+  if (!workstream) return workstream
+  return {
+    ...compactWorkstream(workstream),
+    project: compactProject(workstream.project),
+    latest_report: compactReport(Array.isArray(workstream.reports) ? workstream.reports[0] : undefined)
+  }
+}
+
+function compactControlRoom(value: any) {
+  return {
+    project: compactProject(value.project),
+    goal_counts_by_status: Object.fromEntries(Object.entries(value.goals_by_status ?? {}).map(([k, v]) => [k, Array.isArray(v) ? v.length : 0])),
+    workstream_counts_by_status: Object.fromEntries(Object.entries(value.workstreams_by_status ?? {}).map(([k, v]) => [k, Array.isArray(v) ? v.length : 0])),
+    goals_by_status: Object.fromEntries(Object.entries(value.goals_by_status ?? {}).map(([k, v]) => [k, takeList(v as any[], 2, compactGoal)])),
+    workstreams_by_status: Object.fromEntries(Object.entries(value.workstreams_by_status ?? {}).map(([k, v]) => [k, takeList(v as any[], 3, compactWorkstream)])),
+    needs_review: takeList(value.needs_review, 3, compactWorkstream),
+    blocked_or_escalated: takeList(value.blocked_or_escalated, 3, compactWorkstream),
+    recent_agent_runs: takeList(value.recent_agent_runs, 3, compactAgentRun),
+    key_claims: takeList(value.key_claims, 3, compactResearchObject),
+    open_gaps: takeList(value.open_gaps, 3, compactResearchObject),
+    recent_reviews: takeList(value.recent_reviews, 3, compactReview),
+    suggested_next_assignment: compactWorkstream(value.suggested_next_assignment),
+    suggested_chat_prompts: value.suggested_chat_prompts
+  }
+}
+
+function compactControlRoomSummary(value: any) {
+  return {
+    project: compactProject(value.project),
+    goal_counts_by_status: Object.fromEntries(Object.entries(value.goals_by_status ?? {}).map(([k, v]) => [k, Array.isArray(v) ? v.length : 0])),
+    workstream_counts_by_status: Object.fromEntries(Object.entries(value.workstreams_by_status ?? {}).map(([k, v]) => [k, Array.isArray(v) ? v.length : 0])),
+    needs_review_count: Array.isArray(value.needs_review) ? value.needs_review.length : 0,
+    blocked_or_escalated_count: Array.isArray(value.blocked_or_escalated) ? value.blocked_or_escalated.length : 0,
+    recent_review_count: Array.isArray(value.recent_reviews) ? value.recent_reviews.length : 0,
+    suggested_next_assignment: compactWorkstream(value.suggested_next_assignment)
+  }
+}
+
+function compactWorkstreamDetail(value: any) {
+  return {
+    workstream: compactWorkstream(value),
+    project: compactProject(value.project),
+    goal: compactGoal(value.goal),
+    reports: compactList(value.reports, compactReport),
+    reviews: compactList(value.reviews, compactReview),
+    agent_runs: compactList(value.agentRuns, compactAgentRun),
+    messages: compactList(value.messages, compactMessage),
+    artifacts: compactList(value.artifacts, compactArtifact)
+  }
+}
+
+function compactReportDetail(value: any) {
+  return {
+    report: compactReport(value),
+    workstream: compactWorkstream(value.workstream),
+    reviews: compactList(value.reviews, compactReview)
   }
 }
 
@@ -269,10 +517,46 @@ function compactClaimResponse(value: any) {
   }
 }
 
-function compactToolResult(toolName: string, value: unknown) {
+export function compactToolResult(toolName: string, value: unknown) {
   if (value && typeof value === "object") {
+    if (toolName === "list_workspaces") return compactList(value as any[], compactWorkspace)
+    if (toolName === "create_project" || toolName === "get_project") return compactProject(value)
+    if (toolName === "list_projects") return compactList(value as any[], compactProject)
+    if (toolName === "get_project_control_room") return compactControlRoom(value)
+    if (toolName === "propose_project_goal" || toolName === "approve_project_goal" || toolName === "update_project_goal") return compactGoal(value)
+    if (toolName === "list_project_goals") return compactList(value as any[], compactGoal)
+    if (toolName === "create_workstream") return compactWorkstream(value)
+    if (toolName === "list_workstreams") return compactList(value as any[], compactWorkstream)
+    if (toolName === "get_workstream") return compactWorkstreamDetail(value)
     if (toolName === "claim_next_review" || toolName === "claim_next_assignment") return compactClaimResponse(value)
     if (toolName === "get_agent_briefing") return compactBriefing(value)
+    if (toolName === "claim_agent_assignment") return { assignment: compactWorkstream((value as any).assignment), briefing: compactBriefing((value as any).briefing) }
+    if (toolName === "start_agent_run") return { agent_run: compactAgentRun((value as any).agentRun), briefing: compactBriefing((value as any).briefing) }
+    if (toolName === "get_my_maff_context") return compactContext(value)
+    if (toolName === "write_agent_observation") return compactMessage(value)
+    if (toolName === "mark_workstream_blocked" || toolName === "escalate_workstream" || toolName === "request_workstream_revision" || toolName === "approve_workstream" || toolName === "complete_workstream") return compactWorkstream(value)
+    if (toolName === "create_or_update_workstream_report" || toolName === "submit_workstream_report") return compactReport(value)
+    if (toolName === "record_review_round") return compactReview(value)
+    if (toolName === "list_review_rounds") return compactList(value as any[], compactReview)
+    if (toolName === "get_report") return compactReportDetail(value)
+    if (toolName === "create_artifact") return compactArtifact(value)
+    if (toolName === "link_objects") return compactGraphEdge(value)
+    if (toolName === "lean_check") return compactLeanCheckResult(value)
+    if (toolName === "create_lean_stub") return { result: (value as any).result, lean_theorem: compactResearchObject((value as any).leanTheorem) }
+    if (toolName === "mark_lean_verified") return compactResearchObject(value)
+    if (toolName.startsWith("create_") || toolName === "update_claim_status" || toolName === "resolve_gap") return compactResearchObject(value)
+    if (toolName === "get_object_graph") return {
+      source: compactResearchObject((value as any).source),
+      edges: compactList((value as any).edges, compactGraphEdge),
+      objects: compactList((value as any).objects, compactResearchObject)
+    }
+    if (toolName === "search_research_objects") return {
+      claims: compactList((value as any).claims, compactResearchObject),
+      routes: compactList((value as any).routes, compactResearchObject),
+      gaps: compactList((value as any).gaps, compactResearchObject),
+      papers: compactList((value as any).papers, compactResearchObject),
+      known_results: compactList((value as any).knownResults, compactResearchObject)
+    }
   }
   return value
 }
