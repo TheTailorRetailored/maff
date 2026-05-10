@@ -53,7 +53,10 @@ for (const prop of ["project_id", "claim_id", "strategy_markdown", "required_lem
 const submitReport = toolDefinitions.find((tool) => tool.name === "submit_report_for_review")
 assert.ok(submitReport, "missing MCP tool submit_report_for_review")
 assert.deepEqual((submitReport.inputSchema as { required?: string[] }).required, ["workspace_id"])
-assert.deepEqual((submitReport.inputSchema as { anyOf?: unknown[] }).anyOf, [{ required: ["report_id"] }, { required: ["workstream_id"] }], "submit_report_for_review must require report_id or workstream_id")
+const submitReportProps = submitReport.inputSchema.properties as Record<string, unknown>
+for (const prop of ["report_id", "workstream_id"]) {
+  assert.ok(submitReportProps[prop], `submit_report_for_review schema must advertise ${prop}`)
+}
 
 assert.equal(mcpServerVersion, "0.4.0-co-mathematician-runtime")
 const toolsList = mcpToolsListResult()

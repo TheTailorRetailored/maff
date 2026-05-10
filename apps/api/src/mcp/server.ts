@@ -54,13 +54,7 @@ export const toolDefinitions: ToolDef[] = [
 
   tool("create_or_update_workstream_report", "Create or update the primary report for a workstream.", "editor", objectSchema({ workspace_id: s, workstream_id: s, title: s, body_markdown: s, uncertainty_notes: strArray, linked_object_refs: strArray, artifact_refs: strArray }, ["workspace_id", "workstream_id", "title", "body_markdown"])),
   tool("submit_workstream_report", "Create/update a WorkstreamReport and submit it for mandatory review.", "editor", objectSchema({ workspace_id: s, workstream_id: s, title: s, body_markdown: s, uncertainty_notes: strArray, linked_object_refs: strArray, artifact_refs: strArray }, ["workspace_id", "workstream_id", "title", "body_markdown"])),
-  tool("submit_report_for_review", "Submit an existing report for review.", "editor", {
-    type: "object",
-    properties: { workspace_id: s, report_id: s, workstream_id: s },
-    required: ["workspace_id"],
-    anyOf: [{ required: ["report_id"] }, { required: ["workstream_id"] }],
-    additionalProperties: false
-  }),
+  tool("submit_report_for_review", "Submit an existing report for review. Pass report_id or workstream_id.", "editor", objectSchema({ workspace_id: s, report_id: s, workstream_id: s }, ["workspace_id"])),
   tool("record_review_round", "Record a mandatory review verdict. Reviewer agents may create ReviewRound records only.", "editor", objectSchema({ workspace_id: s, workstream_id: s, report_id: s, target_object_type: s, target_object_id: s, reviewer_role: s, verdict: s, issues: strArray, required_changes: strArray, checked_refs: strArray, body_markdown: s, created_by_agent_run_id: s }, ["workspace_id", "workstream_id", "verdict", "body_markdown"])),
   tool("list_review_rounds", "List ReviewRound records for a workstream.", "viewer", objectSchema({ workspace_id: s, workstream_id: s }, ["workspace_id", "workstream_id"])),
   tool("get_report", "Read a WorkstreamReport with review history.", "viewer", objectSchema({ workspace_id: s, report_id: s }, ["workspace_id", "report_id"])),
@@ -184,7 +178,103 @@ async function callTool(toolName: string, args: any, ctx: ToolContext) {
 }
 
 function contentResult(value: unknown) {
-  return { content: [{ type: "text", text: typeof value === "string" ? value : JSON.stringify(value, null, 2) }] }
+  if (typeof value === "string") return { content: [{ type: "text", text: value }] }
+  const structuredContent = JSON.parse(JSON.stringify(value))
+  return {
+    structuredContent,
+    content: [{ type: "text", text: JSON.stringify(structuredContent, null, 2) }]
+  }
+}
+
+function compactWorkspace(workspace: any) {
+  if (!workspace) return workspace
+  return { id: workspace.id, slug: workspace.slug, name: workspace.name, type: workspace.type }
+}
+
+function compactProject(project: any) {
+  if (!project) return project
+  return { id: project.id, slug: project.slug, title: project.title, status: project.status }
+}
+
+function compactWorkstream(workstream: any) {
+  if (!workstream) return workstream
+  return {
+    id: workstream.id,
+    title: workstream.title,
+    kind: workstream.kind,
+    status: workstream.status,
+    priority: workstream.priority,
+    coordinator_role: workstream.coordinatorRole,
+    report_id: workstream.reportId
+  }
+}
+
+function compactReport(report: any) {
+  if (!report) return report
+  const linkedRefs = Array.isArray(report.linkedObjectRefs) ? report.linkedObjectRefs.length : undefined
+  const artifactRefs = Array.isArray(report.artifactRefs) ? report.artifactRefs.length : undefined
+  const uncertaintyNotes = Array.isArray(report.uncertaintyNotes) ? report.uncertaintyNotes.length : undefined
+  return {
+    id: report.id,
+    title: report.title,
+    status: report.status,
+    submitted_at: report.submittedAt,
+    updated_at: report.updatedAt,
+    linked_object_ref_count: linkedRefs,
+    artifact_ref_count: artifactRefs,
+    uncertainty_note_count: uncertaintyNotes
+  }
+}
+
+function compactAgentRun(agentRun: any) {
+  if (!agentRun) return agentRun
+  return {
+    id: agentRun.id,
+    role: agentRun.role,
+    status: agentRun.status,
+    model: agentRun.model,
+    session_id: agentRun.sessionId,
+    started_at: agentRun.startedAt
+  }
+}
+
+function compactBriefing(briefing: any) {
+  if (!briefing) return briefing
+  return {
+    role: briefing.role,
+    project_title: briefing.project_title,
+    workstream_title: briefing.workstream_title,
+    instructions: briefing.instructions,
+    report: compactReport(briefing.report),
+    allowed_writes: briefing.allowed_writes,
+    forbidden_actions: briefing.forbidden_actions,
+    success_criteria: briefing.success_criteria,
+    output_contract: briefing.output_contract,
+    completion_options: briefing.completion_options,
+    related_known_result_count: Array.isArray(briefing.related_known_results) ? briefing.related_known_results.length : undefined
+  }
+}
+
+function compactClaimResponse(value: any) {
+  return {
+    workspace: compactWorkspace(value.workspace),
+    project: compactProject(value.project),
+    assignment: compactWorkstream(value.assignment),
+    briefing: compactBriefing(value.briefing),
+    agent_run: compactAgentRun(value.agent_run),
+    session_id: value.session_id,
+    prompt_to_agent: value.prompt_to_agent,
+    message: value.message ?? undefined,
+    details_hint: value.assignment ? "Use get_workstream or get_report for full report/review details if needed." : undefined
+  }
+}
+
+function compactToolResult(toolName: string, value: unknown) {
+  if (value && typeof value === "object") {
+    if (toolName === "claim_next_review" || toolName === "claim_next_assignment") return compactClaimResponse(value)
+    if (toolName === "get_agent_briefing") return compactBriefing(value)
+  }
+  return value
 }
 
 function resourceResult(uri: string, value: unknown) {
@@ -223,7 +313,10 @@ export async function mcpHandler(req: Request, res: Response) {
     const resourceCtx = { userId: req.auth.user.id, claims: req.auth.claims }
     if (method === "initialize") return res.json({ jsonrpc: "2.0", id, result: { protocolVersion: "2024-11-05", serverInfo: { name: "Maff", version: mcpServerVersion }, capabilities: { tools: { listChanged: true }, resources: {}, prompts: {} } } })
     if (method === "tools/list") return res.json({ jsonrpc: "2.0", id, result: mcpToolsListResult() })
-    if (method === "tools/call") return res.json({ jsonrpc: "2.0", id, result: contentResult(await callTool(params.name, params.arguments ?? {}, ctx)) })
+    if (method === "tools/call") {
+      const raw = await callTool(params.name, params.arguments ?? {}, ctx)
+      return res.json({ jsonrpc: "2.0", id, result: contentResult(compactToolResult(params.name, raw)) })
+    }
     if (method === "resources/list") return res.json({ jsonrpc: "2.0", id, result: await listResources(resourceCtx) })
     if (method === "resources/read") return res.json({ jsonrpc: "2.0", id, result: resourceResult(params.uri, await readResource(params.uri, resourceCtx)) })
     if (method === "prompts/list") {
