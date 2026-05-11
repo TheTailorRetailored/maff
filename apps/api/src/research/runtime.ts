@@ -1,7 +1,7 @@
 import fs from "node:fs/promises"
 import path from "node:path"
 import { randomUUID } from "node:crypto"
-import type { AgentRole, ClaimStatus, Prisma, WorkstreamKind } from "@prisma/client"
+import type { AgentRole, ClaimStatus, Prisma, ReviewVerdict, WorkstreamKind } from "@prisma/client"
 import { prisma } from "../db/prisma.js"
 import { config } from "../config.js"
 import { leanClient } from "../lean/leanClient.js"
@@ -83,6 +83,32 @@ function asWorkstreamKind(value?: string): WorkstreamKind | undefined {
   const token = normalizeEnumToken(value)
   const kinds = Object.keys(roleByKind) as WorkstreamKind[]
   return kinds.find((kind) => kind.toLowerCase() === token?.toLowerCase())
+}
+
+const reviewVerdictAliases: Record<string, ReviewVerdict> = {
+  approved: "approved",
+  approve: "approved",
+  accepted: "approved",
+  needs_revision: "needs_revision",
+  revision_required: "needs_revision",
+  requires_revision: "needs_revision",
+  needs_changes: "needs_revision",
+  changes_requested: "needs_revision",
+  rejected: "rejected",
+  reject: "rejected",
+  blocked: "blocked",
+  block: "blocked",
+  escalate: "escalate",
+  escalated: "escalate"
+}
+
+function asReviewVerdict(value?: string): ReviewVerdict {
+  const token = normalizeEnumToken(value)?.toLowerCase()
+  const verdict = token ? reviewVerdictAliases[token] : undefined
+  if (!verdict) {
+    throw new Error(`Invalid review verdict: ${value ?? "<empty>"}. Expected one of approved, needs_revision, rejected, blocked, escalate.`)
+  }
+  return verdict
 }
 
 function agentChatPrompt(projectTitle: string, role: AgentRole) {
@@ -675,7 +701,8 @@ export async function recordReviewRound(input: {
     const run = await prisma.agentRun.findFirstOrThrow({ where: { workspaceId: input.workspaceId, id: input.createdByAgentRunId } })
     if (run.workstreamId === input.workstreamId && run.role === workstream.coordinatorRole) throw new Error("Reviewer cannot review or edit the same workstream output in the same ReviewRound.")
   }
-  if (input.verdict === "approved" && workstream.kind === "computation") {
+  const verdict = asReviewVerdict(input.verdict)
+  if (verdict === "approved" && workstream.kind === "computation") {
     const report = input.reportId ? await prisma.workstreamReport.findFirst({ where: { workspaceId: input.workspaceId, id: input.reportId } }) : null
     const artifactRefs = normalizeLines(report?.artifactRefs)
     const artifactCount = await prisma.artifact.count({ where: { workspaceId: input.workspaceId, workstreamId: input.workstreamId } })
@@ -690,7 +717,7 @@ export async function recordReviewRound(input: {
       targetObjectType: input.targetObjectType ?? "WorkstreamReport",
       targetObjectId: input.targetObjectId ?? input.reportId ?? workstream.reportId ?? input.workstreamId,
       reviewerRole: input.reviewerRole ?? "HostileReviewer",
-      verdict: input.verdict as any,
+      verdict,
       issues: jsonArray(input.issues),
       requiredChanges: jsonArray(input.requiredChanges),
       checkedRefs: jsonArray(input.checkedRefs),
@@ -698,8 +725,8 @@ export async function recordReviewRound(input: {
       createdByAgentRunId: input.createdByAgentRunId
     }
   })
-  const workstreamStatus = input.verdict === "approved" ? "approved" : input.verdict === "needs_revision" || input.verdict === "rejected" ? "revision_required" : input.verdict === "escalate" ? "escalated" : "blocked"
-  const reportStatus = input.verdict === "approved" ? "reviewed_approved" : "reviewed_needs_revision"
+  const workstreamStatus = verdict === "approved" ? "approved" : verdict === "needs_revision" || verdict === "rejected" ? "revision_required" : verdict === "escalate" ? "escalated" : "blocked"
+  const reportStatus = verdict === "approved" ? "reviewed_approved" : "reviewed_needs_revision"
   await prisma.workstream.update({ where: { id: input.workstreamId, workspaceId: input.workspaceId }, data: { status: workstreamStatus as any } })
   if (review.reportId) await prisma.workstreamReport.update({ where: { id: review.reportId, workspaceId: input.workspaceId }, data: { status: reportStatus } })
   return review

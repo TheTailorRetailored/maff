@@ -17,6 +17,25 @@ const s = { type: "string" } as const
 const n = { type: "number" } as const
 const anyObj = { type: "object", additionalProperties: true } as const
 const strArray = { type: "array", items: s } as const
+const reviewVerdict = {
+  type: "string",
+  enum: [
+    "approved",
+    "needs_revision",
+    "rejected",
+    "blocked",
+    "escalate",
+    "approve",
+    "accepted",
+    "revision_required",
+    "requires_revision",
+    "needs_changes",
+    "changes_requested",
+    "reject",
+    "block",
+    "escalated"
+  ]
+} as const
 
 type ToolDef = { name: string; description: string; scope: string; role: WorkspaceRole; inputSchema: JsonSchema }
 const tool = (name: string, description: string, role: WorkspaceRole, inputSchema: JsonSchema, scope = scopes.maffAccess): ToolDef => ({ name, description, scope, role, inputSchema })
@@ -55,7 +74,7 @@ export const toolDefinitions: ToolDef[] = [
   tool("create_or_update_workstream_report", "Create or update the primary report for a workstream.", "editor", objectSchema({ workspace_id: s, workstream_id: s, title: s, body_markdown: s, uncertainty_notes: strArray, linked_object_refs: strArray, artifact_refs: strArray }, ["workspace_id", "workstream_id", "title", "body_markdown"])),
   tool("submit_workstream_report", "Create/update a WorkstreamReport and submit it for mandatory review.", "editor", objectSchema({ workspace_id: s, workstream_id: s, title: s, body_markdown: s, uncertainty_notes: strArray, linked_object_refs: strArray, artifact_refs: strArray }, ["workspace_id", "workstream_id", "title", "body_markdown"])),
   tool("submit_report_for_review", "Submit an existing report for review. Pass report_id or workstream_id.", "editor", objectSchema({ workspace_id: s, report_id: s, workstream_id: s }, ["workspace_id"])),
-  tool("record_review_round", "Record a mandatory review verdict. Reviewer agents may create ReviewRound records only.", "editor", objectSchema({ workspace_id: s, workstream_id: s, report_id: s, target_object_type: s, target_object_id: s, reviewer_role: s, verdict: s, issues: strArray, required_changes: strArray, checked_refs: strArray, body_markdown: s, created_by_agent_run_id: s }, ["workspace_id", "workstream_id", "verdict", "body_markdown"])),
+  tool("record_review_round", "Record a mandatory review verdict. Reviewer agents may create ReviewRound records only.", "editor", objectSchema({ workspace_id: s, workstream_id: s, report_id: s, target_object_type: s, target_object_id: s, reviewer_role: s, verdict: reviewVerdict, issues: strArray, required_changes: strArray, checked_refs: strArray, body_markdown: s, created_by_agent_run_id: s }, ["workspace_id", "workstream_id", "verdict", "body_markdown"])),
   tool("list_review_rounds", "List ReviewRound records for a workstream.", "viewer", objectSchema({ workspace_id: s, workstream_id: s }, ["workspace_id", "workstream_id"])),
   tool("get_report", "Read a WorkstreamReport with review history.", "viewer", objectSchema({ workspace_id: s, report_id: s }, ["workspace_id", "report_id"])),
 
