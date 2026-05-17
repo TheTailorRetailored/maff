@@ -262,12 +262,12 @@ function compactWorkstream(workstream: any) {
   }
 }
 
-function compactReport(report: any) {
+function compactReport(report: any, options: { includeBody?: boolean; includeRefs?: boolean } = {}) {
   if (!report) return report
   const linkedRefs = Array.isArray(report.linkedObjectRefs) ? report.linkedObjectRefs.length : undefined
   const artifactRefs = Array.isArray(report.artifactRefs) ? report.artifactRefs.length : undefined
   const uncertaintyNotes = Array.isArray(report.uncertaintyNotes) ? report.uncertaintyNotes.length : undefined
-  return {
+  const compacted: Record<string, unknown> = {
     id: report.id,
     title: report.title,
     status: report.status,
@@ -279,6 +279,13 @@ function compactReport(report: any) {
     uncertainty_note_count: uncertaintyNotes,
     review_count: Array.isArray(report.reviews) ? report.reviews.length : undefined
   }
+  if (options.includeBody) compacted.body_markdown = report.bodyMarkdown
+  if (options.includeRefs) {
+    compacted.linked_object_refs = Array.isArray(report.linkedObjectRefs) ? report.linkedObjectRefs : []
+    compacted.artifact_refs = Array.isArray(report.artifactRefs) ? report.artifactRefs : []
+    compacted.uncertainty_notes = Array.isArray(report.uncertaintyNotes) ? report.uncertaintyNotes : []
+  }
+  return compacted
 }
 
 function compactReview(review: any) {
@@ -322,7 +329,7 @@ function compactBriefing(briefing: any) {
     workstream: compactWorkstream(briefing.workstream),
     parent_context: compactWorkstream(briefing.parent_context),
     role_recipe_preview: clip(briefing.role_recipe, 220),
-    report: compactReport(briefing.report),
+    report: compactReport(briefing.report, { includeBody: true, includeRefs: true }),
     target_objects: Array.isArray(briefing.target_objects) ? briefing.target_objects.map(compactResearchObject) : undefined,
     relevant_reports: Array.isArray(briefing.relevant_reports) ? briefing.relevant_reports.map(compactReport) : undefined,
     open_gaps: Array.isArray(briefing.open_gaps) ? briefing.open_gaps.map(compactResearchObject) : undefined,
@@ -331,7 +338,8 @@ function compactBriefing(briefing: any) {
     success_criteria: briefing.success_criteria,
     output_contract: briefing.output_contract,
     completion_options: briefing.completion_options,
-    related_known_result_count: Array.isArray(briefing.related_known_results) ? briefing.related_known_results.length : undefined
+    related_known_result_count: Array.isArray(briefing.related_known_results) ? briefing.related_known_results.length : undefined,
+    related_known_results: Array.isArray(briefing.related_known_results) ? takeList(briefing.related_known_results, 8, compactResearchObject) : undefined
   }
 }
 
@@ -506,7 +514,7 @@ function compactWorkstreamDetail(value: any) {
     workstream: compactWorkstream(value),
     project: compactProject(value.project),
     goal: compactGoal(value.goal),
-    reports: compactList(value.reports, compactReport),
+    reports: compactList(value.reports, (report) => compactReport(report, { includeBody: true, includeRefs: true })),
     reviews: compactList(value.reviews, compactReview),
     agent_runs: compactList(value.agentRuns, compactAgentRun),
     messages: compactList(value.messages, compactMessage),
@@ -516,7 +524,7 @@ function compactWorkstreamDetail(value: any) {
 
 function compactReportDetail(value: any) {
   return {
-    report: compactReport(value),
+    report: compactReport(value, { includeBody: true, includeRefs: true }),
     workstream: compactWorkstream(value.workstream),
     reviews: compactList(value.reviews, compactReview)
   }
@@ -564,10 +572,14 @@ export function compactToolResult(toolName: string, value: unknown) {
     if (toolName === "create_lean_stub") return { result: (value as any).result, lean_theorem: compactResearchObject((value as any).leanTheorem) }
     if (toolName === "mark_lean_verified") return compactResearchObject(value)
     if (toolName.startsWith("create_") || toolName === "update_claim_status" || toolName === "resolve_gap") return compactResearchObject(value)
-    if (toolName === "get_object_graph") return {
-      source: compactResearchObject((value as any).source),
-      edges: compactList((value as any).edges, compactGraphEdge),
-      objects: compactList((value as any).objects, compactResearchObject)
+    if (toolName === "get_object_graph") {
+      const nodes = compactList((value as any).nodes, compactResearchObject)
+      return {
+        source: compactResearchObject((value as any).source),
+        edges: compactList((value as any).edges, compactGraphEdge),
+        nodes,
+        objects: nodes
+      }
     }
     if (toolName === "search_research_objects") return {
       claims: compactList((value as any).claims, compactResearchObject),

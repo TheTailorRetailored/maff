@@ -92,7 +92,10 @@ const compactReviewClaim = compactToolResult("claim_next_review", {
 }) as Record<string, any>
 assert.equal(compactReviewClaim.assignment.report_id, "r")
 assert.equal(compactReviewClaim.briefing.report.bodyMarkdown, undefined)
+assert.equal(compactReviewClaim.briefing.report.body_markdown, "Very long body")
+assert.deepEqual(compactReviewClaim.briefing.report.linked_object_refs, ["a"])
 assert.equal(compactReviewClaim.briefing.related_known_result_count, 2)
+assert.deepEqual(compactReviewClaim.briefing.related_known_results.map((item: any) => item.id), ["k1", "k2"])
 
 const compactReport = compactToolResult("get_report", {
   id: "r",
@@ -106,7 +109,34 @@ const compactReport = compactToolResult("get_report", {
   reviews: [{ id: "rev", verdict: "approved", bodyMarkdown: "Looks good" }]
 }) as Record<string, any>
 assert.equal(compactReport.report.bodyMarkdown, undefined)
+assert.equal(compactReport.report.body_markdown, "A".repeat(500))
+assert.deepEqual(compactReport.report.linked_object_refs, ["a", "b"])
+assert.deepEqual(compactReport.report.uncertainty_notes, ["u"])
 assert.equal(compactReport.report.review_count, 1)
 assert.equal(compactReport.workstream.id, "ws")
+
+const compactWorkstream = compactToolResult("get_workstream", {
+  id: "ws",
+  title: "w",
+  kind: "literature_review",
+  status: "needs_review",
+  priority: 1,
+  coordinatorRole: "LiteratureAgent",
+  reports: [{ id: "r", title: "Report", status: "submitted", bodyMarkdown: "Full workstream report", linkedObjectRefs: ["k1"], artifactRefs: [], uncertaintyNotes: [] }],
+  reviews: [],
+  agentRuns: [],
+  messages: [],
+  artifacts: []
+}) as Record<string, any>
+assert.equal(compactWorkstream.reports[0].body_markdown, "Full workstream report")
+assert.deepEqual(compactWorkstream.reports[0].linked_object_refs, ["k1"])
+
+const compactGraph = compactToolResult("get_object_graph", {
+  nodes: [{ id: "k1", title: "Known result", statementMarkdown: "Statement", applicabilityMarkdown: "Applies under X", status: "cited" }],
+  edges: [{ sourceType: "WorkstreamReport", sourceId: "r", targetType: "KnownResult", targetId: "k1", edgeType: "cites" }]
+}) as Record<string, any>
+assert.equal(compactGraph.nodes.length, 1)
+assert.equal(compactGraph.nodes[0].type, "KnownResult")
+assert.equal(compactGraph.objects.length, 1)
 
 console.log("Maff v2 smoke checks passed")
