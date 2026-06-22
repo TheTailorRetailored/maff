@@ -1,6 +1,12 @@
 # Maff
 
-Maff is a private, self-hosted math research system built around an Obsidian-compatible Markdown vault, a typed research graph, a safe MCP endpoint, Quartz publishing, and an isolated Lean worker.
+Maff is an experimental, self-hosted mathematics research workbench built around an Obsidian-compatible Markdown vault, a typed research graph, a constrained MCP endpoint, Quartz publishing, and an isolated Lean worker.
+
+> **Private alpha:** the architecture is functional and used for personal research, but installation is still involved and the project has not received an independent security audit. Keep real research vaults and credentials out of public demo environments.
+
+![Maff research workbench](docs/images/maff-workbench.png)
+
+The repository ships only synthetic demo notes under `examples/demo-vault`; personal vaults, database contents, generated Lean workspaces, and environment files are excluded.
 
 ## Services
 
@@ -25,7 +31,7 @@ Tasks are operational queue records stored in PostgreSQL and attached to a targe
 
 Graph views are problem-scoped by default. A workspace can contain many Problems, and each Problem is the root of its own claim graph. Use `GET /api/workspaces/:workspaceId/problems` for the workspace overview and `GET /api/workspaces/:workspaceId/problems/:problemId/graph` for the default Problem -> Claim dependency graph. The MCP equivalents are `list_problem_graphs` and `get_problem_graph`.
 
-Migration note: on 2026-05-02, the Galton-Watson conductance project was migrated from a star-shaped graph of Conjecture/ProofRoute/Gap/Task nodes into a claim-centric graph. Old nodes are marked killed for audit/history. Active work should use the new Claim nodes.
+The claim-centric model replaced an earlier star-shaped Conjecture/ProofRoute/Gap/Task design. Migration helpers remain for existing private workspaces, while new work should use Claim nodes.
 
 ## Local Dev
 
@@ -41,6 +47,16 @@ Local ports are bound to localhost:
 - API: `http://127.0.0.1:3001`
 - Lean worker: `http://127.0.0.1:8765`
 - Postgres: `127.0.0.1:5432`
+
+To preview the synthetic, read-only portfolio view without Auth0 or an API:
+
+```powershell
+cd apps/web
+$env:VITE_DEMO_MODE = "true"
+npm run dev -- --host 127.0.0.1
+```
+
+Demo mode is selected at build time and exposes no authenticated application data or write paths.
 
 For Auth0 local development, add local callback, logout, and web origins for `http://localhost:3000` and `http://127.0.0.1:3000`.
 
@@ -159,7 +175,17 @@ npm run typecheck
 npm run test:smoke
 ```
 
-The smoke script verifies path traversal rejection, wikilink parsing, and MCP tool discovery. Full deployment validation still requires Docker and real Auth0 tokens.
+The smoke script verifies path traversal rejection, YAML frontmatter round-tripping, wikilink and typed-edge parsing, and MCP tool discovery. Full deployment validation still requires Docker and real Auth0 tokens.
+
+## Public-release boundary
+
+- Markdown files remain authoritative; PostgreSQL is an index, queue, permission store, and audit log.
+- The included example is synthetic and safe to publish.
+- Authentication and workspace roles are implemented, but operators remain responsible for TLS, backups, network isolation, and tenant configuration.
+- Lean jobs execute separately from the API; production deployments should apply container and host-level resource limits.
+- No claims are made that agent-produced mathematics is correct until reviewed and, where applicable, checked by Lean.
+
+See [SECURITY.md](SECURITY.md) and [CONTRIBUTING.md](CONTRIBUTING.md). Maff is licensed under the [MIT License](LICENSE).
 
 ## Future Work
 

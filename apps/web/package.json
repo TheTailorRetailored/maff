@@ -1,6 +1,10 @@
 {
   "name": "@maff/web",
   "version": "0.1.0",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.19"
+  },
   "type": "module",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
@@ -9,7 +13,7 @@
   },
   "dependencies": {
     "@auth0/auth0-react": "^2.2.4",
-    "@vitejs/plugin-react": "^4.3.3",
+    "@vitejs/plugin-react": "^6.0.2",
     "cytoscape": "^3.30.3",
     "katex": "^0.16.11",
     "lucide-react": "^0.468.0",
@@ -24,7 +28,6 @@
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "typescript": "^5.6.3",
-    "vite": "^5.4.10"
+    "vite": "^8.0.16"
   }
 }
-

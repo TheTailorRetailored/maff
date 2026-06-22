@@ -1,6 +1,7 @@
 import assert from "node:assert/strict"
 import path from "node:path"
 import { assertInsideRoot } from "./vault/paths.js"
+import { dumpMarkdown, parseMarkdown } from "./vault/parser.js"
 import { extractWikilinks } from "./vault/wikilinks.js"
 import { compactToolResult, mcpServerVersion, mcpToolsListResult, toolDefinitions } from "./mcp/server.js"
 
@@ -8,6 +9,20 @@ const root = path.resolve("tmp-workspace")
 assert.equal(assertInsideRoot(root, path.join(root, "vault", "A.md")), path.resolve(root, "vault", "A.md"))
 assert.throws(() => assertInsideRoot(root, path.resolve(root, "..", "escape.md")), /escapes/)
 assert.deepEqual(extractWikilinks("See [[Problem - A]] and [[Lemma|alias]]."), ["Problem - A", "Lemma"])
+
+const markdown = dumpMarkdown(
+  { id: "claim-demo", type: "Claim", depends_on: ["[[Definition - Demo]]"], title: "Demo claim" },
+  "# Demo claim\n\nSee [[Paper - Demo]]."
+)
+const parsedMarkdown = parseMarkdown(markdown)
+assert.equal(parsedMarkdown.title, "Demo claim")
+assert.equal(parsedMarkdown.metadata.id, "claim-demo")
+assert.deepEqual(parsedMarkdown.wikilinks, ["Paper - Demo"])
+assert.deepEqual(parsedMarkdown.edges.map((edge) => [edge.targetRef, edge.edgeType]), [
+  ["Definition - Demo", "depends_on"],
+  ["Paper - Demo", "links_to"]
+])
+assert.throws(() => parseMarkdown("---\n- invalid\n---\nBody"), /mapping/)
 
 for (const name of [
   "create_project",

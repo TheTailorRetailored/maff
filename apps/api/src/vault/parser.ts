@@ -1,5 +1,5 @@
 import fs from "node:fs/promises"
-import matter from "gray-matter"
+import YAML from "yaml"
 import { extractWikilinks } from "./wikilinks.js"
 
 export const typedEdgeFields: Record<string, string> = {
@@ -38,9 +38,14 @@ function valueLinks(value: unknown): string[] {
 }
 
 export function parseMarkdown(raw: string): ParsedNode {
-  const parsed = matter(raw)
-  const metadata = parsed.data as Record<string, unknown>
-  const body = parsed.content.trimStart()
+  const normalized = raw.replace(/^\uFEFF/, "")
+  const frontmatter = normalized.match(/^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/)
+  const parsedMetadata = frontmatter ? YAML.parse(frontmatter[1]) : {}
+  if (parsedMetadata !== null && (typeof parsedMetadata !== "object" || Array.isArray(parsedMetadata))) {
+    throw new Error("Markdown frontmatter must be a YAML mapping")
+  }
+  const metadata = (parsedMetadata ?? {}) as Record<string, unknown>
+  const body = (frontmatter ? normalized.slice(frontmatter[0].length) : normalized).trimStart()
   const title = String(metadata.title ?? firstH1(body) ?? metadata.id ?? "Untitled")
   const bodyLinks = extractWikilinks(body)
   const edges: ParsedNode["edges"] = []
@@ -56,5 +61,6 @@ export async function parseMarkdownFile(filePath: string) {
 }
 
 export function dumpMarkdown(metadata: Record<string, unknown>, body: string) {
-  return matter.stringify(body.trimStart(), metadata).trimEnd() + "\n"
+  const frontmatter = YAML.stringify(metadata, { lineWidth: 0 }).trimEnd()
+  return `---\n${frontmatter}\n---\n${body.trimStart().trimEnd()}\n`
 }

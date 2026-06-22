@@ -65,12 +65,35 @@ aside button.active, aside button:hover { background: #263532; border-color: #3f
   margin-bottom: 1rem;
 }
 .logout { margin-top: auto; }
+.demo-identity { margin-top: auto; color: #9fb8b2; font-size: 0.78rem; padding: 0.75rem; }
 main { min-width: 0; }
 .page {
   padding: 1.25rem;
   max-width: 1480px;
   margin: 0 auto;
 }
+.demo-page { max-width: 1240px; padding: 2rem 2.25rem; }
+.eyebrow { margin: 0 0 0.35rem; color: #64746f; font-size: 0.72rem; font-weight: 750; letter-spacing: 0.1em; text-transform: uppercase; }
+.demo-pill { background: #e2f3ee; color: #176458; border: 1px solid #b9dcd3; border-radius: 999px; padding: 0.4rem 0.75rem; font-size: 0.8rem; font-weight: 700; }
+.demo-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.8rem; margin-bottom: 1.25rem; }
+.demo-stats > div, .demo-panel { background: #fff; border: 1px solid #dbe3df; border-radius: 10px; box-shadow: 0 8px 24px rgba(23, 33, 31, 0.045); }
+.demo-stats > div { padding: 1rem 1.1rem; display: flex; flex-direction: column; gap: 0.2rem; }
+.demo-stats strong { font-size: 1.7rem; }
+.demo-stats span { color: #6d7975; font-size: 0.82rem; }
+.demo-panel { padding: 1.15rem 1.25rem; }
+.demo-panel h2 { margin: 0.15rem 0 0.55rem; }
+.demo-panel p:not(.eyebrow) { color: #52605c; line-height: 1.55; }
+.demo-meta { display: flex; justify-content: space-between; align-items: center; color: #71807b; font-size: 0.82rem; margin-top: 1rem; }
+.status { border-radius: 999px; padding: 0.25rem 0.55rem; font-weight: 700; }
+.status.active { background: #e0f3ed; color: #176458; }
+.status.seed { background: #fff2ce; color: #805a00; }
+.graph-preview { margin-top: 1rem; }
+.demo-graph { min-height: 190px; display: flex; align-items: center; justify-content: center; gap: 1.25rem; background: linear-gradient(135deg, #f7faf8, #eef5f2); border-radius: 8px; }
+.graph-node { min-width: 150px; padding: 0.9rem 1rem; text-align: center; border-radius: 8px; border: 1px solid; font-weight: 700; line-height: 1.35; box-shadow: 0 5px 16px rgba(23, 33, 31, 0.07); }
+.graph-node.definition { background: #eef1ff; border-color: #cdd4f3; color: #3d4c83; }
+.graph-node.claim { background: #e4f3ee; border-color: #b9dcd3; color: #176458; }
+.graph-node.review { background: #fff4d8; border-color: #ecd58f; color: #805a00; }
+.graph-edge { color: #82918c; font-size: 1.5rem; }
 header {
   display: flex;
   align-items: center;
