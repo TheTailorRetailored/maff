@@ -1,12 +1,18 @@
 # Maff
 
-Maff is an experimental, self-hosted mathematics research workbench built around an Obsidian-compatible Markdown vault, a typed research graph, a constrained MCP endpoint, Quartz publishing, and an isolated Lean worker.
+Maff is the self-hosted system I use for organising mathematics research. Notes
+stay in an Obsidian-compatible Markdown vault; the rest of the stack adds a
+typed claim graph, task and review queues, an MCP interface, Quartz publishing
+and a separate Lean 4 worker.
 
-> **Private alpha:** the architecture is functional and used for personal research, but installation is still involved and the project has not received an independent security audit. Keep real research vaults and credentials out of public demo environments.
+> This is an early alpha, not a turnkey hosted app. Setup is still involved and
+> it has not had an independent security review. Do not put a real research
+> vault or production credentials into a public demo.
 
 ![Maff research workbench](docs/images/maff-workbench.png)
 
-The repository ships only synthetic demo notes under `examples/demo-vault`; personal vaults, database contents, generated Lean workspaces, and environment files are excluded.
+The example vault is synthetic. My own notes, database, Lean workspaces and
+environment files are not part of the repository.
 
 ## Services
 
@@ -21,13 +27,18 @@ Markdown files remain the source of truth. The database stores users, permission
 
 ## Graph Model
 
-Maff's default graph is mathematical, not operational. Primary graph nodes are `Problem`, `Claim`, `Definition`, `Paper`/`KnownResult`, and substantial `Experiment` or `Draft` notes.
+The graph is about the mathematics rather than the project-management work.
+Its main node types are `Problem`, `Claim`, `Definition`, `Paper`/`KnownResult`,
+and substantial `Experiment` or `Draft` notes.
 
 A `Claim` represents theorem-like mathematical content: conjectures, theorems, lemmas, propositions, corollaries, reductions, counterexample claims, and technical statements. Claim notes include sections for statement, status, role in project, dependencies, proof routes, informal proof, Lean formalization, attempts and notes, tasks, and decision log.
 
-Routes, proof attempts, minor gaps, informal proof updates, Lean status, and routine notes usually live inside the relevant Claim note. They are promoted to standalone graph nodes only when they become substantial, reusable, independently documentable, or explicitly requested.
+Proof routes, attempts, small gaps, Lean status and routine notes normally stay
+inside the relevant Claim. They only become separate graph nodes when there is
+a useful reason to treat them independently.
 
-Tasks are operational queue records stored in PostgreSQL and attached to a target node/section. They appear in the queue and node detail views, but they do not appear in the default graph.
+Tasks live in PostgreSQL and can point back to a node or section. They appear in
+the work queues, not in the default mathematical graph.
 
 Graph views are problem-scoped by default. A workspace can contain many Problems, and each Problem is the root of its own claim graph. Use `GET /api/workspaces/:workspaceId/problems` for the workspace overview and `GET /api/workspaces/:workspaceId/problems/:problemId/graph` for the default Problem -> Claim dependency graph. The MCP equivalents are `list_problem_graphs` and `get_problem_graph`.
 
@@ -177,13 +188,17 @@ npm run test:smoke
 
 The smoke script verifies path traversal rejection, YAML frontmatter round-tripping, wikilink and typed-edge parsing, and MCP tool discovery. Full deployment validation still requires Docker and real Auth0 tokens.
 
-## Public-release boundary
+## Caveats
 
-- Markdown files remain authoritative; PostgreSQL is an index, queue, permission store, and audit log.
-- The included example is synthetic and safe to publish.
-- Authentication and workspace roles are implemented, but operators remain responsible for TLS, backups, network isolation, and tenant configuration.
-- Lean jobs execute separately from the API; production deployments should apply container and host-level resource limits.
-- No claims are made that agent-produced mathematics is correct until reviewed and, where applicable, checked by Lean.
+- Markdown files are authoritative. PostgreSQL holds indexes, queues,
+  permissions and audit records.
+- The included workspace is synthetic.
+- Auth and workspace roles are implemented, but deployment security is still
+  the operator's responsibility.
+- Lean runs away from the API, but a real deployment should still set container
+  and host resource limits.
+- Agent-produced mathematics is not assumed to be correct. It still needs
+  review and, where appropriate, a Lean check.
 
 See [SECURITY.md](SECURITY.md) and [CONTRIBUTING.md](CONTRIBUTING.md). Maff is licensed under the [MIT License](LICENSE).
 
