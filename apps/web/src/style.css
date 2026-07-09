@@ -146,6 +146,28 @@ h2 { margin: 0 0 0.75rem; font-size: 1rem; }
   border-color: #fecaca;
   color: #991b1b;
 }
+.notice.subtle {
+  align-items: center;
+  color: #65736f;
+  display: inline-flex;
+  gap: 0.4rem;
+}
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0 0 1rem;
+}
+.tabs button {
+  background: #ffffff;
+  border: 1px solid #d7e2de;
+  color: #304541;
+}
+.tabs button.active {
+  background: #1f3b35;
+  border-color: #1f3b35;
+  color: #ffffff;
+}
 .picker {
   display: grid;
   gap: 0.25rem;
@@ -155,6 +177,36 @@ h2 { margin: 0 0 0.75rem; font-size: 1rem; }
   border: 1px solid #d7e2de;
   border-radius: 8px;
   padding: 1rem;
+}
+.frontier-hero {
+  align-items: start;
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+.frontier-hero p {
+  margin-bottom: 0;
+}
+.frontier-metrics {
+  display: grid;
+  gap: 0.5rem;
+  grid-template-columns: repeat(3, minmax(72px, 1fr));
+}
+.frontier-metrics span {
+  background: #ffffff;
+  border: 1px solid #d7e2de;
+  border-radius: 8px;
+  display: grid;
+  font-size: 1.35rem;
+  font-weight: 700;
+  min-height: 62px;
+  padding: 0.55rem;
+  text-align: center;
+}
+.frontier-metrics small {
+  color: #5d6f69;
+  font-size: 0.72rem;
+  font-weight: 500;
 }
 .form-grid {
   display: grid;
@@ -232,6 +284,7 @@ h2 { margin: 0 0 0.75rem; font-size: 1rem; }
   aside { position: sticky; top: 0; z-index: 2; flex-direction: row; overflow-x: auto; }
   aside .brand, aside .logout span, aside button span { display: none; }
   .grid.two { grid-template-columns: 1fr; }
+  .frontier-hero { grid-template-columns: 1fr; }
   .form-grid, .compact-form { grid-template-columns: 1fr; }
   .form-grid textarea { grid-column: 1; }
 }

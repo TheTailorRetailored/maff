@@ -1,10 +1,198 @@
 import type { Router } from "express"
+import { z } from "zod"
 import { requireUser } from "../auth/auth0.js"
 import { requireWorkspaceRole } from "../auth/permissions.js"
 import * as runtime from "../research/runtime.js"
 import { asyncHandler } from "./asyncHandler.js"
 
+const optionalText = z.string().min(1).optional()
+const confidence = z.enum(["low", "medium", "high"]).optional()
+const listQuery = z.object({
+  workspaceId: z.string().uuid(),
+  projectId: z.string().uuid().optional(),
+  status: optionalText,
+  kind: optionalText,
+  sourceType: optionalText,
+  sourceId: optionalText,
+  targetType: optionalText,
+  targetId: optionalText,
+  limit: z.coerce.number().int().positive().max(200).optional()
+})
+const baseWrite = z.object({ workspaceId: z.string().uuid(), projectId: z.string().uuid().optional() }).passthrough()
+const idParams = z.object({ id: z.string().uuid() })
+
+function parse<T extends z.ZodTypeAny>(schema: T, value: unknown): z.infer<T> {
+  return schema.parse(value)
+}
+
+async function requireQueryRole(userId: string, query: unknown, role: "viewer" | "editor") {
+  const parsed = parse(listQuery, query)
+  await requireWorkspaceRole(userId, parsed.workspaceId, role)
+  return parsed
+}
+
+async function requireBodyRole(userId: string, body: unknown, role: "viewer" | "editor") {
+  const parsed = parse(baseWrite, body)
+  await requireWorkspaceRole(userId, parsed.workspaceId, role)
+  return parsed
+}
+
 export function registerResearchRuntimeRoutes(router: Router) {
+  router.get("/research/deltas", asyncHandler(async (req, res) => {
+    const query = await requireQueryRole(requireUser(req).id, req.query, "viewer")
+    res.json(await runtime.listResearchDeltas(query))
+  }))
+  router.get("/research/deltas/:id", asyncHandler(async (req, res) => {
+    const query = await requireQueryRole(requireUser(req).id, req.query, "viewer")
+    res.json(await runtime.getResearchDelta(query.workspaceId, parse(idParams, req.params).id))
+  }))
+  router.post("/research/deltas", asyncHandler(async (req, res) => {
+    const user = requireUser(req)
+    const body = await requireBodyRole(user.id, req.body, "editor")
+    res.status(201).json(await runtime.createResearchDelta({ ...body, createdByUserId: user.id }))
+  }))
+  router.patch("/research/deltas/:id", asyncHandler(async (req, res) => {
+    const user = requireUser(req)
+    const body = await requireBodyRole(user.id, req.body, "editor")
+    res.json(await runtime.updateResearchDelta({ workspaceId: body.workspaceId, id: parse(idParams, req.params).id, patch: req.body }))
+  }))
+
+  router.get("/research/mechanisms", asyncHandler(async (req, res) => {
+    const query = await requireQueryRole(requireUser(req).id, req.query, "viewer")
+    res.json(await runtime.listMechanisms(query))
+  }))
+  router.get("/research/mechanisms/:id", asyncHandler(async (req, res) => {
+    const query = await requireQueryRole(requireUser(req).id, req.query, "viewer")
+    res.json(await runtime.getMechanism(query.workspaceId, parse(idParams, req.params).id))
+  }))
+  router.post("/research/mechanisms", asyncHandler(async (req, res) => {
+    const user = requireUser(req)
+    const body = parse(baseWrite.extend({ title: z.string().min(1), descriptionMarkdown: optionalText, coreIdeaMarkdown: optionalText }), req.body)
+    await requireWorkspaceRole(user.id, body.workspaceId, "editor")
+    res.status(201).json(await runtime.createMechanism({ ...body, createdByUserId: user.id }))
+  }))
+  router.patch("/research/mechanisms/:id", asyncHandler(async (req, res) => {
+    const user = requireUser(req)
+    const body = await requireBodyRole(user.id, req.body, "editor")
+    res.json(await runtime.updateMechanism({ workspaceId: body.workspaceId, id: parse(idParams, req.params).id, patch: req.body }))
+  }))
+
+  router.get("/research/spinouts", asyncHandler(async (req, res) => {
+    const query = await requireQueryRole(requireUser(req).id, req.query, "viewer")
+    res.json(await runtime.listSpinoutCandidates(query))
+  }))
+  router.get("/research/spinouts/:id", asyncHandler(async (req, res) => {
+    const query = await requireQueryRole(requireUser(req).id, req.query, "viewer")
+    res.json(await runtime.getSpinoutCandidate(query.workspaceId, parse(idParams, req.params).id))
+  }))
+  router.post("/research/spinouts", asyncHandler(async (req, res) => {
+    const user = requireUser(req)
+    const body = parse(baseWrite.extend({ title: z.string().min(1), statementSketchMarkdown: optionalText }), req.body)
+    await requireWorkspaceRole(user.id, body.workspaceId, "editor")
+    res.status(201).json(await runtime.createSpinoutCandidate({ ...body, createdByUserId: user.id }))
+  }))
+  router.patch("/research/spinouts/:id", asyncHandler(async (req, res) => {
+    const user = requireUser(req)
+    const body = await requireBodyRole(user.id, req.body, "editor")
+    res.json(await runtime.updateSpinoutCandidate({ workspaceId: body.workspaceId, id: parse(idParams, req.params).id, patch: req.body }))
+  }))
+  router.post("/research/spinouts/:id/promote", asyncHandler(async (req, res) => {
+    const user = requireUser(req)
+    const body = await requireBodyRole(user.id, req.body, "editor")
+    res.json(await runtime.promoteSpinoutCandidate({ workspaceId: body.workspaceId, id: parse(idParams, req.params).id, userId: user.id }))
+  }))
+
+  router.get("/research/assumptions", asyncHandler(async (req, res) => {
+    const query = await requireQueryRole(requireUser(req).id, req.query, "viewer")
+    res.json(await runtime.listAssumptionRegimes(query))
+  }))
+  router.get("/research/assumptions/:id", asyncHandler(async (req, res) => {
+    const query = await requireQueryRole(requireUser(req).id, req.query, "viewer")
+    res.json(await runtime.getAssumptionRegime(query.workspaceId, parse(idParams, req.params).id))
+  }))
+  router.post("/research/assumptions", asyncHandler(async (req, res) => {
+    const user = requireUser(req)
+    const body = parse(baseWrite.extend({ title: z.string().min(1), descriptionMarkdown: optionalText, formalStatementMarkdown: optionalText }), req.body)
+    await requireWorkspaceRole(user.id, body.workspaceId, "editor")
+    res.status(201).json(await runtime.createAssumptionRegime({ ...body, createdByUserId: user.id }))
+  }))
+  router.patch("/research/assumptions/:id", asyncHandler(async (req, res) => {
+    const user = requireUser(req)
+    const body = await requireBodyRole(user.id, req.body, "editor")
+    res.json(await runtime.updateAssumptionRegime({ workspaceId: body.workspaceId, id: parse(idParams, req.params).id, patch: req.body }))
+  }))
+
+  router.get("/research/contracts", asyncHandler(async (req, res) => {
+    const query = await requireQueryRole(requireUser(req).id, req.query, "viewer")
+    res.json(await runtime.listTheoremContracts(query))
+  }))
+  router.get("/research/contracts/:id", asyncHandler(async (req, res) => {
+    const query = await requireQueryRole(requireUser(req).id, req.query, "viewer")
+    res.json(await runtime.getTheoremContract(query.workspaceId, parse(idParams, req.params).id))
+  }))
+  router.post("/research/contracts", asyncHandler(async (req, res) => {
+    const user = requireUser(req)
+    const body = parse(baseWrite.extend({ projectId: z.string().uuid(), title: z.string().min(1), theoremStatementMarkdown: optionalText, confidence }), req.body)
+    await requireWorkspaceRole(user.id, body.workspaceId, "editor")
+    res.status(201).json(await runtime.createTheoremContract({ ...body, createdByUserId: user.id }))
+  }))
+  router.patch("/research/contracts/:id", asyncHandler(async (req, res) => {
+    const user = requireUser(req)
+    const body = await requireBodyRole(user.id, req.body, "editor")
+    res.json(await runtime.updateTheoremContract({ workspaceId: body.workspaceId, id: parse(idParams, req.params).id, patch: req.body }))
+  }))
+
+  router.get("/research/frontier/latest", asyncHandler(async (req, res) => {
+    const query = await requireQueryRole(requireUser(req).id, req.query, "viewer")
+    res.json(await runtime.getLatestFrontierSnapshot(query))
+  }))
+  router.get("/research/frontier", asyncHandler(async (req, res) => {
+    const query = await requireQueryRole(requireUser(req).id, req.query, "viewer")
+    res.json(await runtime.listFrontierSnapshots(query))
+  }))
+  router.post("/research/frontier", asyncHandler(async (req, res) => {
+    const user = requireUser(req)
+    const body = parse(baseWrite.extend({ title: z.string().min(1), snapshotMarkdown: z.string().optional() }), req.body)
+    await requireWorkspaceRole(user.id, body.workspaceId, "editor")
+    res.status(201).json(await runtime.createFrontierSnapshot({ ...body, createdByUserId: user.id }))
+  }))
+
+  router.get("/research/artifacts", asyncHandler(async (req, res) => {
+    const query = await requireQueryRole(requireUser(req).id, req.query, "viewer")
+    res.json(await runtime.listResearchArtifacts(query))
+  }))
+  router.get("/research/artifacts/:id", asyncHandler(async (req, res) => {
+    const query = await requireQueryRole(requireUser(req).id, req.query, "viewer")
+    res.json(await runtime.getResearchArtifact(query.workspaceId, parse(idParams, req.params).id))
+  }))
+  router.post("/research/artifacts", asyncHandler(async (req, res) => {
+    const user = requireUser(req)
+    const body = parse(baseWrite.extend({ title: z.string().min(1) }), req.body)
+    await requireWorkspaceRole(user.id, body.workspaceId, "editor")
+    res.status(201).json(await runtime.createResearchArtifact({ ...body, createdByUserId: user.id }))
+  }))
+  router.patch("/research/artifacts/:id", asyncHandler(async (req, res) => {
+    const user = requireUser(req)
+    const body = await requireBodyRole(user.id, req.body, "editor")
+    res.json(await runtime.updateResearchArtifact({ workspaceId: body.workspaceId, id: parse(idParams, req.params).id, patch: req.body }))
+  }))
+
+  router.get("/research/links", asyncHandler(async (req, res) => {
+    const query = await requireQueryRole(requireUser(req).id, req.query, "viewer")
+    res.json(await runtime.listResearchLinks(query))
+  }))
+  router.post("/research/links", asyncHandler(async (req, res) => {
+    const user = requireUser(req)
+    const body = parse(baseWrite.extend({ sourceType: z.string().min(1), sourceId: z.string().min(1), relationType: z.string().min(1), targetType: z.string().min(1), targetId: z.string().min(1), confidence }), req.body)
+    await requireWorkspaceRole(user.id, body.workspaceId, "editor")
+    res.status(201).json(await runtime.createResearchLink({ ...body, createdByUserId: user.id }))
+  }))
+  router.delete("/research/links/:id", asyncHandler(async (req, res) => {
+    const user = requireUser(req)
+    const body = await requireBodyRole(user.id, req.body, "editor")
+    res.json(await runtime.deleteResearchLink({ workspaceId: body.workspaceId, id: parse(idParams, req.params).id }))
+  }))
+
   router.get("/research/context", asyncHandler(async (req, res) => {
     const user = requireUser(req)
     res.json(await runtime.getMyMaffContext({
