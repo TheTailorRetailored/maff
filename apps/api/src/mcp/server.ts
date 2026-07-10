@@ -153,7 +153,8 @@ export const toolDefinitions: ToolDef[] = [
 const toolByName = new Map(toolDefinitions.map((definition) => [definition.name, definition]))
 
 function wwwAuthenticate(required: string) {
-  return `Bearer resource_metadata="${config.publicBaseUrl}/.well-known/oauth-protected-resource", error="insufficient_scope", error_description="Missing required scope ${required}", scope="${required}"`
+  const quoted = (value: string) => value.replace(/\\/g, "\\\\").replace(/"/g, "\\\"").replace(/[\u0000-\u001F\u007F]/g, " ")
+  return `Bearer resource_metadata="${quoted(config.publicBaseUrl)}/.well-known/oauth-protected-resource", error="insufficient_scope", error_description="Missing required scope ${quoted(required)}", scope="${quoted(required)}"`
 }
 
 function insufficientScopeError(required: string, ctx: ToolContext, toolName: string) {

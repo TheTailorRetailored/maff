@@ -29,8 +29,14 @@ export function extractBearerToken(req: Request) {
   return match?.[1]
 }
 
+function quotedAuthParameter(value: string) {
+  // Error messages may originate in token-validation libraries. Never let a
+  // control character or a quote turn a 401 response into a process crash.
+  return value.replace(/\\/g, "\\\\").replace(/"/g, "\\\"").replace(/[\u0000-\u001F\u007F]/g, " ")
+}
+
 export function authChallenge(res: Response, message = "Bearer token required", scope = scopes.maffAccess, error = "invalid_token") {
-  res.setHeader("WWW-Authenticate", `Bearer resource_metadata="${config.publicBaseUrl}/.well-known/oauth-protected-resource", error="${error}", error_description="${message}", scope="${scope}"`)
+  res.setHeader("WWW-Authenticate", `Bearer resource_metadata="${quotedAuthParameter(config.publicBaseUrl)}/.well-known/oauth-protected-resource", error="${quotedAuthParameter(error)}", error_description="${quotedAuthParameter(message)}", scope="${quotedAuthParameter(scope)}"`)
 }
 
 export async function verifyAuth0Token(token: string): Promise<AuthClaims> {
