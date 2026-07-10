@@ -17,6 +17,19 @@ const s = { type: "string" } as const
 const n = { type: "number" } as const
 const anyObj = { type: "object", additionalProperties: true } as const
 const strArray = { type: "array", items: s } as const
+const objectOutputSchema: JsonSchema = { type: "object", additionalProperties: true }
+const itemsOutputSchema: JsonSchema = { type: "object", required: ["items"], properties: { items: { type: "array", items: objectOutputSchema } }, additionalProperties: false }
+const searchKeys = ["claims", "routes", "gaps", "papers", "known_results", "research_deltas", "research_artifacts", "mechanisms", "spinout_candidates", "assumption_regimes", "theorem_contracts", "frontier_snapshots"]
+const searchOutputSchema: JsonSchema = { type: "object", required: searchKeys, properties: Object.fromEntries(searchKeys.map((key) => [key, { type: "array", items: objectOutputSchema }])), additionalProperties: false }
+const idObjectOutputSchema: JsonSchema = { type: "object", required: ["id"], properties: { id: s }, additionalProperties: true }
+const readOnlyToolNames = new Set(["get_my_maff_context", "list_workspaces", "get_project", "list_projects", "get_project_control_room", "list_project_goals", "list_workstreams", "get_workstream", "get_agent_briefing", "list_review_rounds", "get_report", "get_object_graph", "search_research_objects", "list_research_deltas", "list_mechanisms", "list_spinout_candidates", "list_assumption_regimes", "list_theorem_contracts", "get_latest_frontier_snapshot", "list_research_artifacts", "list_research_links", "get_quartz_site_status"])
+const idempotentToolNames = new Set(["rebuild_quartz_site"])
+const outputSchemaFor = (name: string): JsonSchema => {
+  if (["list_research_deltas", "list_research_artifacts", "list_research_links", "list_mechanisms", "list_spinout_candidates", "list_assumption_regimes", "list_theorem_contracts"].includes(name)) return itemsOutputSchema
+  if (name === "search_research_objects") return searchOutputSchema
+  if (["create_project", "create_research_delta", "create_research_artifact", "create_spinout_candidate", "create_research_link"].includes(name)) return idObjectOutputSchema
+  return objectOutputSchema
+}
 const reviewVerdict = {
   type: "string",
   enum: [
@@ -37,8 +50,16 @@ const reviewVerdict = {
   ]
 } as const
 
-type ToolDef = { name: string; description: string; scope: string; role: WorkspaceRole; inputSchema: JsonSchema }
-const tool = (name: string, description: string, role: WorkspaceRole, inputSchema: JsonSchema, scope = scopes.maffAccess): ToolDef => ({ name, description, scope, role, inputSchema })
+type ToolDef = { name: string; description: string; scope: string; role: WorkspaceRole; inputSchema: JsonSchema; outputSchema: JsonSchema; annotations: JsonSchema }
+const tool = (name: string, description: string, role: WorkspaceRole, inputSchema: JsonSchema, scope = scopes.maffAccess): ToolDef => ({
+  name,
+  description,
+  scope,
+  role,
+  inputSchema,
+  outputSchema: outputSchemaFor(name),
+  annotations: { readOnlyHint: readOnlyToolNames.has(name), destructiveHint: false, idempotentHint: idempotentToolNames.has(name) }
+})
 export const mcpServerVersion = "0.4.0-co-mathematician-runtime"
 
 export const toolDefinitions: ToolDef[] = [
@@ -628,7 +649,14 @@ export function compactToolResult(toolName: string, value: unknown) {
       routes: compactList((value as any).routes, compactResearchObject),
       gaps: compactList((value as any).gaps, compactResearchObject),
       papers: compactList((value as any).papers, compactResearchObject),
-      known_results: compactList((value as any).knownResults, compactResearchObject)
+      known_results: compactList((value as any).known_results ?? (value as any).knownResults, compactResearchObject),
+      research_deltas: compactList((value as any).research_deltas, compactResearchObject),
+      research_artifacts: compactList((value as any).research_artifacts, compactResearchObject),
+      mechanisms: compactList((value as any).mechanisms, compactResearchObject),
+      spinout_candidates: compactList((value as any).spinout_candidates, compactResearchObject),
+      assumption_regimes: compactList((value as any).assumption_regimes, compactResearchObject),
+      theorem_contracts: compactList((value as any).theorem_contracts, compactResearchObject),
+      frontier_snapshots: compactList((value as any).frontier_snapshots, compactResearchObject)
     }
   }
   return value
@@ -645,6 +673,8 @@ function toolForList(definition: ToolDef) {
     description: definition.description,
     inputSchema: definition.inputSchema,
     input_schema: definition.inputSchema,
+    outputSchema: definition.outputSchema,
+    annotations: definition.annotations,
     securitySchemes,
     _meta: { securitySchemes }
   }

@@ -139,4 +139,22 @@ assert.equal(compactGraph.nodes.length, 1)
 assert.equal(compactGraph.nodes[0].type, "KnownResult")
 assert.equal(compactGraph.objects.length, 1)
 
+const compactFrontierSearch = compactToolResult("search_research_objects", {
+  claims: [], routes: [], gaps: [], papers: [], known_results: [],
+  research_deltas: [{ id: "d1", title: "Gittins delta" }],
+  research_artifacts: [], mechanisms: [{ id: "m1", title: "Mechanism" }],
+  spinout_candidates: [], assumption_regimes: [], theorem_contracts: [], frontier_snapshots: []
+}) as Record<string, any>
+assert.deepEqual(Object.keys(compactFrontierSearch).sort(), ["assumption_regimes", "claims", "frontier_snapshots", "gaps", "known_results", "mechanisms", "papers", "research_artifacts", "research_deltas", "routes", "spinout_candidates", "theorem_contracts"])
+assert.equal(compactFrontierSearch.research_deltas[0].id, "d1")
+assert.equal(compactFrontierSearch.mechanisms[0].id, "m1")
+
+for (const name of ["create_project", "create_research_delta", "list_research_deltas", "create_research_artifact", "list_research_artifacts", "create_spinout_candidate", "create_research_link", "list_research_links", "search_research_objects", "rebuild_quartz_site"]) {
+  const descriptor = toolsList.tools.find((tool) => tool.name === name) as Record<string, any> | undefined
+  assert.ok(descriptor?.outputSchema, `${name} must advertise outputSchema`)
+  assert.ok(descriptor?.annotations, `${name} must advertise annotations`)
+}
+assert.equal((toolsList.tools.find((tool) => tool.name === "search_research_objects") as any).annotations.readOnlyHint, true)
+assert.equal((toolsList.tools.find((tool) => tool.name === "rebuild_quartz_site") as any).annotations.idempotentHint, true)
+
 console.log("Maff v2 smoke checks passed")
