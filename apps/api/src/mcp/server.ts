@@ -239,7 +239,8 @@ async function callTool(toolName: string, args: any, ctx: ToolContext) {
 
 function contentResult(value: unknown) {
   if (typeof value === "string") return { content: [{ type: "text", text: value }] }
-  const structuredContent = JSON.parse(JSON.stringify(value))
+  const serialized = JSON.parse(JSON.stringify(value))
+  const structuredContent = Array.isArray(serialized) ? { items: serialized } : (serialized ?? {})
   return {
     structuredContent,
     content: [{ type: "text", text: JSON.stringify(structuredContent, null, 2) }]
