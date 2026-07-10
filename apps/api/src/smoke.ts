@@ -3,7 +3,8 @@ import path from "node:path"
 import { assertInsideRoot } from "./vault/paths.js"
 import { dumpMarkdown, parseMarkdown } from "./vault/parser.js"
 import { extractWikilinks } from "./vault/wikilinks.js"
-import { compactToolResult, mcpServerVersion, mcpToolsListResult, toolDefinitions } from "./mcp/server.js"
+import { emailMatchesRequiredDomain } from "./auth/auth0.js"
+import { compactToolResult, contentResult, mcpServerVersion, mcpToolsListResult, structuredContentForTool, toolDefinitions } from "./mcp/server.js"
 
 const root = path.resolve("tmp-workspace")
 assert.equal(assertInsideRoot(root, path.join(root, "vault", "A.md")), path.resolve(root, "vault", "A.md"))
@@ -23,6 +24,11 @@ assert.deepEqual(parsedMarkdown.edges.map((edge) => [edge.targetRef, edge.edgeTy
   ["Paper - Demo", "links_to"]
 ])
 assert.throws(() => parseMarkdown("---\n- invalid\n---\nBody"), /mapping/)
+assert.equal(emailMatchesRequiredDomain(undefined, undefined), true)
+assert.equal(emailMatchesRequiredDomain("Researcher@Example.com", "example.com"), true)
+assert.equal(emailMatchesRequiredDomain("researcher@example.com", "@EXAMPLE.COM"), true)
+assert.equal(emailMatchesRequiredDomain(undefined, "example.com"), false)
+assert.equal(emailMatchesRequiredDomain("researcher@notexample.com", "example.com"), false)
 
 for (const name of [
   "create_project",
@@ -73,7 +79,7 @@ for (const prop of ["report_id", "workstream_id"]) {
   assert.ok(submitReportProps[prop], `submit_report_for_review schema must advertise ${prop}`)
 }
 
-assert.equal(mcpServerVersion, "0.4.0-co-mathematician-runtime")
+assert.equal(mcpServerVersion, "0.4.1-structured-content-objects")
 const toolsList = mcpToolsListResult()
 const toolsListNames = new Set(toolsList.tools.map((tool) => tool.name))
 for (const name of ["get_my_maff_context", "claim_next_assignment", "claim_next_review", "create_project", "propose_project_goal", "approve_project_goal", "create_workstream", "claim_agent_assignment", "start_agent_run", "submit_workstream_report", "record_review_round", "complete_workstream", "create_claim", "create_proof_route", "create_proof_attempt", "create_gap"]) {
@@ -81,6 +87,34 @@ for (const name of ["get_my_maff_context", "claim_next_assignment", "claim_next_
 }
 for (const name of ["maff_bootstrap", "start_workflow", "complete_workflow", "create_task", "claim_task", "get_node", "search_nodes", "list_problem_graphs", "update_node_metadata", "get_skill_pack"]) {
   assert.equal(toolsListNames.has(name), false, `${name} should not be exposed in Maff v2 tools/list`)
+}
+
+for (const listedTool of toolsList.tools) {
+  assert.equal(listedTool.outputSchema.type, "object", `${listedTool.name} must advertise an object outputSchema`)
+  assert.equal(typeof listedTool.annotations.readOnlyHint, "boolean", `${listedTool.name} must advertise tool annotations`)
+}
+
+assert.deepEqual(structuredContentForTool("list_research_deltas", [{ id: "delta-1" }]), { deltas: [{ id: "delta-1" }] })
+assert.deepEqual(structuredContentForTool("list_research_artifacts", []), { artifacts: [] })
+assert.deepEqual(structuredContentForTool("list_research_links", [{ id: "link-1" }]), { links: [{ id: "link-1" }] })
+assert.deepEqual(structuredContentForTool("list_mechanisms", []), { mechanisms: [] })
+assert.deepEqual(structuredContentForTool("list_spinout_candidates", []), { spinouts: [] })
+assert.deepEqual(structuredContentForTool("list_assumption_regimes", []), { assumptions: [] })
+assert.deepEqual(structuredContentForTool("list_theorem_contracts", []), { contracts: [] })
+assert.deepEqual(structuredContentForTool("unknown_array_tool", [1, 2]), { items: [1, 2] })
+assert.deepEqual(structuredContentForTool("unknown_string_tool", "ok"), { result: "ok" })
+assert.deepEqual(structuredContentForTool("unknown_null_tool", null), { result: null })
+assert.deepEqual(contentResult("list_research_deltas", [{ id: "delta-1" }]).structuredContent, { deltas: [{ id: "delta-1" }] })
+
+for (const [name, key] of [
+  ["list_workspaces", "workspaces"],
+  ["list_projects", "projects"],
+  ["list_project_goals", "goals"],
+  ["list_workstreams", "workstreams"],
+  ["list_review_rounds", "reviews"]
+] as const) {
+  const compacted = compactToolResult(name, []) as Record<string, unknown>
+  assert.deepEqual(compacted[key], [], `${name} must wrap its list in ${key}`)
 }
 
 const markLeanVerified = toolDefinitions.find((tool) => tool.name === "mark_lean_verified")

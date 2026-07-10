@@ -3,6 +3,10 @@
 }
 
 {$PUBLIC_BASE_URL_HOSTNAME} {
+	handle /healthz {
+		reverse_proxy api:3001
+	}
+
 	handle /api* {
 		reverse_proxy api:3001
 	}
