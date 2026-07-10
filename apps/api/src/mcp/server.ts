@@ -468,6 +468,27 @@ function compactLeanCheckResult(value: any) {
 
 function compactResearchObject(value: any) {
   if (!value) return value
+  if ("summaryMarkdown" in value && "whatChangedMarkdown" in value) {
+    return { id: value.id, type: "ResearchDelta", title: value.title, confidence: value.confidence, summary_preview: clip(value.summaryMarkdown, 180), what_changed_preview: clip(value.whatChangedMarkdown, 180) }
+  }
+  if ("contentMarkdown" in value && "filePath" in value) {
+    return { id: value.id, type: "ResearchArtifact", title: value.title, kind: value.kind, status: value.status, description_preview: clip(value.descriptionMarkdown, 180), content_preview: clip(value.contentMarkdown, 180), file_path: value.filePath, url: value.url }
+  }
+  if ("maturity" in value && "coreIdeaMarkdown" in value) {
+    return { id: value.id, type: "Mechanism", title: value.title, status: value.status, maturity: value.maturity, description_preview: clip(value.descriptionMarkdown, 180), core_idea_preview: clip(value.coreIdeaMarkdown, 180) }
+  }
+  if ("statementSketchMarkdown" in value) {
+    return { id: value.id, type: "SpinoutCandidate", title: value.title, status: value.status, statement_preview: clip(value.statementSketchMarkdown, 180), why_interesting_preview: clip(value.whyInterestingMarkdown, 180) }
+  }
+  if ("formalStatementMarkdown" in value && "includesMarkdown" in value) {
+    return { id: value.id, type: "AssumptionRegime", title: value.title, status: value.status, description_preview: clip(value.descriptionMarkdown, 180), formal_statement_preview: clip(value.formalStatementMarkdown, 180) }
+  }
+  if ("theoremStatementMarkdown" in value) {
+    return { id: value.id, type: "TheoremContract", title: value.title, status: value.status, confidence: value.confidence, theorem_statement_preview: clip(value.theoremStatementMarkdown, 180) }
+  }
+  if ("snapshotMarkdown" in value) {
+    return { id: value.id, type: "ResearchFrontierSnapshot", title: value.title, source: value.source, snapshot_preview: clip(value.snapshotMarkdown, 180) }
+  }
   if ("claimKind" in value || "confidence" in value) {
     return { id: value.id, type: "Claim", title: value.title, status: value.status, kind: value.kind, confidence: value.confidence, statement_preview: clip(value.statementMarkdown, 180) }
   }
