@@ -955,23 +955,33 @@ export async function getObjectGraph(input: { workspaceId: string; projectId?: s
 }
 
 export async function searchResearchObjects(input: { workspaceId: string; projectId?: string; query?: string; type?: string }) {
-  const contains = input.query ? { contains: input.query, mode: "insensitive" as const } : undefined
   const requestedType = input.type?.toLowerCase().replace(/[\s-]+/g, "_")
   const wants = (names: string[]) => !requestedType || names.includes(requestedType)
-  const text = (fields: string[]) => contains ? fields.map((field) => ({ [field]: contains })) : undefined
+  const terms = input.query?.trim().split(/[^\p{L}\p{N}]+/u).filter(Boolean) ?? []
+  const text = (fields: string[], projectRelation: string | null = "project") => terms.length ? {
+    AND: terms.map((term) => {
+      const contains = { contains: term, mode: "insensitive" as const }
+      return {
+        OR: [
+          ...fields.map((field) => ({ [field]: contains })),
+          ...(projectRelation ? [{ [projectRelation]: { is: { OR: [{ title: contains }, { slug: contains }] } } }] : [])
+        ]
+      }
+    })
+  } : {}
   const [claims, routes, gaps, papers, knownResults, researchDeltas, researchArtifacts, mechanisms, spinoutCandidates, assumptionRegimes, theoremContracts, frontierSnapshots] = await Promise.all([
-    wants(["claim", "claims"]) ? prisma.claim.findMany({ where: { workspaceId: input.workspaceId, projectId: input.projectId, OR: text(["title", "statementMarkdown"]) }, take: 25 }) : [],
-    wants(["proofroute", "proof_route", "route", "routes"]) ? prisma.proofRoute.findMany({ where: { workspaceId: input.workspaceId, projectId: input.projectId, OR: text(["title", "strategyMarkdown"]) }, take: 25 }) : [],
-    wants(["gap", "gaps"]) ? prisma.gap.findMany({ where: { workspaceId: input.workspaceId, projectId: input.projectId, OR: text(["title", "descriptionMarkdown"]) }, take: 25 }) : [],
-    wants(["paper", "papers"]) ? prisma.paper.findMany({ where: { workspaceId: input.workspaceId, projectId: input.projectId, title: contains }, take: 25 }) : [],
-    wants(["knownresult", "known_result", "known_results"]) ? prisma.knownResult.findMany({ where: { workspaceId: input.workspaceId, projectId: input.projectId, OR: text(["title", "statementMarkdown"]) }, take: 25 }) : [],
-    wants(["research_delta", "research_deltas", "delta"]) ? prisma.researchDelta.findMany({ where: { workspaceId: input.workspaceId, projectId: input.projectId, OR: text(["title", "summaryMarkdown", "whatChangedMarkdown", "mainlineEffectMarkdown", "reusableIdeasMarkdown", "blockersMarkdown", "nextMoveMarkdown"]) }, take: 25 }) : [],
-    wants(["artifact", "artifacts", "research_artifact", "research_artifacts"]) ? prisma.researchArtifact.findMany({ where: { workspaceId: input.workspaceId, projectId: input.projectId, OR: text(["title", "descriptionMarkdown", "contentMarkdown"]) }, take: 25 }) : [],
-    wants(["mechanism", "mechanisms"]) ? prisma.mechanism.findMany({ where: { workspaceId: input.workspaceId, projectId: input.projectId, OR: text(["title", "descriptionMarkdown", "coreIdeaMarkdown", "whereItWorkedMarkdown", "whereItFailedMarkdown", "possibleTransfersMarkdown", "killConditionsMarkdown"]) }, take: 25 }) : [],
-    wants(["spinout", "spinouts", "spinout_candidate", "spinout_candidates"]) ? prisma.spinoutCandidate.findMany({ where: { workspaceId: input.workspaceId, originProjectId: input.projectId, OR: text(["title", "statementSketchMarkdown", "whyInterestingMarkdown", "relationToOriginMarkdown", "cheapestNextTestMarkdown", "possiblePayoffMarkdown", "riskMarkdown"]) }, take: 25 }) : [],
-    wants(["assumption", "assumptions", "assumption_regime", "assumption_regimes", "regime"]) ? prisma.assumptionRegime.findMany({ where: { workspaceId: input.workspaceId, projectId: input.projectId, OR: text(["title", "descriptionMarkdown", "formalStatementMarkdown", "includesMarkdown", "excludesMarkdown", "motivationMarkdown"]) }, take: 25 }) : [],
-    wants(["theorem_contract", "theorem_contracts", "contract"]) ? prisma.theoremContract.findMany({ where: { workspaceId: input.workspaceId, projectId: input.projectId, OR: text(["title", "theoremStatementMarkdown", "assumptionsMarkdown", "conclusionMarkdown", "knownDependenciesMarkdown", "knownBlockersMarkdown", "proofStrategyMarkdown", "currentBestVersionMarkdown"]) }, take: 25 }) : [],
-    wants(["frontier_snapshot", "frontier_snapshots", "snapshot"]) ? prisma.researchFrontierSnapshot.findMany({ where: { workspaceId: input.workspaceId, projectId: input.projectId, OR: text(["title", "snapshotMarkdown", "strongestCurrentTheoremMarkdown", "strongestConditionalTheoremMarkdown", "activeBlockersMarkdown", "activeMechanismsMarkdown", "spinoutsMarkdown", "deadOrPausedBranchesMarkdown", "recommendedNextMovesMarkdown"]) }, take: 25 }) : []
+    wants(["claim", "claims"]) ? prisma.claim.findMany({ where: { workspaceId: input.workspaceId, projectId: input.projectId, ...text(["title", "statementMarkdown"]) } as any, take: 25 }) : [],
+    wants(["proofroute", "proof_route", "route", "routes"]) ? prisma.proofRoute.findMany({ where: { workspaceId: input.workspaceId, projectId: input.projectId, ...text(["title", "strategyMarkdown"]) } as any, take: 25 }) : [],
+    wants(["gap", "gaps"]) ? prisma.gap.findMany({ where: { workspaceId: input.workspaceId, projectId: input.projectId, ...text(["title", "descriptionMarkdown"]) } as any, take: 25 }) : [],
+    wants(["paper", "papers"]) ? prisma.paper.findMany({ where: { workspaceId: input.workspaceId, projectId: input.projectId, ...text(["title"], null) } as any, take: 25 }) : [],
+    wants(["knownresult", "known_result", "known_results"]) ? prisma.knownResult.findMany({ where: { workspaceId: input.workspaceId, projectId: input.projectId, ...text(["title", "statementMarkdown"], null) } as any, take: 25 }) : [],
+    wants(["research_delta", "research_deltas", "delta"]) ? prisma.researchDelta.findMany({ where: { workspaceId: input.workspaceId, projectId: input.projectId, ...text(["title", "summaryMarkdown", "whatChangedMarkdown", "mainlineEffectMarkdown", "reusableIdeasMarkdown", "blockersMarkdown", "nextMoveMarkdown"]) } as any, take: 25 }) : [],
+    wants(["artifact", "artifacts", "research_artifact", "research_artifacts"]) ? prisma.researchArtifact.findMany({ where: { workspaceId: input.workspaceId, projectId: input.projectId, ...text(["title", "descriptionMarkdown", "contentMarkdown"]) } as any, take: 25 }) : [],
+    wants(["mechanism", "mechanisms"]) ? prisma.mechanism.findMany({ where: { workspaceId: input.workspaceId, projectId: input.projectId, ...text(["title", "descriptionMarkdown", "coreIdeaMarkdown", "whereItWorkedMarkdown", "whereItFailedMarkdown", "possibleTransfersMarkdown", "killConditionsMarkdown"]) } as any, take: 25 }) : [],
+    wants(["spinout", "spinouts", "spinout_candidate", "spinout_candidates"]) ? prisma.spinoutCandidate.findMany({ where: { workspaceId: input.workspaceId, originProjectId: input.projectId, ...text(["title", "statementSketchMarkdown", "whyInterestingMarkdown", "relationToOriginMarkdown", "cheapestNextTestMarkdown", "possiblePayoffMarkdown", "riskMarkdown"], "originProject") } as any, take: 25 }) : [],
+    wants(["assumption", "assumptions", "assumption_regime", "assumption_regimes", "regime"]) ? prisma.assumptionRegime.findMany({ where: { workspaceId: input.workspaceId, projectId: input.projectId, ...text(["title", "descriptionMarkdown", "formalStatementMarkdown", "includesMarkdown", "excludesMarkdown", "motivationMarkdown"]) } as any, take: 25 }) : [],
+    wants(["theorem_contract", "theorem_contracts", "contract"]) ? prisma.theoremContract.findMany({ where: { workspaceId: input.workspaceId, projectId: input.projectId, ...text(["title", "theoremStatementMarkdown", "assumptionsMarkdown", "conclusionMarkdown", "knownDependenciesMarkdown", "knownBlockersMarkdown", "proofStrategyMarkdown", "currentBestVersionMarkdown"]) } as any, take: 25 }) : [],
+    wants(["frontier_snapshot", "frontier_snapshots", "snapshot"]) ? prisma.researchFrontierSnapshot.findMany({ where: { workspaceId: input.workspaceId, projectId: input.projectId, ...text(["title", "snapshotMarkdown", "strongestCurrentTheoremMarkdown", "strongestConditionalTheoremMarkdown", "activeBlockersMarkdown", "activeMechanismsMarkdown", "spinoutsMarkdown", "deadOrPausedBranchesMarkdown", "recommendedNextMovesMarkdown"]) } as any, take: 25 }) : []
   ])
   return { claims, routes, gaps, papers, known_results: knownResults, research_deltas: researchDeltas, research_artifacts: researchArtifacts, mechanisms, spinout_candidates: spinoutCandidates, assumption_regimes: assumptionRegimes, theorem_contracts: theoremContracts, frontier_snapshots: frontierSnapshots }
 }

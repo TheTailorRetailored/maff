@@ -159,8 +159,14 @@ assert.equal(compactFrontierSearch.spinout_candidates[0].type, "SpinoutCandidate
 assert.equal(compactFrontierSearch.assumption_regimes[0].type, "AssumptionRegime")
 assert.equal(compactFrontierSearch.theorem_contracts[0].type, "TheoremContract")
 assert.equal(compactFrontierSearch.frontier_snapshots[0].type, "ResearchFrontierSnapshot")
+const compactMechanismList = compactToolResult("list_mechanisms", [{ id: "m2", title: "Listed mechanism", maturity: "sketched", coreIdeaMarkdown: "Idea" }]) as any[]
+assert.equal(compactMechanismList[0].type, "Mechanism")
+const compactRegimeList = compactToolResult("list_assumption_regimes", [{ id: "r2", title: "Listed regime", formalStatementMarkdown: "Assume", includesMarkdown: null }]) as any[]
+assert.equal(compactRegimeList[0].type, "AssumptionRegime")
+const compactSpinoutList = compactToolResult("list_spinout_candidates", [{ id: "s2", title: "Listed spinout", statementSketchMarkdown: "Statement" }]) as any[]
+assert.equal(compactSpinoutList[0].type, "SpinoutCandidate")
 
-for (const name of ["create_project", "create_research_delta", "list_research_deltas", "create_research_artifact", "list_research_artifacts", "create_spinout_candidate", "create_research_link", "list_research_links", "search_research_objects", "rebuild_quartz_site"]) {
+for (const name of ["create_project", "create_research_delta", "list_research_deltas", "create_research_artifact", "list_research_artifacts", "create_spinout_candidate", "create_research_link", "list_research_links", "list_mechanisms", "list_assumption_regimes", "list_spinout_candidates", "list_theorem_contracts", "list_frontier_snapshots", "search_research_objects", "rebuild_quartz_site"]) {
   const descriptor = toolsList.tools.find((tool) => tool.name === name) as Record<string, any> | undefined
   assert.ok(descriptor?.outputSchema, `${name} must advertise outputSchema`)
   assert.ok(descriptor?.annotations, `${name} must advertise annotations`)
