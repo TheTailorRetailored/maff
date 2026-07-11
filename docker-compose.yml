@@ -1,6 +1,11 @@
 services:
   db:
     image: postgres:16
+    restart: unless-stopped
+    mem_limit: 160m
+    memswap_limit: 256m
+    cpus: 0.5
+    pids_limit: 96
     environment:
       POSTGRES_DB: research_graph
       POSTGRES_USER: research
@@ -14,12 +19,15 @@ services:
 
   api:
     restart: unless-stopped
+    mem_limit: 192m
+    memswap_limit: 320m
+    cpus: 0.75
+    pids_limit: 128
     build:
       context: .
       dockerfile: ./apps/api/Dockerfile
     depends_on:
       - db
-      - lean-worker
     environment:
       NODE_ENV: production
       DATABASE_URL: postgres://research:${POSTGRES_PASSWORD}@db:5432/research_graph
@@ -47,6 +55,11 @@ services:
       - caddy
 
   web:
+    restart: unless-stopped
+    mem_limit: 96m
+    memswap_limit: 160m
+    cpus: 0.5
+    pids_limit: 96
     build:
       context: ./apps/web
       args:
@@ -66,6 +79,12 @@ services:
       - caddy
 
   lean-worker:
+    profiles: ["lean"]
+    restart: "no"
+    mem_limit: 256m
+    memswap_limit: 384m
+    cpus: 0.75
+    pids_limit: 128
     build: ./workers/lean-worker
     environment:
       LEAN_DATA_DIR: /data/lean-workspaces

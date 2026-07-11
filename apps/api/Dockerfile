@@ -8,6 +8,13 @@ RUN npx prisma generate
 WORKDIR /quartz
 COPY quartz/package*.json ./
 RUN npm ci
+# Quartz's CLI expects to run from a complete Quartz workspace: its components
+# import both ./quartz/* and root metadata such as package.json. The Git package
+# is nested under node_modules, so materialize that pinned workspace while
+# retaining the already-installed dependency tree.
+RUN cp -a node_modules/@jackyzha0/quartz /tmp/quartz-source \
+    && cp -a /tmp/quartz-source/. /quartz/ \
+    && rm -rf /tmp/quartz-source
 
 FROM deps AS build
 WORKDIR /app

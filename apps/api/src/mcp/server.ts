@@ -37,7 +37,7 @@ const listResultKeys: Record<string, string> = {
   list_theorem_contracts: "contracts",
   list_frontier_snapshots: "snapshots"
 }
-const readOnlyToolNames = new Set(["get_my_maff_context", "list_workspaces", "get_project", "list_projects", "get_project_control_room", "list_project_goals", "list_workstreams", "get_workstream", "get_agent_briefing", "list_review_rounds", "get_report", "get_object_graph", "search_research_objects", "list_research_deltas", "list_mechanisms", "list_spinout_candidates", "list_assumption_regimes", "list_theorem_contracts", "list_frontier_snapshots", "get_latest_frontier_snapshot", "list_research_artifacts", "list_research_links", "get_quartz_site_status"])
+const readOnlyToolNames = new Set(["get_my_maff_context", "list_workspaces", "get_project", "list_projects", "get_project_control_room", "list_project_goals", "list_workstreams", "get_workstream", "get_agent_briefing", "list_review_rounds", "get_report", "get_object_graph", "search_research_objects", "list_research_deltas", "list_mechanisms", "list_spinout_candidates", "list_assumption_regimes", "list_theorem_contracts", "list_frontier_snapshots", "get_latest_frontier_snapshot", "get_research_artifact", "list_research_artifacts", "list_research_links", "get_quartz_site_status"])
 const idempotentToolNames = new Set(["rebuild_quartz_site"])
 const outputSchemaFor = (name: string): JsonSchema => {
   const listKey = listResultKeys[name]
@@ -150,7 +150,9 @@ export const toolDefinitions: ToolDef[] = [
   tool("list_frontier_snapshots", "List compressed frontier snapshots.", "viewer", objectSchema({ workspace_id: s, project_id: s, source: s, limit: n }, ["workspace_id"])),
   tool("get_latest_frontier_snapshot", "Read the latest compressed frontier snapshot.", "viewer", objectSchema({ workspace_id: s, project_id: s }, ["workspace_id"])),
   tool("create_research_artifact", "Register a durable research output such as a proof skeleton, memo, theorem map, or migration report.", "editor", objectSchema({ workspace_id: s, project_id: s, title: s, slug: s, kind: s, status: s, description_markdown: s, content_markdown: s, file_path: s, url: s }, ["workspace_id", "title"])),
+  tool("get_research_artifact", "Read one durable research artifact with its complete, untruncated content_markdown body for faithful manuscript or archival export.", "viewer", objectSchema({ workspace_id: s, artifact_id: s }, ["workspace_id", "artifact_id"])),
   tool("list_research_artifacts", "List durable research artifacts.", "viewer", objectSchema({ workspace_id: s, project_id: s, kind: s, status: s, limit: n }, ["workspace_id"])),
+  tool("update_research_artifact", "Update a research artifact, including its complete manuscript body or generated .tex/.bib file references.", "editor", objectSchema({ workspace_id: s, artifact_id: s, patch: anyObj }, ["workspace_id", "artifact_id", "patch"])),
   tool("create_research_link", "Create a generic research relation between any two frontier or legacy objects.", "editor", objectSchema({ workspace_id: s, project_id: s, source_type: s, source_id: s, relation_type: s, target_type: s, target_id: s, note_markdown: s, confidence: s }, ["workspace_id", "source_type", "source_id", "relation_type", "target_type", "target_id"])),
   tool("list_research_links", "List generic research links by source, target, project, or workspace.", "viewer", objectSchema({ workspace_id: s, project_id: s, source_type: s, source_id: s, target_type: s, target_id: s, limit: n }, ["workspace_id"])),
   tool("run_legacy_distillation_preview", "Preview non-destructive legacy distillation into frontier objects. Writes an artifact file, not DB rows.", "editor", objectSchema({ workspace_id: s, output_path: s }, ["workspace_id"])),
@@ -261,7 +263,9 @@ async function callTool(toolName: string, args: any, ctx: ToolContext) {
     case "list_frontier_snapshots": return runtime.listFrontierSnapshots({ workspaceId, projectId: args.project_id, source: args.source, limit: args.limit })
     case "get_latest_frontier_snapshot": return runtime.getLatestFrontierSnapshot({ workspaceId, projectId: args.project_id })
     case "create_research_artifact": return runtime.createResearchArtifact({ workspaceId, projectId: args.project_id, title: args.title, slug: args.slug, kind: args.kind, status: args.status, descriptionMarkdown: args.description_markdown, contentMarkdown: args.content_markdown, filePath: args.file_path, url: args.url, createdByUserId: userId })
+    case "get_research_artifact": return runtime.getResearchArtifact(workspaceId, args.artifact_id)
     case "list_research_artifacts": return runtime.listResearchArtifacts({ workspaceId, projectId: args.project_id, kind: args.kind, status: args.status, limit: args.limit })
+    case "update_research_artifact": return runtime.updateResearchArtifact({ workspaceId, id: args.artifact_id, patch: args.patch })
     case "create_research_link": return runtime.createResearchLink({ workspaceId, projectId: args.project_id, sourceType: args.source_type, sourceId: args.source_id, relationType: args.relation_type, targetType: args.target_type, targetId: args.target_id, noteMarkdown: args.note_markdown, confidence: args.confidence, createdByUserId: userId })
     case "list_research_links": return runtime.listResearchLinks({ workspaceId, projectId: args.project_id, sourceType: args.source_type, sourceId: args.source_id, targetType: args.target_type, targetId: args.target_id, limit: args.limit })
     case "run_legacy_distillation_preview": return runtime.runLegacyDistillationPreview({ workspaceId, outputPath: args.output_path })
@@ -678,6 +682,24 @@ export function compactToolResult(toolName: string, value: unknown) {
     if (toolName === "list_review_rounds") return { reviews: compactList(value as any[], compactReview) ?? [] }
     if (toolName === "get_report") return compactReportDetail(value)
     if (toolName === "create_artifact") return compactArtifact(value)
+    if (toolName === "get_research_artifact" || toolName === "update_research_artifact") {
+      const artifact = value as any
+      return {
+        id: artifact.id,
+        type: "ResearchArtifact",
+        project_id: artifact.projectId,
+        title: artifact.title,
+        slug: artifact.slug,
+        kind: artifact.kind,
+        status: artifact.status,
+        description_markdown: artifact.descriptionMarkdown,
+        content_markdown: artifact.contentMarkdown,
+        file_path: artifact.filePath,
+        url: artifact.url,
+        created_at: artifact.createdAt,
+        updated_at: artifact.updatedAt
+      }
+    }
     if (toolName === "link_objects") return compactGraphEdge(value)
     if (toolName === "lean_check") return compactLeanCheckResult(value)
     if (toolName === "create_lean_stub") return { result: (value as any).result, lean_theorem: compactResearchObject((value as any).leanTheorem) }

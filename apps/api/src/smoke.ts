@@ -215,12 +215,31 @@ assert.equal(compactRegimeList[0].type, "AssumptionRegime")
 const compactSpinoutList = compactToolResult("list_spinout_candidates", [{ id: "s2", title: "Listed spinout", statementSketchMarkdown: "Statement" }]) as any[]
 assert.equal(compactSpinoutList[0].type, "SpinoutCandidate")
 
-for (const name of ["create_project", "create_research_delta", "list_research_deltas", "create_research_artifact", "list_research_artifacts", "create_spinout_candidate", "create_research_link", "list_research_links", "list_mechanisms", "list_assumption_regimes", "list_spinout_candidates", "list_theorem_contracts", "list_frontier_snapshots", "search_research_objects", "rebuild_quartz_site"]) {
+for (const name of ["create_project", "create_research_delta", "list_research_deltas", "create_research_artifact", "get_research_artifact", "update_research_artifact", "list_research_artifacts", "create_spinout_candidate", "create_research_link", "list_research_links", "list_mechanisms", "list_assumption_regimes", "list_spinout_candidates", "list_theorem_contracts", "list_frontier_snapshots", "search_research_objects", "rebuild_quartz_site"]) {
   const descriptor = toolsList.tools.find((tool) => tool.name === name) as Record<string, any> | undefined
   assert.ok(descriptor?.outputSchema, `${name} must advertise outputSchema`)
   assert.ok(descriptor?.annotations, `${name} must advertise annotations`)
 }
 assert.equal((toolsList.tools.find((tool) => tool.name === "search_research_objects") as any).annotations.readOnlyHint, true)
+assert.equal((toolsList.tools.find((tool) => tool.name === "get_research_artifact") as any).annotations.readOnlyHint, true)
 assert.equal((toolsList.tools.find((tool) => tool.name === "rebuild_quartz_site") as any).annotations.idempotentHint, true)
+
+const fullArtifactBody = "A".repeat(12_000)
+const fullArtifact = compactToolResult("get_research_artifact", {
+  id: "artifact-1",
+  projectId: "project-1",
+  title: "Manuscript",
+  slug: "manuscript",
+  kind: "paper_draft",
+  status: "draft",
+  descriptionMarkdown: "A paper draft",
+  contentMarkdown: fullArtifactBody,
+  filePath: "manuscripts/paper.tex",
+  url: null,
+  createdAt: "2026-07-11T00:00:00.000Z",
+  updatedAt: "2026-07-11T01:00:00.000Z"
+}) as Record<string, any>
+assert.equal(fullArtifact.content_markdown, fullArtifactBody, "get_research_artifact must not truncate manuscript bodies")
+assert.equal(fullArtifact.file_path, "manuscripts/paper.tex")
 
 console.log("Maff v2 smoke checks passed")

@@ -19,7 +19,9 @@ environment files are not part of the repository.
 - `api`: TypeScript REST and MCP server with Auth0 JWT verification through JWKS.
 - `web`: React/Vite authenticated workbench for workspaces, nodes, graph, tasks, skills, and Lean jobs.
 - `db`: PostgreSQL index/cache and permission store.
-- `lean-worker`: internal Lean 4 worker with persistent Elan, cache, Lake, and workspace volumes.
+- `lean-worker`: optional internal Lean 4 worker with persistent Elan, cache,
+  Lake, and workspace volumes. It is disabled by default and enabled only for
+  formalization work.
 - `quartz`: self-hosted Quartz renderer for workspace vaults.
 - `caddy`: reverse proxy for `/app`, `/api`, `/mcp`, and `/sites`.
 
@@ -52,6 +54,20 @@ cp .env.example .env
 docker compose up --build
 ```
 
+The default stack starts PostgreSQL, the API, and the web application. Lean is
+intentionally opt-in because its toolchain and workspaces are comparatively
+heavy:
+
+```bash
+docker compose --profile lean up -d lean-worker
+# Run formalization work, then release its runtime memory:
+docker compose stop lean-worker
+```
+
+The API remains available while Lean is stopped. Lean-specific operations will
+fail until the worker is started; ordinary graph, task, REST, and MCP workflows
+do not require it.
+
 Local ports are bound to localhost:
 
 - Web: `http://127.0.0.1:3000`
@@ -78,7 +94,7 @@ git clone <private-repo-url> maff
 cd maff
 cp .env.example .env
 # fill Auth0 variables and POSTGRES_PASSWORD
-docker compose --profile proxy up -d --build
+docker compose --profile proxy up -d --build db api web caddy
 ```
 
 Set `PUBLIC_BASE_URL_HOSTNAME=research.example.com` in `.env`. The bundled Caddyfile preserves `/api`, `/mcp`, `/.well-known/oauth-protected-resource`, and `/sites` prefixes when proxying to the API.
@@ -88,8 +104,20 @@ Set `PUBLIC_BASE_URL_HOSTNAME=research.example.com` in `.env`. The bundled Caddy
 If your VPS already runs Caddy, nginx, Traefik, or another proxy, do not start the repo-managed Caddy service:
 
 ```bash
-docker compose up -d --build db api web lean-worker
+docker compose up -d --build db api web
 ```
+
+Enable the capped Lean worker only when it is needed:
+
+```bash
+docker compose --profile lean up -d lean-worker
+docker compose stop lean-worker
+```
+
+The compose file applies conservative CPU, process, memory, and swap ceilings
+for a small VPS. Build images locally or in CI where possible; these runtime
+ceilings are not intended to accommodate dependency installation or image
+builds on a one-gigabyte production host.
 
 Configure the external proxy with prefix-preserving routes:
 
@@ -125,6 +153,27 @@ Maff only acts as an MCP protected resource. It does not implement OAuth registr
 Later users always receive their own private workspace. Shared workspace membership is explicit by default; set `AUTO_JOIN_SHARED_WORKSPACE=true` only if you want new users to be added automatically as viewers.
 
 ## MCP
+
+### Manuscripts and published sites
+
+Maff treats these as separate outputs:
+
+- a manuscript is a `ResearchArtifact` whose complete body can be retrieved
+  with `get_research_artifact`, converted or authored as `.tex` plus `.bib`,
+  and compiled to PDF by a LaTeX/PDF toolchain;
+- Quartz publishes an Obsidian-compatible Markdown workspace as a browsable
+  website. It is useful for a research notebook or public/private digital
+  garden, but it is not part of manuscript generation.
+
+`list_research_artifacts` intentionally returns compact previews. Use
+`get_research_artifact` before faithful export so the complete
+`content_markdown` body is available. Use `update_research_artifact` to record
+the revised body or the resulting `.tex`, `.bib`, and PDF references.
+
+The API image materializes the pinned Quartz implementation during its Docker
+build. This is required because the Quartz bootstrap CLI resolves
+`./quartz/build.ts` from the Quartz workspace; installing the Git package alone
+does not place that source at the expected path.
 
 Remote MCP endpoint:
 
