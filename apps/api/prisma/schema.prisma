@@ -134,6 +134,29 @@ enum ReviewVerdict {
   escalate
 }
 
+/// Approval is deliberately scoped: no value is a transitive mathematical approval.
+enum ReviewType {
+  legacy_unspecified
+  ingredient_correctness
+  proof_integration
+  end_to_end_mathematical
+  novelty
+  bibliography
+  editorial
+  source_fidelity
+  compile
+  numerical_verification
+  formal_verification
+  other
+}
+
+enum ReviewIndependence {
+  author_self_check
+  same_workstream_reviewer
+  independent_reviewer
+  external_referee_style
+}
+
 enum ArtifactKind {
   markdown
   latex
@@ -415,6 +438,10 @@ model Workspace {
   theoremContracts TheoremContract[]
   frontierSnapshots ResearchFrontierSnapshot[]
   researchArtifacts ResearchArtifact[]
+  manuscriptVersions ManuscriptVersion[]
+  proofObligations ProofObligation[]
+  reviewObligationChecks ReviewObligationCheck[]
+  workstreamDependencies WorkstreamDependency[]
   researchLinks ResearchLink[]
 }
 
@@ -584,6 +611,8 @@ model Project {
   theoremContracts TheoremContract[]
   frontierSnapshots ResearchFrontierSnapshot[]
   researchArtifacts ResearchArtifact[]
+  manuscriptVersions ManuscriptVersion[]
+  proofObligations ProofObligation[]
 
   @@unique([workspaceId, slug])
   @@index([workspaceId, status])
@@ -653,6 +682,8 @@ model Workstream {
   proofRoutes ProofRoute[]
   proofAttempts ProofAttempt[]
   experiments Experiment[]
+  dependencies WorkstreamDependency[] @relation("DependentWorkstream")
+  dependents WorkstreamDependency[] @relation("PrerequisiteWorkstream")
 
   @@index([workspaceId, projectId, status, priority])
   @@index([workspaceId, goalId])
@@ -742,6 +773,14 @@ model ReviewRound {
   checkedRefs         Json
   bodyMarkdown        String
   createdByAgentRunId String?       @db.Uuid
+  reviewType          ReviewType    @default(legacy_unspecified)
+  targetVersion       String?
+  scope               Json          @default("{}")
+  inspectedArtifactIds Json         @default("[]")
+  checkedObligationIds Json         @default("[]")
+  parentMathReopenable Boolean      @default(true)
+  priorApprovalsEvidenceOnly Boolean @default(true)
+  independence        ReviewIndependence @default(same_workstream_reviewer)
   createdAt           DateTime      @default(now())
 
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
@@ -749,8 +788,88 @@ model ReviewRound {
   workstream Workstream @relation(fields: [workstreamId], references: [id], onDelete: Cascade)
   report WorkstreamReport? @relation(fields: [reportId], references: [id], onDelete: SetNull)
   createdByAgentRun AgentRun? @relation(fields: [createdByAgentRunId], references: [id], onDelete: SetNull)
+  obligationChecks ReviewObligationCheck[]
 
   @@index([workspaceId, workstreamId, verdict])
+  @@index([workspaceId, projectId, reviewType, targetVersion, verdict])
+}
+
+model ManuscriptVersion {
+  id                  String   @id @default(uuid()) @db.Uuid
+  workspaceId         String   @db.Uuid
+  projectId           String   @db.Uuid
+  artifactId          String   @db.Uuid
+  version             Int
+  contentHash         String
+  theoremFingerprint  String
+  citationFingerprint String
+  isCanonical         Boolean  @default(false)
+  supersededAt        DateTime?
+  createdAt           DateTime @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  artifact ResearchArtifact @relation(fields: [artifactId], references: [id], onDelete: Cascade)
+  obligations ProofObligation[]
+
+  @@unique([projectId, version])
+  @@unique([projectId, contentHash])
+  @@index([workspaceId, projectId, isCanonical])
+}
+
+model ProofObligation {
+  id                  String   @id @default(uuid()) @db.Uuid
+  workspaceId         String   @db.Uuid
+  projectId           String   @db.Uuid
+  manuscriptVersionId String   @db.Uuid
+  claimId             String?  @db.Uuid
+  title               String
+  statementMarkdown   String
+  sourceArtifactId    String?  @db.Uuid
+  manuscriptLocation  String?
+  required            Boolean  @default(true)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  manuscriptVersion ManuscriptVersion @relation(fields: [manuscriptVersionId], references: [id], onDelete: Cascade)
+  claim Claim? @relation(fields: [claimId], references: [id], onDelete: SetNull)
+  sourceArtifact ResearchArtifact? @relation("ObligationSourceArtifact", fields: [sourceArtifactId], references: [id], onDelete: SetNull)
+  checks ReviewObligationCheck[]
+
+  @@index([workspaceId, manuscriptVersionId])
+  @@index([workspaceId, claimId])
+}
+
+model ReviewObligationCheck {
+  id                String   @id @default(uuid()) @db.Uuid
+  workspaceId       String   @db.Uuid
+  reviewRoundId     String   @db.Uuid
+  proofObligationId String   @db.Uuid
+  status            String
+  evidenceMarkdown  String?
+  createdAt         DateTime @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  reviewRound ReviewRound @relation(fields: [reviewRoundId], references: [id], onDelete: Cascade)
+  proofObligation ProofObligation @relation(fields: [proofObligationId], references: [id], onDelete: Cascade)
+  @@unique([reviewRoundId, proofObligationId])
+  @@index([workspaceId, proofObligationId, status])
+}
+
+model WorkstreamDependency {
+  id                     String   @id @default(uuid()) @db.Uuid
+  workspaceId            String   @db.Uuid
+  dependentWorkstreamId  String   @db.Uuid
+  prerequisiteWorkstreamId String @db.Uuid
+  createdAt              DateTime @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  dependent Workstream @relation("DependentWorkstream", fields: [dependentWorkstreamId], references: [id], onDelete: Cascade)
+  prerequisite Workstream @relation("PrerequisiteWorkstream", fields: [prerequisiteWorkstreamId], references: [id], onDelete: Cascade)
+  @@unique([dependentWorkstreamId, prerequisiteWorkstreamId])
+  @@index([workspaceId, prerequisiteWorkstreamId])
 }
 
 model Artifact {
@@ -813,6 +932,7 @@ model Claim {
   gaps Gap[]
   counterexamples Counterexample[]
   formalizationTargets FormalizationTarget[]
+  proofObligations ProofObligation[]
 
   @@index([workspaceId, projectId, status])
 }
@@ -1236,6 +1356,8 @@ model ResearchArtifact {
 
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   project   Project?  @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  manuscriptVersions ManuscriptVersion[]
+  sourceForObligations ProofObligation[] @relation("ObligationSourceArtifact")
 
   @@unique([workspaceId, slug])
   @@index([workspaceId])

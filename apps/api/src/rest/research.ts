@@ -293,7 +293,7 @@ export function registerResearchRuntimeRoutes(router: Router) {
   router.post("/workspaces/:id/projects/:projectId/workstreams", asyncHandler(async (req, res) => {
     const user = requireUser(req)
     await requireWorkspaceRole(user.id, req.params.id, "editor")
-    res.status(201).json(await runtime.createWorkstream({ workspaceId: req.params.id, projectId: req.params.projectId, goalId: req.body.goalId, parentWorkstreamId: req.body.parentWorkstreamId, title: req.body.title, kind: req.body.kind, coordinatorRole: req.body.coordinatorRole, priority: req.body.priority, targetObjectType: req.body.targetObjectType, targetObjectId: req.body.targetObjectId, instructions: req.body.instructions, allowedWrites: req.body.allowedWrites, forbiddenActions: req.body.forbiddenActions, successCriteria: req.body.successCriteria, reviewPolicy: req.body.reviewPolicy }))
+    res.status(201).json(await runtime.createWorkstream({ workspaceId: req.params.id, projectId: req.params.projectId, goalId: req.body.goalId, parentWorkstreamId: req.body.parentWorkstreamId, title: req.body.title, kind: req.body.kind, coordinatorRole: req.body.coordinatorRole, priority: req.body.priority, targetObjectType: req.body.targetObjectType, targetObjectId: req.body.targetObjectId, instructions: req.body.instructions, allowedWrites: req.body.allowedWrites, forbiddenActions: req.body.forbiddenActions, successCriteria: req.body.successCriteria, reviewPolicy: req.body.reviewPolicy, dependencyWorkstreamIds: req.body.dependencyWorkstreamIds }))
   }))
 
   router.get("/workspaces/:id/workstreams/:workstreamId", asyncHandler(async (req, res) => {
@@ -335,7 +335,7 @@ export function registerResearchRuntimeRoutes(router: Router) {
   router.post("/workspaces/:id/workstreams/:workstreamId/reviews", asyncHandler(async (req, res) => {
     const user = requireUser(req)
     await requireWorkspaceRole(user.id, req.params.id, "editor")
-    res.status(201).json(await runtime.recordReviewRound({ workspaceId: req.params.id, workstreamId: req.params.workstreamId, reportId: req.body.reportId, targetObjectType: req.body.targetObjectType, targetObjectId: req.body.targetObjectId, reviewerRole: req.body.reviewerRole, verdict: req.body.verdict, issues: req.body.issues, requiredChanges: req.body.requiredChanges, checkedRefs: req.body.checkedRefs, bodyMarkdown: req.body.bodyMarkdown, createdByAgentRunId: req.body.createdByAgentRunId }))
+    res.status(201).json(await runtime.recordReviewRound({ workspaceId: req.params.id, workstreamId: req.params.workstreamId, reportId: req.body.reportId, targetObjectType: req.body.targetObjectType, targetObjectId: req.body.targetObjectId, reviewerRole: req.body.reviewerRole, verdict: req.body.verdict, reviewType: req.body.reviewType, targetVersion: req.body.targetVersion, scope: req.body.scope, inspectedArtifactIds: req.body.inspectedArtifactIds, checkedObligationIds: req.body.checkedObligationIds, parentMathReopenable: req.body.parentMathReopenable, priorApprovalsEvidenceOnly: req.body.priorApprovalsEvidenceOnly, independence: req.body.independence, obligationChecks: req.body.obligationChecks, issues: req.body.issues, requiredChanges: req.body.requiredChanges, checkedRefs: req.body.checkedRefs, bodyMarkdown: req.body.bodyMarkdown, createdByAgentRunId: req.body.createdByAgentRunId }))
   }))
 
   router.get("/workspaces/:id/workstreams/:workstreamId/reviews", asyncHandler(async (req, res) => {

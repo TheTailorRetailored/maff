@@ -1,11 +1,12 @@
 import fs from "node:fs/promises"
 import path from "node:path"
-import { randomUUID } from "node:crypto"
+import { randomUUID, createHash } from "node:crypto"
 import type { AgentRole, ClaimStatus, Prisma, ReviewVerdict, WorkstreamKind } from "@prisma/client"
 import { prisma } from "../db/prisma.js"
 import { config } from "../config.js"
 import { leanClient } from "../lean/leanClient.js"
 import { requireWorkspaceRole } from "../auth/permissions.js"
+import { computeSubmissionReadiness, workstreamDependenciesSatisfied } from "./readiness.js"
 
 const roleRecipeFiles: Record<AgentRole, string> = {
   ProjectCoordinator: "project_coordinator.md",
@@ -338,11 +339,18 @@ export async function createWorkstream(input: {
   forbiddenActions?: unknown
   successCriteria?: unknown
   reviewPolicy?: unknown
+  dependencyWorkstreamIds?: string[]
 }) {
   await requireRunnableGoal(input.workspaceId, input.goalId, input.kind)
   const role = input.coordinatorRole ?? roleByKind[input.kind]
-  return prisma.workstream.create({
-    data: {
+  const prerequisites = [...new Set(input.dependencyWorkstreamIds ?? [])].filter(Boolean)
+  if (prerequisites.length) {
+    const count = await prisma.workstream.count({ where: { workspaceId: input.workspaceId, projectId: input.projectId, id: { in: prerequisites } } })
+    if (count !== prerequisites.length) throw new Error("Every workstream dependency must belong to this project and workspace.")
+  }
+  return prisma.$transaction(async (tx) => {
+    const workstream = await tx.workstream.create({
+      data: {
       workspaceId: input.workspaceId,
       projectId: input.projectId,
       goalId: input.goalId,
@@ -359,7 +367,10 @@ export async function createWorkstream(input: {
       forbiddenActions: input.forbiddenActions !== undefined ? jsonArray(input.forbiddenActions) : forbiddenActions(role),
       successCriteria: input.successCriteria !== undefined ? jsonArray(input.successCriteria) : ["Submit a report with linked artifacts and uncertainties.", "Pass required review rounds."],
       reviewPolicy: input.reviewPolicy !== undefined ? jsonObject(input.reviewPolicy) : { min_approved_rounds: 1, reviewer_role: "HostileReviewer" }
-    }
+      }
+    })
+    if (prerequisites.length) await tx.workstreamDependency.createMany({ data: prerequisites.map((prerequisiteWorkstreamId) => ({ workspaceId: input.workspaceId, dependentWorkstreamId: workstream.id, prerequisiteWorkstreamId })) })
+    return workstream
   })
 }
 
@@ -424,6 +435,11 @@ export async function claimAgentAssignment(input: { workspaceId: string; project
       where: { workspaceId: input.workspaceId, projectId: input.projectId, status: { in: ["ready", "planned", "revision_required"] } },
       orderBy: [{ priority: "desc" }, { updatedAt: "asc" }]
     })
+  const dependencyState = await workstreamDependenciesSatisfied(input.workspaceId, workstream.id)
+  if (!dependencyState.satisfied) {
+    const blocked = dependencyState.dependencies.filter((d) => d.prerequisite.status !== "completed" || !d.prerequisite.reviews.some((r) => r.verdict === "approved")).map((d) => d.prerequisiteWorkstreamId)
+    throw new Error(`Workstream is blocked by incomplete prerequisite workstreams: ${blocked.join(", ")}`)
+  }
   const claimed = await prisma.workstream.update({
     where: { id: workstream.id, workspaceId: input.workspaceId },
     data: { status: "claimed", claimedSessionId: input.sessionId, assignedToUserId: input.userId, leaseExpiresAt }
@@ -693,6 +709,15 @@ export async function recordReviewRound(input: {
   issues?: unknown
   requiredChanges?: unknown
   checkedRefs?: unknown
+  reviewType?: string
+  targetVersion?: string
+  scope?: unknown
+  inspectedArtifactIds?: unknown
+  checkedObligationIds?: unknown
+  parentMathReopenable?: boolean
+  priorApprovalsEvidenceOnly?: boolean
+  independence?: string
+  obligationChecks?: Array<{ proofObligationId: string; status: string; evidenceMarkdown?: string }>
   bodyMarkdown: string
   createdByAgentRunId?: string
 }) {
@@ -702,6 +727,12 @@ export async function recordReviewRound(input: {
     if (run.workstreamId === input.workstreamId && run.role === workstream.coordinatorRole) throw new Error("Reviewer cannot review or edit the same workstream output in the same ReviewRound.")
   }
   const verdict = asReviewVerdict(input.verdict)
+  const reviewType = input.reviewType ?? "legacy_unspecified"
+  const allowedReviewTypes = ["legacy_unspecified", "ingredient_correctness", "proof_integration", "end_to_end_mathematical", "novelty", "bibliography", "editorial", "source_fidelity", "compile", "numerical_verification", "formal_verification", "other"]
+  const allowedIndependence = ["author_self_check", "same_workstream_reviewer", "independent_reviewer", "external_referee_style"]
+  if (!allowedReviewTypes.includes(reviewType)) throw new Error(`Invalid review type: ${reviewType}`)
+  if (input.independence && !allowedIndependence.includes(input.independence)) throw new Error(`Invalid review independence: ${input.independence}`)
+  if (reviewType !== "legacy_unspecified" && !input.targetVersion) throw new Error("Scoped reviews require targetVersion (canonical ManuscriptVersion id or content hash).")
   if (verdict === "approved" && workstream.kind === "computation") {
     const report = input.reportId ? await prisma.workstreamReport.findFirst({ where: { workspaceId: input.workspaceId, id: input.reportId } }) : null
     const artifactRefs = normalizeLines(report?.artifactRefs)
@@ -722,9 +753,22 @@ export async function recordReviewRound(input: {
       requiredChanges: jsonArray(input.requiredChanges),
       checkedRefs: jsonArray(input.checkedRefs),
       bodyMarkdown: input.bodyMarkdown,
-      createdByAgentRunId: input.createdByAgentRunId
+      createdByAgentRunId: input.createdByAgentRunId,
+      reviewType: reviewType as any,
+      targetVersion: input.targetVersion,
+      scope: jsonObject(input.scope),
+      inspectedArtifactIds: jsonArray(input.inspectedArtifactIds),
+      checkedObligationIds: jsonArray(input.checkedObligationIds),
+      parentMathReopenable: input.parentMathReopenable ?? true,
+      priorApprovalsEvidenceOnly: input.priorApprovalsEvidenceOnly ?? true,
+      independence: (input.independence ?? "same_workstream_reviewer") as any
     }
   })
+  if (input.obligationChecks?.length) {
+    const allowed = await prisma.proofObligation.count({ where: { workspaceId: input.workspaceId, id: { in: input.obligationChecks.map((c) => c.proofObligationId) } } })
+    if (allowed !== new Set(input.obligationChecks.map((c) => c.proofObligationId)).size) throw new Error("Review obligation checks must reference accessible proof obligations.")
+    await prisma.reviewObligationCheck.createMany({ data: input.obligationChecks.map((c) => ({ workspaceId: input.workspaceId, reviewRoundId: review.id, proofObligationId: c.proofObligationId, status: c.status, evidenceMarkdown: c.evidenceMarkdown })) })
+  }
   const workstreamStatus = verdict === "approved" ? "approved" : verdict === "needs_revision" || verdict === "rejected" ? "revision_required" : verdict === "escalate" ? "escalated" : "blocked"
   const reportStatus = verdict === "approved" ? "reviewed_approved" : "reviewed_needs_revision"
   await prisma.workstream.update({ where: { id: input.workstreamId, workspaceId: input.workspaceId }, data: { status: workstreamStatus as any } })
@@ -734,6 +778,8 @@ export async function recordReviewRound(input: {
 
 export async function completeWorkstream(input: { workspaceId: string; workstreamId: string }) {
   const workstream = await prisma.workstream.findFirstOrThrow({ where: { workspaceId: input.workspaceId, id: input.workstreamId } })
+  const dependencyState = await workstreamDependenciesSatisfied(input.workspaceId, input.workstreamId)
+  if (!dependencyState.satisfied) throw new Error("Workstream cannot complete while prerequisite workstreams are incomplete or unreviewed.")
   const policy = workstream.reviewPolicy as Record<string, unknown>
   const minApprovals = typeof policy.min_approved_rounds === "number" ? policy.min_approved_rounds : 1
   const approvedReviews = await prisma.reviewRound.count({ where: { workspaceId: input.workspaceId, workstreamId: input.workstreamId, verdict: "approved" } })
@@ -1010,13 +1056,14 @@ export async function getProjectControlRoom(workspaceId: string, projectId: stri
     prisma.gap.findMany({ where: { workspaceId, projectId, status: { in: ["open", "assigned"] } }, orderBy: { updatedAt: "desc" }, take: 12 }),
     prisma.reviewRound.findMany({ where: { workspaceId, projectId }, orderBy: { createdAt: "desc" }, take: 12 })
   ])
-  const suggested = workstreams.find((w) => ["ready", "planned", "revision_required"].includes(w.status)) ?? null
+  const dependencyStates = await Promise.all(workstreams.map(async (w) => ({ workstream: w, ...(await workstreamDependenciesSatisfied(workspaceId, w.id)) })))
+  const readyWorkstreams = dependencyStates.filter((item) => item.satisfied && ["ready", "planned", "revision_required"].includes(item.workstream.status)).map((item) => item.workstream)
+  const suggested = readyWorkstreams[0] ?? null
   const suggestedPrompts = {
     coordinator: coordinatorChatPrompt(project.title),
     next_specialist: suggested ? agentChatPrompt(project.title, suggested.coordinatorRole) : null,
     next_reviewer: needsReview[0] ? reviewerChatPrompt(project.title) : null,
-    ready_specialists: workstreams
-      .filter((w) => ["ready", "planned", "revision_required"].includes(w.status))
+    ready_specialists: readyWorkstreams
       .slice(0, 6)
       .map((w) => ({ workstreamId: w.id, title: w.title, role: w.coordinatorRole, kind: w.kind, prompt: agentChatPrompt(project.title, w.coordinatorRole) })),
     review_chats: needsReview.slice(0, 6).map((w) => ({ workstreamId: w.id, title: w.title, prompt: reviewerChatPrompt(project.title) }))
@@ -1030,7 +1077,8 @@ export async function getProjectControlRoom(workspaceId: string, projectId: stri
     return acc
   }, {})
   const frontier = await getResearchFrontierSummary({ workspaceId, projectId })
-  return { project, goals_by_status: groupedGoals, workstreams_by_status: groupedWorkstreams, needs_review: needsReview, blocked_or_escalated: blocked, recent_agent_runs: recentAgentRuns, key_claims: keyClaims, open_gaps: openGaps, recent_reviews: reviews, suggested_next_assignment: suggested, suggested_chat_prompts: suggestedPrompts, frontier }
+  const readiness = await computeSubmissionReadiness(workspaceId, projectId)
+  return { project, canonical_working_paper: readiness.canonical_manuscript ?? null, readiness, workstream_dependency_states: dependencyStates.map((item) => ({ workstream_id: item.workstream.id, satisfied: item.satisfied, blocking_prerequisite_ids: item.dependencies.filter((d) => d.prerequisite.status !== "completed" || !d.prerequisite.reviews.some((r) => r.verdict === "approved")).map((d) => d.prerequisiteWorkstreamId) })), goals_by_status: groupedGoals, workstreams_by_status: groupedWorkstreams, needs_review: needsReview, blocked_or_escalated: blocked, recent_agent_runs: recentAgentRuns, key_claims: keyClaims, open_gaps: openGaps, recent_reviews: reviews, suggested_next_assignment: suggested, suggested_chat_prompts: suggestedPrompts, frontier }
 }
 
 type FrontierListInput = { workspaceId: string; projectId?: string; status?: string; kind?: string; limit?: number }
@@ -1256,8 +1304,48 @@ export async function createResearchArtifact(input: FrontierWriteInput) {
   return prisma.researchArtifact.create({ data: { workspaceId: input.workspaceId, projectId: input.projectId, title: input.title, slug: input.slug ? slugify(input.slug) : uniqueSlug(input.title), kind: input.kind ?? "other", status: input.status ?? "draft", descriptionMarkdown: input.descriptionMarkdown, contentMarkdown: input.contentMarkdown, filePath: input.filePath, url: input.url, createdByUserId: input.createdByUserId } })
 }
 
+function fingerprint(value: string) { return createHash("sha256").update(value).digest("hex") }
+
+/** Creates a new canonical version; parent approvals are links/evidence only and never copied. */
+export async function createManuscriptVersion(input: { workspaceId: string; projectId: string; artifactId: string; parentArtifactIds?: string[]; claimIds?: string[]; theoremFingerprint?: string; citationFingerprint?: string }) {
+  const artifact = await prisma.researchArtifact.findFirstOrThrow({ where: { workspaceId: input.workspaceId, projectId: input.projectId, id: input.artifactId } })
+  const contentHash = fingerprint(artifact.contentMarkdown ?? "")
+  return prisma.$transaction(async (tx) => {
+    const prior = await tx.manuscriptVersion.findFirst({ where: { workspaceId: input.workspaceId, projectId: input.projectId, isCanonical: true } })
+    const existing = await tx.manuscriptVersion.findFirst({ where: { projectId: input.projectId, contentHash } })
+    if (existing) return existing
+    if (prior) await tx.manuscriptVersion.update({ where: { id: prior.id }, data: { isCanonical: false, supersededAt: new Date() } })
+    const version = await tx.manuscriptVersion.create({ data: { workspaceId: input.workspaceId, projectId: input.projectId, artifactId: artifact.id, version: (prior?.version ?? 0) + 1, contentHash, theoremFingerprint: input.theoremFingerprint ?? fingerprint(JSON.stringify(input.claimIds ?? [])), citationFingerprint: input.citationFingerprint ?? fingerprint((artifact.contentMarkdown ?? "").match(/\\[[^\]]+\]|\\cite\{[^}]+\}/g)?.join("|") ?? ""), isCanonical: true } })
+    await tx.project.update({ where: { id: input.projectId }, data: { currentWorkingPaperId: version.id } })
+    if (input.parentArtifactIds?.length) await tx.researchLink.createMany({ data: [...new Set(input.parentArtifactIds)].map((targetId) => ({ workspaceId: input.workspaceId, projectId: input.projectId, sourceType: "ManuscriptVersion", sourceId: version.id, relationType: "derived_from", targetType: "ResearchArtifact", targetId })) })
+    if (input.claimIds?.length) await tx.researchLink.createMany({ data: [...new Set(input.claimIds)].map((targetId) => ({ workspaceId: input.workspaceId, projectId: input.projectId, sourceType: "ManuscriptVersion", sourceId: version.id, relationType: "contribution_claim", targetType: "Claim", targetId })) })
+    return version
+  })
+}
+
+export async function createProofObligation(input: { workspaceId: string; projectId: string; manuscriptVersionId: string; title: string; statementMarkdown: string; claimId?: string; sourceArtifactId?: string; manuscriptLocation?: string; required?: boolean }) {
+  return prisma.proofObligation.create({ data: { ...input, required: input.required ?? true } })
+}
+
+export async function getIntegrationCoverage(workspaceId: string, manuscriptVersionId: string) {
+  const obligations = await prisma.proofObligation.findMany({ where: { workspaceId, manuscriptVersionId }, include: { sourceArtifact: true, checks: { include: { reviewRound: true } } } })
+  return obligations.map((o) => ({ obligation: o, preserved: o.checks.some((c) => c.status === "preserved" && c.reviewRound.reviewType === "proof_integration" && c.reviewRound.verdict === "approved" && c.reviewRound.targetVersion === manuscriptVersionId), checks: o.checks }))
+}
+
+export async function computeProjectSubmissionReadiness(workspaceId: string, projectId: string) { return computeSubmissionReadiness(workspaceId, projectId) }
+
+
 export async function updateResearchArtifact(input: { workspaceId: string; id: string; patch: Record<string, unknown> }) {
-  return prisma.researchArtifact.update({ where: { id: input.id, workspaceId: input.workspaceId }, data: cleanPatch(input.patch, ["title", "kind", "status", "descriptionMarkdown", "contentMarkdown", "filePath", "url"]) as any })
+  const before = await prisma.researchArtifact.findFirstOrThrow({ where: { id: input.id, workspaceId: input.workspaceId } })
+  const artifact = await prisma.researchArtifact.update({ where: { id: input.id, workspaceId: input.workspaceId }, data: cleanPatch(input.patch, ["title", "kind", "status", "descriptionMarkdown", "contentMarkdown", "filePath", "url"]) as any })
+  if (input.patch.contentMarkdown !== undefined && artifact.contentMarkdown !== before.contentMarkdown && artifact.projectId) {
+    const canonical = await prisma.manuscriptVersion.findFirst({ where: { workspaceId: input.workspaceId, projectId: artifact.projectId, artifactId: artifact.id, isCanonical: true } })
+    if (canonical) {
+      const links = await prisma.researchLink.findMany({ where: { workspaceId: input.workspaceId, projectId: artifact.projectId, sourceType: "ManuscriptVersion", sourceId: canonical.id } })
+      await createManuscriptVersion({ workspaceId: input.workspaceId, projectId: artifact.projectId, artifactId: artifact.id, parentArtifactIds: links.filter((l) => l.targetType === "ResearchArtifact" && l.relationType === "derived_from").map((l) => l.targetId), claimIds: links.filter((l) => l.targetType === "Claim" && l.relationType === "contribution_claim").map((l) => l.targetId) })
+    }
+  }
+  return artifact
 }
 
 export async function listResearchLinks(input: FrontierListInput & { sourceType?: string; sourceId?: string; targetType?: string; targetId?: string }) {
