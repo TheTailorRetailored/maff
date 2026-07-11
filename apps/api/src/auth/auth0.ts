@@ -39,6 +39,13 @@ export function authChallenge(res: Response, message = "Bearer token required", 
   res.setHeader("WWW-Authenticate", `Bearer resource_metadata="${quotedAuthParameter(config.publicBaseUrl)}/.well-known/oauth-protected-resource", error="${quotedAuthParameter(error)}", error_description="${quotedAuthParameter(message)}", scope="${quotedAuthParameter(scope)}"`)
 }
 
+export function emailMatchesRequiredDomain(email: string | undefined, requiredDomain: string | undefined) {
+  if (!requiredDomain) return true
+  if (!email) return false
+  const normalizedDomain = requiredDomain.trim().toLowerCase().replace(/^@/, "")
+  return normalizedDomain.length > 0 && email.trim().toLowerCase().endsWith(`@${normalizedDomain}`)
+}
+
 export async function verifyAuth0Token(token: string): Promise<AuthClaims> {
   if (!jwks || !config.auth0.issuer || !config.auth0.audience) {
     throw new Error("Auth0 is not configured")
@@ -53,7 +60,7 @@ export async function verifyAuth0Token(token: string): Promise<AuthClaims> {
   if (config.auth0.allowedOrgs.length && (!claims.org_id || !config.auth0.allowedOrgs.includes(claims.org_id))) {
     throw new Error("Token organization not allowed")
   }
-  if (config.auth0.requiredEmailDomain && claims.email && !claims.email.endsWith(`@${config.auth0.requiredEmailDomain}`)) {
+  if (!emailMatchesRequiredDomain(claims.email, config.auth0.requiredEmailDomain)) {
     throw new Error("Email domain not allowed")
   }
   return claims

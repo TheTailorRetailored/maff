@@ -1,6 +1,18 @@
 # Maff
 
-Maff is a private, self-hosted math research system built around an Obsidian-compatible Markdown vault, a typed research graph, a safe MCP endpoint, Quartz publishing, and an isolated Lean worker.
+Maff is the self-hosted system I use for organising mathematics research. Notes
+stay in an Obsidian-compatible Markdown vault; the rest of the stack adds a
+typed claim graph, task and review queues, an MCP interface, Quartz publishing
+and a separate Lean 4 worker.
+
+> This is an early alpha, not a turnkey hosted app. Setup is still involved and
+> it has not had an independent security review. Do not put a real research
+> vault or production credentials into a public demo.
+
+![Maff research workbench](docs/images/maff-workbench.png)
+
+The example vault is synthetic. My own notes, database, Lean workspaces and
+environment files are not part of the repository.
 
 ## Services
 
@@ -15,17 +27,22 @@ Markdown files remain the source of truth. The database stores users, permission
 
 ## Graph Model
 
-Maff's default graph is mathematical, not operational. Primary graph nodes are `Problem`, `Claim`, `Definition`, `Paper`/`KnownResult`, and substantial `Experiment` or `Draft` notes.
+The graph is about the mathematics rather than the project-management work.
+Its main node types are `Problem`, `Claim`, `Definition`, `Paper`/`KnownResult`,
+and substantial `Experiment` or `Draft` notes.
 
 A `Claim` represents theorem-like mathematical content: conjectures, theorems, lemmas, propositions, corollaries, reductions, counterexample claims, and technical statements. Claim notes include sections for statement, status, role in project, dependencies, proof routes, informal proof, Lean formalization, attempts and notes, tasks, and decision log.
 
-Routes, proof attempts, minor gaps, informal proof updates, Lean status, and routine notes usually live inside the relevant Claim note. They are promoted to standalone graph nodes only when they become substantial, reusable, independently documentable, or explicitly requested.
+Proof routes, attempts, small gaps, Lean status and routine notes normally stay
+inside the relevant Claim. They only become separate graph nodes when there is
+a useful reason to treat them independently.
 
-Tasks are operational queue records stored in PostgreSQL and attached to a target node/section. They appear in the queue and node detail views, but they do not appear in the default graph.
+Tasks live in PostgreSQL and can point back to a node or section. They appear in
+the work queues, not in the default mathematical graph.
 
 Graph views are problem-scoped by default. A workspace can contain many Problems, and each Problem is the root of its own claim graph. Use `GET /api/workspaces/:workspaceId/problems` for the workspace overview and `GET /api/workspaces/:workspaceId/problems/:problemId/graph` for the default Problem -> Claim dependency graph. The MCP equivalents are `list_problem_graphs` and `get_problem_graph`.
 
-Migration note: on 2026-05-02, the Galton-Watson conductance project was migrated from a star-shaped graph of Conjecture/ProofRoute/Gap/Task nodes into a claim-centric graph. Old nodes are marked killed for audit/history. Active work should use the new Claim nodes.
+The claim-centric model replaced an earlier star-shaped Conjecture/ProofRoute/Gap/Task design. Migration helpers remain for existing private workspaces, while new work should use Claim nodes.
 
 ## Local Dev
 
@@ -41,6 +58,16 @@ Local ports are bound to localhost:
 - API: `http://127.0.0.1:3001`
 - Lean worker: `http://127.0.0.1:8765`
 - Postgres: `127.0.0.1:5432`
+
+To preview the synthetic, read-only portfolio view without Auth0 or an API:
+
+```powershell
+cd apps/web
+$env:VITE_DEMO_MODE = "true"
+npm run dev -- --host 127.0.0.1
+```
+
+Demo mode is selected at build time and exposes no authenticated application data or write paths.
 
 For Auth0 local development, add local callback, logout, and web origins for `http://localhost:3000` and `http://127.0.0.1:3000`.
 
@@ -159,7 +186,21 @@ npm run typecheck
 npm run test:smoke
 ```
 
-The smoke script verifies path traversal rejection, wikilink parsing, and MCP tool discovery. Full deployment validation still requires Docker and real Auth0 tokens.
+The smoke script verifies path traversal rejection, YAML frontmatter round-tripping, wikilink and typed-edge parsing, and MCP tool discovery. Full deployment validation still requires Docker and real Auth0 tokens.
+
+## Caveats
+
+- Markdown files are authoritative. PostgreSQL holds indexes, queues,
+  permissions and audit records.
+- The included workspace is synthetic.
+- Auth and workspace roles are implemented, but deployment security is still
+  the operator's responsibility.
+- Lean runs away from the API, but a real deployment should still set container
+  and host resource limits.
+- Agent-produced mathematics is not assumed to be correct. It still needs
+  review and, where appropriate, a Lean check.
+
+See [SECURITY.md](SECURITY.md) and [CONTRIBUTING.md](CONTRIBUTING.md). Maff is licensed under the [MIT License](LICENSE).
 
 ## Future Work
 

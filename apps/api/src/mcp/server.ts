@@ -11,6 +11,7 @@ import * as runtime from "../research/runtime.js"
 
 type ToolContext = { userId: string; claimsScope?: string; permissions?: string[]; aud?: unknown; sub?: string; azp?: string; clientId?: string }
 type JsonSchema = Record<string, unknown>
+type JsonObject = Record<string, unknown>
 
 const objectSchema = (properties: Record<string, JsonSchema>, required: string[] = []): JsonSchema => ({ type: "object", properties, required, additionalProperties: false })
 const s = { type: "string" } as const
@@ -18,14 +19,29 @@ const n = { type: "number" } as const
 const anyObj = { type: "object", additionalProperties: true } as const
 const strArray = { type: "array", items: s } as const
 const objectOutputSchema: JsonSchema = { type: "object", additionalProperties: true }
-const itemsOutputSchema: JsonSchema = { type: "object", required: ["items"], properties: { items: { type: "array", items: objectOutputSchema } }, additionalProperties: false }
 const searchKeys = ["claims", "routes", "gaps", "papers", "known_results", "research_deltas", "research_artifacts", "mechanisms", "spinout_candidates", "assumption_regimes", "theorem_contracts", "frontier_snapshots"]
-const searchOutputSchema: JsonSchema = { type: "object", required: searchKeys, properties: Object.fromEntries(searchKeys.map((key) => [key, { type: "array", items: objectOutputSchema }])), additionalProperties: false }
+const searchOutputSchema: JsonSchema = objectSchema(Object.fromEntries(searchKeys.map((key) => [key, { type: "array", items: objectOutputSchema }])), searchKeys)
 const idObjectOutputSchema: JsonSchema = { type: "object", required: ["id"], properties: { id: s }, additionalProperties: true }
+const listResultKeys: Record<string, string> = {
+  list_workspaces: "workspaces",
+  list_projects: "projects",
+  list_project_goals: "goals",
+  list_workstreams: "workstreams",
+  list_review_rounds: "reviews",
+  list_research_deltas: "deltas",
+  list_research_artifacts: "artifacts",
+  list_research_links: "links",
+  list_mechanisms: "mechanisms",
+  list_spinout_candidates: "spinouts",
+  list_assumption_regimes: "assumptions",
+  list_theorem_contracts: "contracts",
+  list_frontier_snapshots: "snapshots"
+}
 const readOnlyToolNames = new Set(["get_my_maff_context", "list_workspaces", "get_project", "list_projects", "get_project_control_room", "list_project_goals", "list_workstreams", "get_workstream", "get_agent_briefing", "list_review_rounds", "get_report", "get_object_graph", "search_research_objects", "list_research_deltas", "list_mechanisms", "list_spinout_candidates", "list_assumption_regimes", "list_theorem_contracts", "list_frontier_snapshots", "get_latest_frontier_snapshot", "list_research_artifacts", "list_research_links", "get_quartz_site_status"])
 const idempotentToolNames = new Set(["rebuild_quartz_site"])
 const outputSchemaFor = (name: string): JsonSchema => {
-  if (["list_research_deltas", "list_research_artifacts", "list_research_links", "list_mechanisms", "list_spinout_candidates", "list_assumption_regimes", "list_theorem_contracts", "list_frontier_snapshots"].includes(name)) return itemsOutputSchema
+  const listKey = listResultKeys[name]
+  if (listKey) return objectSchema({ [listKey]: { type: "array", items: objectOutputSchema } }, [listKey])
   if (name === "search_research_objects") return searchOutputSchema
   if (["create_project", "create_research_delta", "create_research_artifact", "create_spinout_candidate", "create_research_link"].includes(name)) return idObjectOutputSchema
   return objectOutputSchema
@@ -58,9 +74,9 @@ const tool = (name: string, description: string, role: WorkspaceRole, inputSchem
   role,
   inputSchema,
   outputSchema: outputSchemaFor(name),
-  annotations: { readOnlyHint: readOnlyToolNames.has(name), destructiveHint: false, idempotentHint: idempotentToolNames.has(name) }
+  annotations: { readOnlyHint: readOnlyToolNames.has(name), openWorldHint: false, destructiveHint: false, idempotentHint: idempotentToolNames.has(name) }
 })
-export const mcpServerVersion = "0.4.0-co-mathematician-runtime"
+export const mcpServerVersion = "0.4.1-structured-content-objects"
 
 export const toolDefinitions: ToolDef[] = [
   tool("get_my_maff_context", "Recover where the user is up to. Infers the user's workspace, summarizes active projects, ready assignments, reports needing review, and suggested simple chat prompts.", "viewer", objectSchema({ workspace: s, project: s })),
@@ -261,10 +277,18 @@ async function callTool(toolName: string, args: any, ctx: ToolContext) {
   }
 }
 
-function contentResult(value: unknown) {
-  if (typeof value === "string") return { content: [{ type: "text", text: value }] }
-  const serialized = JSON.parse(JSON.stringify(value))
-  const structuredContent = Array.isArray(serialized) ? { items: serialized } : (serialized ?? {})
+export function structuredContentForTool(toolName: string, value: unknown): JsonObject {
+  const serialized = value === undefined ? null : JSON.parse(JSON.stringify(value))
+  if (serialized !== null && typeof serialized === "object" && !Array.isArray(serialized)) return serialized as JsonObject
+
+  const listKey = listResultKeys[toolName]
+  if (listKey) return { [listKey]: Array.isArray(serialized) ? serialized : [] }
+  if (Array.isArray(serialized)) return { items: serialized }
+  return { result: serialized }
+}
+
+export function contentResult(toolName: string, value: unknown) {
+  const structuredContent = structuredContentForTool(toolName, value)
   return {
     structuredContent,
     content: [{ type: "text", text: JSON.stringify(structuredContent, null, 2) }]
@@ -633,14 +657,14 @@ function compactClaimResponse(value: any) {
 
 export function compactToolResult(toolName: string, value: unknown) {
   if (value && typeof value === "object") {
-    if (toolName === "list_workspaces") return compactList(value as any[], compactWorkspace)
+    if (toolName === "list_workspaces") return { workspaces: compactList(value as any[], compactWorkspace) ?? [] }
     if (toolName === "create_project" || toolName === "get_project") return compactProject(value)
-    if (toolName === "list_projects") return compactList(value as any[], compactProject)
+    if (toolName === "list_projects") return { projects: compactList(value as any[], compactProject) ?? [] }
     if (toolName === "get_project_control_room") return compactControlRoom(value)
     if (toolName === "propose_project_goal" || toolName === "approve_project_goal" || toolName === "update_project_goal") return compactGoal(value)
-    if (toolName === "list_project_goals") return compactList(value as any[], compactGoal)
+    if (toolName === "list_project_goals") return { goals: compactList(value as any[], compactGoal) ?? [] }
     if (toolName === "create_workstream") return compactWorkstream(value)
-    if (toolName === "list_workstreams") return compactList(value as any[], compactWorkstream)
+    if (toolName === "list_workstreams") return { workstreams: compactList(value as any[], compactWorkstream) ?? [] }
     if (toolName === "get_workstream") return compactWorkstreamDetail(value)
     if (toolName === "claim_next_review" || toolName === "claim_next_assignment") return compactClaimResponse(value)
     if (toolName === "get_agent_briefing") return compactBriefing(value)
@@ -651,7 +675,7 @@ export function compactToolResult(toolName: string, value: unknown) {
     if (toolName === "mark_workstream_blocked" || toolName === "escalate_workstream" || toolName === "request_workstream_revision" || toolName === "approve_workstream" || toolName === "complete_workstream") return compactWorkstream(value)
     if (toolName === "create_or_update_workstream_report" || toolName === "submit_workstream_report") return compactReport(value)
     if (toolName === "record_review_round") return compactReview(value)
-    if (toolName === "list_review_rounds") return compactList(value as any[], compactReview)
+    if (toolName === "list_review_rounds") return { reviews: compactList(value as any[], compactReview) ?? [] }
     if (toolName === "get_report") return compactReportDetail(value)
     if (toolName === "create_artifact") return compactArtifact(value)
     if (toolName === "link_objects") return compactGraphEdge(value)
@@ -727,7 +751,7 @@ export async function mcpHandler(req: Request, res: Response) {
     if (method === "tools/list") return res.json({ jsonrpc: "2.0", id, result: mcpToolsListResult() })
     if (method === "tools/call") {
       const raw = await callTool(params.name, params.arguments ?? {}, ctx)
-      return res.json({ jsonrpc: "2.0", id, result: contentResult(compactToolResult(params.name, raw)) })
+      return res.json({ jsonrpc: "2.0", id, result: contentResult(params.name, compactToolResult(params.name, raw)) })
     }
     if (method === "resources/list") return res.json({ jsonrpc: "2.0", id, result: await listResources(resourceCtx) })
     if (method === "resources/read") return res.json({ jsonrpc: "2.0", id, result: resourceResult(params.uri, await readResource(params.uri, resourceCtx)) })
