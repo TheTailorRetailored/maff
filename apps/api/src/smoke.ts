@@ -3,7 +3,7 @@ import path from "node:path"
 import { assertInsideRoot } from "./vault/paths.js"
 import { dumpMarkdown, parseMarkdown } from "./vault/parser.js"
 import { extractWikilinks } from "./vault/wikilinks.js"
-import { emailMatchesRequiredDomain } from "./auth/auth0.js"
+import { emailMatchesRequiredDomain, userEmailUpdateData } from "./auth/auth0.js"
 import { callTool, compactToolResult, contentResult, formatResearchArtifact, mcpServerVersion, mcpToolsListResult, structuredContentForTool, toolDefinitions } from "./mcp/server.js"
 
 const root = path.resolve("tmp-workspace")
@@ -28,6 +28,8 @@ assert.equal(emailMatchesRequiredDomain(undefined, undefined), true)
 assert.equal(emailMatchesRequiredDomain("Researcher@Example.com", "example.com"), true)
 assert.equal(emailMatchesRequiredDomain("researcher@example.com", "@EXAMPLE.COM"), true)
 assert.equal(emailMatchesRequiredDomain(undefined, "example.com"), false)
+assert.deepEqual(userEmailUpdateData(undefined), {})
+assert.deepEqual(userEmailUpdateData("lachlanjbridges@gmail.com"), { email: "lachlanjbridges@gmail.com", displayName: "lachlanjbridges@gmail.com" })
 assert.equal(emailMatchesRequiredDomain("researcher@notexample.com", "example.com"), false)
 
 for (const name of [

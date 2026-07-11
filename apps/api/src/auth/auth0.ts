@@ -66,10 +66,14 @@ export async function verifyAuth0Token(token: string): Promise<AuthClaims> {
   return claims
 }
 
+export function userEmailUpdateData(email: string | undefined) {
+  return email === undefined ? {} : { email, displayName: email }
+}
+
 export async function findOrCreateUser(claims: AuthClaims) {
   const existing = await prisma.user.findUnique({ where: { auth0Sub: claims.sub } })
   const user = existing
-    ? await prisma.user.update({ where: { id: existing.id }, data: { email: claims.email ?? null } })
+    ? await prisma.user.update({ where: { id: existing.id }, data: userEmailUpdateData(claims.email) })
     : await prisma.user.create({ data: { auth0Sub: claims.sub, email: claims.email ?? null, displayName: claims.email ?? claims.sub } })
 
   if (!existing) {
