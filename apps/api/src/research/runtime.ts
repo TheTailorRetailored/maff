@@ -739,41 +739,60 @@ export async function recordReviewRound(input: {
     const artifactCount = await prisma.artifact.count({ where: { workspaceId: input.workspaceId, workstreamId: input.workstreamId } })
     if (!artifactRefs.length && artifactCount === 0) throw new Error("Computational workstreams require recorded verification artifacts before approval.")
   }
-  const review = await prisma.reviewRound.create({
-    data: {
-      workspaceId: input.workspaceId,
-      projectId: workstream.projectId,
-      workstreamId: input.workstreamId,
-      reportId: input.reportId ?? workstream.reportId,
-      targetObjectType: input.targetObjectType ?? "WorkstreamReport",
-      targetObjectId: input.targetObjectId ?? input.reportId ?? workstream.reportId ?? input.workstreamId,
-      reviewerRole: input.reviewerRole ?? "HostileReviewer",
-      verdict,
-      issues: jsonArray(input.issues),
-      requiredChanges: jsonArray(input.requiredChanges),
-      checkedRefs: jsonArray(input.checkedRefs),
-      bodyMarkdown: input.bodyMarkdown,
-      createdByAgentRunId: input.createdByAgentRunId,
-      reviewType: reviewType as any,
-      targetVersion: input.targetVersion,
-      scope: jsonObject(input.scope),
-      inspectedArtifactIds: jsonArray(input.inspectedArtifactIds),
-      checkedObligationIds: jsonArray(input.checkedObligationIds),
-      parentMathReopenable: input.parentMathReopenable ?? true,
-      priorApprovalsEvidenceOnly: input.priorApprovalsEvidenceOnly ?? true,
-      independence: (input.independence ?? "same_workstream_reviewer") as any
-    }
+  const obligationChecks = input.obligationChecks ?? []
+  if (!Array.isArray(obligationChecks)) throw new Error("obligationChecks must be an array when provided.")
+  const obligationIds = obligationChecks.map((check, index) => {
+    if (!check || typeof check.proofObligationId !== "string" || !check.proofObligationId.trim()) throw new Error(`obligationChecks[${index}].proofObligationId must be a non-empty string.`)
+    if (typeof check.status !== "string" || !check.status.trim()) throw new Error(`obligationChecks[${index}].status must be a non-empty string.`)
+    return check.proofObligationId
   })
-  if (input.obligationChecks?.length) {
-    const allowed = await prisma.proofObligation.count({ where: { workspaceId: input.workspaceId, id: { in: input.obligationChecks.map((c) => c.proofObligationId) } } })
-    if (allowed !== new Set(input.obligationChecks.map((c) => c.proofObligationId)).size) throw new Error("Review obligation checks must reference accessible proof obligations.")
-    await prisma.reviewObligationCheck.createMany({ data: input.obligationChecks.map((c) => ({ workspaceId: input.workspaceId, reviewRoundId: review.id, proofObligationId: c.proofObligationId, status: c.status, evidenceMarkdown: c.evidenceMarkdown })) })
+  if (new Set(obligationIds).size !== obligationIds.length) throw new Error("obligationChecks must not contain duplicate proofObligationId values.")
+  const reportId = input.reportId ?? workstream.reportId
+  if (reportId) {
+    const report = await prisma.workstreamReport.findFirst({ where: { workspaceId: input.workspaceId, id: reportId, workstreamId: input.workstreamId } })
+    if (!report) throw new Error("Review report must belong to the target workstream and workspace.")
   }
-  const workstreamStatus = verdict === "approved" ? "approved" : verdict === "needs_revision" || verdict === "rejected" ? "revision_required" : verdict === "escalate" ? "escalated" : "blocked"
-  const reportStatus = verdict === "approved" ? "reviewed_approved" : "reviewed_needs_revision"
-  await prisma.workstream.update({ where: { id: input.workstreamId, workspaceId: input.workspaceId }, data: { status: workstreamStatus as any } })
-  if (review.reportId) await prisma.workstreamReport.update({ where: { id: review.reportId, workspaceId: input.workspaceId }, data: { status: reportStatus } })
-  return review
+  if (obligationIds.length) {
+    const allowed = await prisma.proofObligation.count({ where: { workspaceId: input.workspaceId, id: { in: obligationIds } } })
+    if (allowed !== obligationIds.length) throw new Error("Review obligation checks must reference accessible proof obligations.")
+  }
+  if (input.createdByAgentRunId) {
+    const existing = await prisma.reviewRound.findFirst({ where: { workspaceId: input.workspaceId, workstreamId: input.workstreamId, reportId, createdByAgentRunId: input.createdByAgentRunId, reviewType: reviewType as any, targetVersion: input.targetVersion } })
+    if (existing) throw new Error(`A review from this AgentRun already exists for this report and review scope: ${existing.id}`)
+  }
+  return prisma.$transaction(async (tx) => {
+    const review = await tx.reviewRound.create({
+      data: {
+        workspaceId: input.workspaceId,
+        projectId: workstream.projectId,
+        workstreamId: input.workstreamId,
+        reportId,
+        targetObjectType: input.targetObjectType ?? "WorkstreamReport",
+        targetObjectId: input.targetObjectId ?? input.reportId ?? workstream.reportId ?? input.workstreamId,
+        reviewerRole: input.reviewerRole ?? "HostileReviewer",
+        verdict,
+        issues: jsonArray(input.issues),
+        requiredChanges: jsonArray(input.requiredChanges),
+        checkedRefs: jsonArray(input.checkedRefs),
+        bodyMarkdown: input.bodyMarkdown,
+        createdByAgentRunId: input.createdByAgentRunId,
+        reviewType: reviewType as any,
+        targetVersion: input.targetVersion,
+        scope: jsonObject(input.scope),
+        inspectedArtifactIds: jsonArray(input.inspectedArtifactIds),
+        checkedObligationIds: jsonArray(input.checkedObligationIds),
+        parentMathReopenable: input.parentMathReopenable ?? true,
+        priorApprovalsEvidenceOnly: input.priorApprovalsEvidenceOnly ?? true,
+        independence: (input.independence ?? "same_workstream_reviewer") as any
+      }
+    })
+    if (obligationChecks.length) await tx.reviewObligationCheck.createMany({ data: obligationChecks.map((check) => ({ workspaceId: input.workspaceId, reviewRoundId: review.id, proofObligationId: check.proofObligationId, status: check.status, evidenceMarkdown: check.evidenceMarkdown })) })
+    const workstreamStatus = verdict === "approved" ? "approved" : verdict === "needs_revision" || verdict === "rejected" ? "revision_required" : verdict === "escalate" ? "escalated" : "blocked"
+    const reportStatus = verdict === "approved" ? "reviewed_approved" : "reviewed_needs_revision"
+    await tx.workstream.update({ where: { id: input.workstreamId, workspaceId: input.workspaceId }, data: { status: workstreamStatus as any } })
+    if (review.reportId) await tx.workstreamReport.update({ where: { id: review.reportId, workspaceId: input.workspaceId }, data: { status: reportStatus } })
+    return review
+  })
 }
 
 export async function completeWorkstream(input: { workspaceId: string; workstreamId: string }) {

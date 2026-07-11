@@ -79,7 +79,7 @@ for (const prop of ["report_id", "workstream_id"]) {
   assert.ok(submitReportProps[prop], `submit_report_for_review schema must advertise ${prop}`)
 }
 
-assert.equal(mcpServerVersion, "0.4.3-research-artifact-retrieval")
+assert.equal(mcpServerVersion, "0.5.0-nontransitive-review-gates")
 const toolsList = mcpToolsListResult()
 const toolsListNames = new Set(toolsList.tools.map((tool) => tool.name))
 for (const name of ["get_my_maff_context", "claim_next_assignment", "claim_next_review", "create_project", "propose_project_goal", "approve_project_goal", "create_workstream", "claim_agent_assignment", "start_agent_run", "submit_workstream_report", "record_review_round", "complete_workstream", "create_claim", "create_proof_route", "create_proof_attempt", "create_gap"]) {
@@ -94,7 +94,7 @@ for (const listedTool of toolsList.tools) {
   assert.equal(typeof listedTool.annotations.readOnlyHint, "boolean", `${listedTool.name} must advertise tool annotations`)
 }
 
-for (const name of ["get_research_artifact", "export_research_artifact_bundle"]) {
+for (const name of ["get_research_artifact", "export_research_artifact_bundle", "create_manuscript_version", "create_proof_obligation", "get_integration_coverage", "compute_submission_readiness"]) {
   assert.ok(toolsListNames.has(name), `tools/list missing ${name}`)
 }
 const getResearchArtifactTool = toolDefinitions.find((tool) => tool.name === "get_research_artifact")
