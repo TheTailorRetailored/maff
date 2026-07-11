@@ -77,7 +77,7 @@ const tool = (name: string, description: string, role: WorkspaceRole, inputSchem
   outputSchema: outputSchemaFor(name),
   annotations: { readOnlyHint: readOnlyToolNames.has(name), openWorldHint: false, destructiveHint: false, idempotentHint: idempotentToolNames.has(name) }
 })
-export const mcpServerVersion = "0.4.3-research-artifact-retrieval"
+export const mcpServerVersion = "0.5.0-nontransitive-review-gates"
 
 export const toolDefinitions: ToolDef[] = [
   tool("get_my_maff_context", "Recover where the user is up to. Infers the user's workspace, summarizes active projects, ready assignments, reports needing review, and suggested simple chat prompts.", "viewer", objectSchema({ workspace: s, project: s })),
