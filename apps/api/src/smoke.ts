@@ -4,7 +4,7 @@ import { assertInsideRoot } from "./vault/paths.js"
 import { dumpMarkdown, parseMarkdown } from "./vault/parser.js"
 import { extractWikilinks } from "./vault/wikilinks.js"
 import { emailMatchesRequiredDomain } from "./auth/auth0.js"
-import { compactToolResult, contentResult, mcpServerVersion, mcpToolsListResult, structuredContentForTool, toolDefinitions } from "./mcp/server.js"
+import { callTool, compactToolResult, contentResult, formatResearchArtifact, mcpServerVersion, mcpToolsListResult, structuredContentForTool, toolDefinitions } from "./mcp/server.js"
 
 const root = path.resolve("tmp-workspace")
 assert.equal(assertInsideRoot(root, path.join(root, "vault", "A.md")), path.resolve(root, "vault", "A.md"))
@@ -79,7 +79,7 @@ for (const prop of ["report_id", "workstream_id"]) {
   assert.ok(submitReportProps[prop], `submit_report_for_review schema must advertise ${prop}`)
 }
 
-assert.equal(mcpServerVersion, "0.4.1-structured-content-objects")
+assert.equal(mcpServerVersion, "0.4.3-research-artifact-retrieval")
 const toolsList = mcpToolsListResult()
 const toolsListNames = new Set(toolsList.tools.map((tool) => tool.name))
 for (const name of ["get_my_maff_context", "claim_next_assignment", "claim_next_review", "create_project", "propose_project_goal", "approve_project_goal", "create_workstream", "claim_agent_assignment", "start_agent_run", "submit_workstream_report", "record_review_round", "complete_workstream", "create_claim", "create_proof_route", "create_proof_attempt", "create_gap"]) {
@@ -93,6 +93,41 @@ for (const listedTool of toolsList.tools) {
   assert.equal(listedTool.outputSchema.type, "object", `${listedTool.name} must advertise an object outputSchema`)
   assert.equal(typeof listedTool.annotations.readOnlyHint, "boolean", `${listedTool.name} must advertise tool annotations`)
 }
+
+for (const name of ["get_research_artifact", "export_research_artifact_bundle"]) {
+  assert.ok(toolsListNames.has(name), `tools/list missing ${name}`)
+}
+const getResearchArtifactTool = toolDefinitions.find((tool) => tool.name === "get_research_artifact")
+assert.ok(getResearchArtifactTool, "missing get_research_artifact")
+assert.deepEqual((getResearchArtifactTool.inputSchema as { required?: string[] }).required, ["workspace_id", "artifact_id"])
+assert.equal((getResearchArtifactTool.annotations as { readOnlyHint?: boolean }).readOnlyHint, true)
+const exportResearchArtifactBundleTool = toolDefinitions.find((tool) => tool.name === "export_research_artifact_bundle")
+assert.ok(exportResearchArtifactBundleTool, "missing export_research_artifact_bundle")
+assert.equal((exportResearchArtifactBundleTool.annotations as { readOnlyHint?: boolean }).readOnlyHint, true)
+
+const fullArtifactContent = "full body\nwith unicode: λ"
+const fullArtifact = formatResearchArtifact({
+  id: "artifact-1",
+  workspaceId: "workspace-1",
+  projectId: "project-1",
+  title: "Long artifact",
+  slug: "long-artifact",
+  kind: "memo",
+  status: "active",
+  descriptionMarkdown: "Description",
+  contentMarkdown: fullArtifactContent,
+  filePath: "/research/long.md",
+  url: "https://example.test/long",
+  createdAt: new Date("2026-07-11T00:00:00.000Z"),
+  updatedAt: new Date("2026-07-11T01:00:00.000Z")
+})
+assert.equal(fullArtifact.content_markdown, fullArtifactContent)
+assert.equal(fullArtifact.content_hash, "f600297af1edcced95844657d28bc98cf4cf972bf73ead8f83f554f4b6cd26c5")
+assert.equal("content_preview" in fullArtifact, false)
+await assert.rejects(
+  () => callTool("get_research_artifact", { workspace_id: "workspace-1", artifact_id: "artifact-1" }, { userId: "test-user", claimsScope: "", permissions: [] }),
+  (error: any) => error.status === 403 && error.message === "Missing required scope maff:access"
+)
 
 assert.deepEqual(structuredContentForTool("list_research_deltas", [{ id: "delta-1" }]), { deltas: [{ id: "delta-1" }] })
 assert.deepEqual(structuredContentForTool("list_research_artifacts", []), { artifacts: [] })

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict"
 import { randomUUID } from "node:crypto"
 import { prisma } from "./db/prisma.js"
+import { requireWorkspaceRole } from "./auth/permissions.js"
 import * as runtime from "./research/runtime.js"
 
 if (!process.env.DATABASE_URL) {
@@ -52,6 +53,18 @@ await assert.rejects(() => runtime.updateClaimStatus({ workspaceId: workspace.id
 const theorem = await runtime.createLeanTheorem({ workspaceId: workspace.id, projectId: project.id, leanName: "smoke_theorem", proofFile: "Smoke.lean", statementMarkdown: "theorem smoke : True := by trivial", hasSorry: true, hasAxiom: false })
 const checked = await runtime.markLeanVerified({ workspaceId: workspace.id, leanTheoremId: theorem.id })
 assert.notEqual(checked.status, "lean_verified")
+
+const longContent = "# Complete body\n\n" + "x".repeat(600)
+const artifact = await runtime.createResearchArtifact({ workspaceId: workspace.id, projectId: project.id, title: "Long artifact", kind: "survey_memo", status: "active", contentMarkdown: longContent })
+const fetchedArtifact = await runtime.getResearchArtifact(workspace.id, artifact.id)
+assert.equal(fetchedArtifact.contentMarkdown, longContent)
+assert.ok((fetchedArtifact.contentMarkdown?.length ?? 0) > 280)
+const artifactBundle = await runtime.getResearchArtifactBundle(workspace.id, [artifact.id])
+assert.deepEqual(artifactBundle.map((item) => item.id), [artifact.id])
+await assert.rejects(() => runtime.getResearchArtifact(randomUUID(), artifact.id), /Research artifact not found/)
+await assert.rejects(() => runtime.getResearchArtifact(workspace.id, randomUUID()), /Research artifact not found/)
+const outsider = await prisma.user.create({ data: { auth0Sub: `smoke-outsider|${suffix}`, email: `smoke-outsider-${suffix}@maff.local` } })
+await assert.rejects(() => requireWorkspaceRole(outsider.id, workspace.id, "viewer"), /Workspace permission denied/)
 
 const controlRoom = await runtime.getProjectControlRoom(workspace.id, project.id)
 assert.ok(controlRoom.workstreams_by_status.completed?.some((item) => item.id === workstream.id))

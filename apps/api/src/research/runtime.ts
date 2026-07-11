@@ -1231,7 +1231,25 @@ export async function listResearchArtifacts(input: FrontierListInput) {
 }
 
 export async function getResearchArtifact(workspaceId: string, id: string) {
-  return prisma.researchArtifact.findFirstOrThrow({ where: { workspaceId, id } })
+  const artifact = await prisma.researchArtifact.findFirst({ where: { workspaceId, id } })
+  if (!artifact) throw researchArtifactNotFound()
+  return artifact
+}
+
+function researchArtifactNotFound() {
+  return Object.assign(new Error("Research artifact not found"), { status: 404, code: "research_artifact_not_found" })
+}
+
+export async function getResearchArtifactBundle(workspaceId: string, ids: unknown) {
+  if (!Array.isArray(ids) || ids.length === 0 || ids.some((id) => typeof id !== "string" || !id)) {
+    throw Object.assign(new Error("artifact_ids must be a non-empty array of IDs"), { status: 400 })
+  }
+  if (new Set(ids).size !== ids.length) {
+    throw Object.assign(new Error("artifact_ids must not contain duplicates"), { status: 400 })
+  }
+  const artifacts = await prisma.researchArtifact.findMany({ where: { workspaceId, id: { in: ids } } })
+  if (artifacts.length !== ids.length) throw researchArtifactNotFound()
+  return artifacts.sort((a, b) => a.id.localeCompare(b.id))
 }
 
 export async function createResearchArtifact(input: FrontierWriteInput) {

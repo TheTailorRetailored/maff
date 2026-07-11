@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto"
 import type { Request, Response } from "express"
 import type { WorkspaceRole } from "@prisma/client"
 import { scopes, hasPermission } from "../auth/scopes.js"
@@ -37,7 +38,7 @@ const listResultKeys: Record<string, string> = {
   list_theorem_contracts: "contracts",
   list_frontier_snapshots: "snapshots"
 }
-const readOnlyToolNames = new Set(["get_my_maff_context", "list_workspaces", "get_project", "list_projects", "get_project_control_room", "list_project_goals", "list_workstreams", "get_workstream", "get_agent_briefing", "list_review_rounds", "get_report", "get_object_graph", "search_research_objects", "list_research_deltas", "list_mechanisms", "list_spinout_candidates", "list_assumption_regimes", "list_theorem_contracts", "list_frontier_snapshots", "get_latest_frontier_snapshot", "list_research_artifacts", "list_research_links", "get_quartz_site_status"])
+const readOnlyToolNames = new Set(["get_my_maff_context", "list_workspaces", "get_project", "list_projects", "get_project_control_room", "list_project_goals", "list_workstreams", "get_workstream", "get_agent_briefing", "list_review_rounds", "get_report", "get_object_graph", "search_research_objects", "list_research_deltas", "list_mechanisms", "list_spinout_candidates", "list_assumption_regimes", "list_theorem_contracts", "list_frontier_snapshots", "get_latest_frontier_snapshot", "list_research_artifacts", "get_research_artifact", "export_research_artifact_bundle", "list_research_links", "get_quartz_site_status"])
 const idempotentToolNames = new Set(["rebuild_quartz_site"])
 const outputSchemaFor = (name: string): JsonSchema => {
   const listKey = listResultKeys[name]
@@ -76,7 +77,7 @@ const tool = (name: string, description: string, role: WorkspaceRole, inputSchem
   outputSchema: outputSchemaFor(name),
   annotations: { readOnlyHint: readOnlyToolNames.has(name), openWorldHint: false, destructiveHint: false, idempotentHint: idempotentToolNames.has(name) }
 })
-export const mcpServerVersion = "0.4.1-structured-content-objects"
+export const mcpServerVersion = "0.4.3-research-artifact-retrieval"
 
 export const toolDefinitions: ToolDef[] = [
   tool("get_my_maff_context", "Recover where the user is up to. Infers the user's workspace, summarizes active projects, ready assignments, reports needing review, and suggested simple chat prompts.", "viewer", objectSchema({ workspace: s, project: s })),
@@ -151,6 +152,8 @@ export const toolDefinitions: ToolDef[] = [
   tool("get_latest_frontier_snapshot", "Read the latest compressed frontier snapshot.", "viewer", objectSchema({ workspace_id: s, project_id: s }, ["workspace_id"])),
   tool("create_research_artifact", "Register a durable research output such as a proof skeleton, memo, theorem map, or migration report.", "editor", objectSchema({ workspace_id: s, project_id: s, title: s, slug: s, kind: s, status: s, description_markdown: s, content_markdown: s, file_path: s, url: s }, ["workspace_id", "title"])),
   tool("list_research_artifacts", "List durable research artifacts.", "viewer", objectSchema({ workspace_id: s, project_id: s, kind: s, status: s, limit: n }, ["workspace_id"])),
+  tool("get_research_artifact", "Read the complete stored body and metadata for one research artifact.", "viewer", objectSchema({ workspace_id: s, artifact_id: s }, ["workspace_id", "artifact_id"])),
+  tool("export_research_artifact_bundle", "Export a deterministic, complete bundle of requested research artifacts. Fails if any requested artifact is unavailable.", "viewer", objectSchema({ workspace_id: s, artifact_ids: strArray }, ["workspace_id", "artifact_ids"])),
   tool("create_research_link", "Create a generic research relation between any two frontier or legacy objects.", "editor", objectSchema({ workspace_id: s, project_id: s, source_type: s, source_id: s, relation_type: s, target_type: s, target_id: s, note_markdown: s, confidence: s }, ["workspace_id", "source_type", "source_id", "relation_type", "target_type", "target_id"])),
   tool("list_research_links", "List generic research links by source, target, project, or workspace.", "viewer", objectSchema({ workspace_id: s, project_id: s, source_type: s, source_id: s, target_type: s, target_id: s, limit: n }, ["workspace_id"])),
   tool("run_legacy_distillation_preview", "Preview non-destructive legacy distillation into frontier objects. Writes an artifact file, not DB rows.", "editor", objectSchema({ workspace_id: s, output_path: s }, ["workspace_id"])),
@@ -173,8 +176,8 @@ function wwwAuthenticate(required: string) {
   return `Bearer resource_metadata="${quoted(config.publicBaseUrl)}/.well-known/oauth-protected-resource", error="insufficient_scope", error_description="Missing required scope ${quoted(required)}", scope="${quoted(required)}"`
 }
 
-function insufficientScopeError(required: string, ctx: ToolContext, toolName: string) {
-  console.warn("MCP missing scope", { required, scope: ctx.claimsScope, permissions: ctx.permissions, aud: ctx.aud, sub: ctx.sub, azp: ctx.azp, client_id: ctx.clientId, tool: toolName })
+function insufficientScopeError(required: string, _ctx: ToolContext, toolName: string) {
+  console.warn("MCP missing scope", { required, tool: toolName })
   return Object.assign(new Error(`Missing required scope ${required}`), { status: 403, required, wwwAuthenticate: wwwAuthenticate(required) })
 }
 
@@ -191,7 +194,7 @@ function workspaceIdFrom(args: any) {
   return args?.workspace_id ?? args?.workspaceId
 }
 
-async function callTool(toolName: string, args: any, ctx: ToolContext) {
+export async function callTool(toolName: string, args: any, ctx: ToolContext) {
   await authorize(ctx, toolName, workspaceIdFrom(args))
   const workspaceId = workspaceIdFrom(args)
   const userId = ctx.userId
@@ -262,6 +265,8 @@ async function callTool(toolName: string, args: any, ctx: ToolContext) {
     case "get_latest_frontier_snapshot": return runtime.getLatestFrontierSnapshot({ workspaceId, projectId: args.project_id })
     case "create_research_artifact": return runtime.createResearchArtifact({ workspaceId, projectId: args.project_id, title: args.title, slug: args.slug, kind: args.kind, status: args.status, descriptionMarkdown: args.description_markdown, contentMarkdown: args.content_markdown, filePath: args.file_path, url: args.url, createdByUserId: userId })
     case "list_research_artifacts": return runtime.listResearchArtifacts({ workspaceId, projectId: args.project_id, kind: args.kind, status: args.status, limit: args.limit })
+    case "get_research_artifact": return runtime.getResearchArtifact(workspaceId, args.artifact_id)
+    case "export_research_artifact_bundle": return runtime.getResearchArtifactBundle(workspaceId, args.artifact_ids)
     case "create_research_link": return runtime.createResearchLink({ workspaceId, projectId: args.project_id, sourceType: args.source_type, sourceId: args.source_id, relationType: args.relation_type, targetType: args.target_type, targetId: args.target_id, noteMarkdown: args.note_markdown, confidence: args.confidence, createdByUserId: userId })
     case "list_research_links": return runtime.listResearchLinks({ workspaceId, projectId: args.project_id, sourceType: args.source_type, sourceId: args.source_id, targetType: args.target_type, targetId: args.target_id, limit: args.limit })
     case "run_legacy_distillation_preview": return runtime.runLegacyDistillationPreview({ workspaceId, outputPath: args.output_path })
@@ -293,6 +298,40 @@ export function contentResult(toolName: string, value: unknown) {
     structuredContent,
     content: [{ type: "text", text: JSON.stringify(structuredContent, null, 2) }]
   }
+}
+
+function sha256(value: string) {
+  return createHash("sha256").update(value, "utf8").digest("hex")
+}
+
+function isoTimestamp(value: Date | string) {
+  return value instanceof Date ? value.toISOString() : new Date(value).toISOString()
+}
+
+export function formatResearchArtifact(artifact: any) {
+  const contentMarkdown = artifact.contentMarkdown ?? null
+  return {
+    id: artifact.id,
+    workspace_id: artifact.workspaceId,
+    project_id: artifact.projectId,
+    title: artifact.title,
+    slug: artifact.slug,
+    kind: artifact.kind,
+    status: artifact.status,
+    description_markdown: artifact.descriptionMarkdown ?? null,
+    content_markdown: contentMarkdown,
+    file_path: artifact.filePath ?? null,
+    url: artifact.url ?? null,
+    created_at: isoTimestamp(artifact.createdAt),
+    updated_at: isoTimestamp(artifact.updatedAt),
+    content_hash: sha256(contentMarkdown ?? "")
+  }
+}
+
+function formatResearchArtifactBundle(artifacts: any[]) {
+  const orderedArtifacts = artifacts.map(formatResearchArtifact).sort((a, b) => a.id.localeCompare(b.id))
+  const manifest = orderedArtifacts.map(({ id, content_hash }) => ({ id, content_hash }))
+  return { artifacts: orderedArtifacts, manifest_hash: sha256(JSON.stringify(manifest)) }
 }
 
 function clip(text: unknown, max = 280) {
@@ -657,6 +696,8 @@ function compactClaimResponse(value: any) {
 
 export function compactToolResult(toolName: string, value: unknown) {
   if (value && typeof value === "object") {
+    if (toolName === "get_research_artifact") return formatResearchArtifact(value)
+    if (toolName === "export_research_artifact_bundle") return formatResearchArtifactBundle(value as any[])
     if (toolName === "list_workspaces") return { workspaces: compactList(value as any[], compactWorkspace) ?? [] }
     if (toolName === "create_project" || toolName === "get_project") return compactProject(value)
     if (toolName === "list_projects") return { projects: compactList(value as any[], compactProject) ?? [] }
