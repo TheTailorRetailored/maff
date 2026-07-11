@@ -188,4 +188,39 @@ assert.equal(compactGraph.nodes.length, 1)
 assert.equal(compactGraph.nodes[0].type, "KnownResult")
 assert.equal(compactGraph.objects.length, 1)
 
+const compactFrontierSearch = compactToolResult("search_research_objects", {
+  claims: [], routes: [], gaps: [], papers: [], known_results: [],
+  research_deltas: [{ id: "d1", title: "Gittins delta", summaryMarkdown: "Summary", whatChangedMarkdown: "Changed" }],
+  research_artifacts: [{ id: "a1", title: "Artifact", slug: "artifact", kind: "memo", contentMarkdown: "Content", filePath: null }],
+  mechanisms: [{ id: "m1", title: "Mechanism", slug: "mechanism", maturity: "sketched", coreIdeaMarkdown: "Idea" }],
+  spinout_candidates: [{ id: "s1", title: "Spinout", slug: "spinout", statementSketchMarkdown: "Statement" }],
+  assumption_regimes: [{ id: "r1", title: "Regime", slug: "regime", formalStatementMarkdown: "Assume", includesMarkdown: null }],
+  theorem_contracts: [{ id: "t1", title: "Contract", slug: "contract", theoremStatementMarkdown: "Theorem" }],
+  frontier_snapshots: [{ id: "f1", title: "Snapshot", snapshotMarkdown: "Frontier", source: "test" }]
+}) as Record<string, any>
+assert.deepEqual(Object.keys(compactFrontierSearch).sort(), ["assumption_regimes", "claims", "frontier_snapshots", "gaps", "known_results", "mechanisms", "papers", "research_artifacts", "research_deltas", "routes", "spinout_candidates", "theorem_contracts"])
+assert.equal(compactFrontierSearch.research_deltas[0].id, "d1")
+assert.equal(compactFrontierSearch.mechanisms[0].id, "m1")
+assert.equal(compactFrontierSearch.research_deltas[0].type, "ResearchDelta")
+assert.equal(compactFrontierSearch.research_artifacts[0].type, "ResearchArtifact")
+assert.equal(compactFrontierSearch.mechanisms[0].type, "Mechanism")
+assert.equal(compactFrontierSearch.spinout_candidates[0].type, "SpinoutCandidate")
+assert.equal(compactFrontierSearch.assumption_regimes[0].type, "AssumptionRegime")
+assert.equal(compactFrontierSearch.theorem_contracts[0].type, "TheoremContract")
+assert.equal(compactFrontierSearch.frontier_snapshots[0].type, "ResearchFrontierSnapshot")
+const compactMechanismList = compactToolResult("list_mechanisms", [{ id: "m2", title: "Listed mechanism", maturity: "sketched", coreIdeaMarkdown: "Idea" }]) as any[]
+assert.equal(compactMechanismList[0].type, "Mechanism")
+const compactRegimeList = compactToolResult("list_assumption_regimes", [{ id: "r2", title: "Listed regime", formalStatementMarkdown: "Assume", includesMarkdown: null }]) as any[]
+assert.equal(compactRegimeList[0].type, "AssumptionRegime")
+const compactSpinoutList = compactToolResult("list_spinout_candidates", [{ id: "s2", title: "Listed spinout", statementSketchMarkdown: "Statement" }]) as any[]
+assert.equal(compactSpinoutList[0].type, "SpinoutCandidate")
+
+for (const name of ["create_project", "create_research_delta", "list_research_deltas", "create_research_artifact", "list_research_artifacts", "create_spinout_candidate", "create_research_link", "list_research_links", "list_mechanisms", "list_assumption_regimes", "list_spinout_candidates", "list_theorem_contracts", "list_frontier_snapshots", "search_research_objects", "rebuild_quartz_site"]) {
+  const descriptor = toolsList.tools.find((tool) => tool.name === name) as Record<string, any> | undefined
+  assert.ok(descriptor?.outputSchema, `${name} must advertise outputSchema`)
+  assert.ok(descriptor?.annotations, `${name} must advertise annotations`)
+}
+assert.equal((toolsList.tools.find((tool) => tool.name === "search_research_objects") as any).annotations.readOnlyHint, true)
+assert.equal((toolsList.tools.find((tool) => tool.name === "rebuild_quartz_site") as any).annotations.idempotentHint, true)
+
 console.log("Maff v2 smoke checks passed")

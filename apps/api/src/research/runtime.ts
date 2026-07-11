@@ -955,15 +955,35 @@ export async function getObjectGraph(input: { workspaceId: string; projectId?: s
 }
 
 export async function searchResearchObjects(input: { workspaceId: string; projectId?: string; query?: string; type?: string }) {
-  const contains = input.query ? { contains: input.query, mode: "insensitive" as const } : undefined
-  const [claims, routes, gaps, papers, knownResults] = await Promise.all([
-    !input.type || input.type === "Claim" ? prisma.claim.findMany({ where: { workspaceId: input.workspaceId, projectId: input.projectId, OR: contains ? [{ title: contains }, { statementMarkdown: contains }] : undefined }, take: 25 }) : [],
-    !input.type || input.type === "ProofRoute" ? prisma.proofRoute.findMany({ where: { workspaceId: input.workspaceId, projectId: input.projectId, OR: contains ? [{ title: contains }, { strategyMarkdown: contains }] : undefined }, take: 25 }) : [],
-    !input.type || input.type === "Gap" ? prisma.gap.findMany({ where: { workspaceId: input.workspaceId, projectId: input.projectId, OR: contains ? [{ title: contains }, { descriptionMarkdown: contains }] : undefined }, take: 25 }) : [],
-    !input.type || input.type === "Paper" ? prisma.paper.findMany({ where: { workspaceId: input.workspaceId, projectId: input.projectId, title: contains }, take: 25 }) : [],
-    !input.type || input.type === "KnownResult" ? prisma.knownResult.findMany({ where: { workspaceId: input.workspaceId, projectId: input.projectId, OR: contains ? [{ title: contains }, { statementMarkdown: contains }] : undefined }, take: 25 }) : []
+  const requestedType = input.type?.toLowerCase().replace(/[\s-]+/g, "_")
+  const wants = (names: string[]) => !requestedType || names.includes(requestedType)
+  const terms = input.query?.trim().split(/[^\p{L}\p{N}]+/u).filter(Boolean) ?? []
+  const text = (fields: string[], projectRelation: string | null = "project") => terms.length ? {
+    AND: terms.map((term) => {
+      const contains = { contains: term, mode: "insensitive" as const }
+      return {
+        OR: [
+          ...fields.map((field) => ({ [field]: contains })),
+          ...(projectRelation ? [{ [projectRelation]: { is: { OR: [{ title: contains }, { slug: contains }] } } }] : [])
+        ]
+      }
+    })
+  } : {}
+  const [claims, routes, gaps, papers, knownResults, researchDeltas, researchArtifacts, mechanisms, spinoutCandidates, assumptionRegimes, theoremContracts, frontierSnapshots] = await Promise.all([
+    wants(["claim", "claims"]) ? prisma.claim.findMany({ where: { workspaceId: input.workspaceId, projectId: input.projectId, ...text(["title", "statementMarkdown"]) } as any, take: 25 }) : [],
+    wants(["proofroute", "proof_route", "route", "routes"]) ? prisma.proofRoute.findMany({ where: { workspaceId: input.workspaceId, projectId: input.projectId, ...text(["title", "strategyMarkdown"]) } as any, take: 25 }) : [],
+    wants(["gap", "gaps"]) ? prisma.gap.findMany({ where: { workspaceId: input.workspaceId, projectId: input.projectId, ...text(["title", "descriptionMarkdown"]) } as any, take: 25 }) : [],
+    wants(["paper", "papers"]) ? prisma.paper.findMany({ where: { workspaceId: input.workspaceId, projectId: input.projectId, ...text(["title"], null) } as any, take: 25 }) : [],
+    wants(["knownresult", "known_result", "known_results"]) ? prisma.knownResult.findMany({ where: { workspaceId: input.workspaceId, projectId: input.projectId, ...text(["title", "statementMarkdown"], null) } as any, take: 25 }) : [],
+    wants(["research_delta", "research_deltas", "delta"]) ? prisma.researchDelta.findMany({ where: { workspaceId: input.workspaceId, projectId: input.projectId, ...text(["title", "summaryMarkdown", "whatChangedMarkdown", "mainlineEffectMarkdown", "reusableIdeasMarkdown", "blockersMarkdown", "nextMoveMarkdown"]) } as any, take: 25 }) : [],
+    wants(["artifact", "artifacts", "research_artifact", "research_artifacts"]) ? prisma.researchArtifact.findMany({ where: { workspaceId: input.workspaceId, projectId: input.projectId, ...text(["title", "descriptionMarkdown", "contentMarkdown"]) } as any, take: 25 }) : [],
+    wants(["mechanism", "mechanisms"]) ? prisma.mechanism.findMany({ where: { workspaceId: input.workspaceId, projectId: input.projectId, ...text(["title", "descriptionMarkdown", "coreIdeaMarkdown", "whereItWorkedMarkdown", "whereItFailedMarkdown", "possibleTransfersMarkdown", "killConditionsMarkdown"]) } as any, take: 25 }) : [],
+    wants(["spinout", "spinouts", "spinout_candidate", "spinout_candidates"]) ? prisma.spinoutCandidate.findMany({ where: { workspaceId: input.workspaceId, originProjectId: input.projectId, ...text(["title", "statementSketchMarkdown", "whyInterestingMarkdown", "relationToOriginMarkdown", "cheapestNextTestMarkdown", "possiblePayoffMarkdown", "riskMarkdown"], "originProject") } as any, take: 25 }) : [],
+    wants(["assumption", "assumptions", "assumption_regime", "assumption_regimes", "regime"]) ? prisma.assumptionRegime.findMany({ where: { workspaceId: input.workspaceId, projectId: input.projectId, ...text(["title", "descriptionMarkdown", "formalStatementMarkdown", "includesMarkdown", "excludesMarkdown", "motivationMarkdown"]) } as any, take: 25 }) : [],
+    wants(["theorem_contract", "theorem_contracts", "contract"]) ? prisma.theoremContract.findMany({ where: { workspaceId: input.workspaceId, projectId: input.projectId, ...text(["title", "theoremStatementMarkdown", "assumptionsMarkdown", "conclusionMarkdown", "knownDependenciesMarkdown", "knownBlockersMarkdown", "proofStrategyMarkdown", "currentBestVersionMarkdown"]) } as any, take: 25 }) : [],
+    wants(["frontier_snapshot", "frontier_snapshots", "snapshot"]) ? prisma.researchFrontierSnapshot.findMany({ where: { workspaceId: input.workspaceId, projectId: input.projectId, ...text(["title", "snapshotMarkdown", "strongestCurrentTheoremMarkdown", "strongestConditionalTheoremMarkdown", "activeBlockersMarkdown", "activeMechanismsMarkdown", "spinoutsMarkdown", "deadOrPausedBranchesMarkdown", "recommendedNextMovesMarkdown"]) } as any, take: 25 }) : []
   ])
-  return { claims, routes, gaps, papers, knownResults }
+  return { claims, routes, gaps, papers, known_results: knownResults, research_deltas: researchDeltas, research_artifacts: researchArtifacts, mechanisms, spinout_candidates: spinoutCandidates, assumption_regimes: assumptionRegimes, theorem_contracts: theoremContracts, frontier_snapshots: frontierSnapshots }
 }
 
 export async function createArtifact(input: { workspaceId: string; projectId: string; workstreamId?: string; kind?: string; title: string; uri?: string; path?: string; contentHash?: string; metadata?: unknown; createdByAgentRunId?: string }) {
@@ -1009,5 +1029,368 @@ export async function getProjectControlRoom(workspaceId: string, projectId: stri
     ;(acc[workstream.status] ??= []).push(workstream)
     return acc
   }, {})
-  return { project, goals_by_status: groupedGoals, workstreams_by_status: groupedWorkstreams, needs_review: needsReview, blocked_or_escalated: blocked, recent_agent_runs: recentAgentRuns, key_claims: keyClaims, open_gaps: openGaps, recent_reviews: reviews, suggested_next_assignment: suggested, suggested_chat_prompts: suggestedPrompts }
+  const frontier = await getResearchFrontierSummary({ workspaceId, projectId })
+  return { project, goals_by_status: groupedGoals, workstreams_by_status: groupedWorkstreams, needs_review: needsReview, blocked_or_escalated: blocked, recent_agent_runs: recentAgentRuns, key_claims: keyClaims, open_gaps: openGaps, recent_reviews: reviews, suggested_next_assignment: suggested, suggested_chat_prompts: suggestedPrompts, frontier }
+}
+
+type FrontierListInput = { workspaceId: string; projectId?: string; status?: string; kind?: string; limit?: number }
+type FrontierWriteInput = Record<string, any> & { workspaceId: string; projectId?: string; createdByUserId?: string }
+
+function takeLimit(limit?: number) {
+  return Math.min(Math.max(Number(limit) || 50, 1), 200)
+}
+
+function uniqueSlug(base: string) {
+  return `${slugify(base)}-${randomUUID().slice(0, 8)}`
+}
+
+function score(value: unknown) {
+  return typeof value === "number" && value >= 0 && value <= 5 ? value : undefined
+}
+
+function cleanPatch(input: Record<string, unknown>, allowed: string[]) {
+  return Object.fromEntries(allowed.filter((key) => input[key] !== undefined).map((key) => [key, input[key]]))
+}
+
+export async function getResearchFrontierSummary(input: { workspaceId: string; projectId?: string }) {
+  const [latestSnapshot, contracts, mechanisms, spinouts, regimes, deltas, artifacts] = await Promise.all([
+    getLatestFrontierSnapshot(input),
+    listTheoremContracts({ ...input, status: "active", limit: 8 }),
+    listMechanisms({ ...input, limit: 12 }),
+    listSpinoutCandidates({ ...input, limit: 8 }),
+    listAssumptionRegimes({ ...input, status: "active", limit: 8 }),
+    listResearchDeltas({ ...input, limit: 8 }),
+    listResearchArtifacts({ ...input, limit: 8 })
+  ])
+  return { latestSnapshot, contracts, mechanisms, spinouts, assumptionRegimes: regimes, recentDeltas: deltas, artifacts }
+}
+
+export async function listResearchDeltas(input: FrontierListInput & { sourceType?: string; sourceId?: string }) {
+  return prisma.researchDelta.findMany({
+    where: { workspaceId: input.workspaceId, projectId: input.projectId, sourceType: input.sourceType, sourceId: input.sourceId },
+    orderBy: { createdAt: "desc" },
+    take: takeLimit(input.limit)
+  })
+}
+
+export async function getResearchDelta(workspaceId: string, id: string) {
+  return prisma.researchDelta.findFirstOrThrow({ where: { workspaceId, id } })
+}
+
+export async function createResearchDelta(input: FrontierWriteInput) {
+  return prisma.researchDelta.create({
+    data: {
+      workspaceId: input.workspaceId,
+      projectId: input.projectId,
+      sourceType: input.sourceType,
+      sourceId: input.sourceId,
+      title: input.title,
+      summaryMarkdown: input.summaryMarkdown ?? input.summary ?? input.whatChangedMarkdown ?? "",
+      whatChangedMarkdown: input.whatChangedMarkdown ?? input.summaryMarkdown ?? "",
+      mainlineEffectMarkdown: input.mainlineEffectMarkdown,
+      reusableIdeasMarkdown: input.reusableIdeasMarkdown,
+      blockersMarkdown: input.blockersMarkdown,
+      nextMoveMarkdown: input.nextMoveMarkdown,
+      confidence: input.confidence,
+      createdByUserId: input.createdByUserId
+    }
+  })
+}
+
+export async function updateResearchDelta(input: { workspaceId: string; id: string; patch: Record<string, unknown> }) {
+  return prisma.researchDelta.update({ where: { id: input.id, workspaceId: input.workspaceId }, data: cleanPatch(input.patch, ["title", "summaryMarkdown", "whatChangedMarkdown", "mainlineEffectMarkdown", "reusableIdeasMarkdown", "blockersMarkdown", "nextMoveMarkdown", "confidence"]) as any })
+}
+
+export async function listMechanisms(input: FrontierListInput & { maturity?: string; portability?: number }) {
+  return prisma.mechanism.findMany({
+    where: { workspaceId: input.workspaceId, projectId: input.projectId, status: input.status as any, maturity: input.maturity as any, portabilityScore: input.portability },
+    orderBy: [{ status: "asc" }, { updatedAt: "desc" }],
+    take: takeLimit(input.limit)
+  })
+}
+
+export async function getMechanism(workspaceId: string, id: string) {
+  return prisma.mechanism.findFirstOrThrow({ where: { workspaceId, id } })
+}
+
+export async function createMechanism(input: FrontierWriteInput) {
+  return prisma.mechanism.create({
+    data: {
+      workspaceId: input.workspaceId,
+      projectId: input.projectId,
+      title: input.title,
+      slug: input.slug ? slugify(input.slug) : uniqueSlug(input.title),
+      status: input.status ?? "seed",
+      maturity: input.maturity ?? "seed",
+      centralityScore: score(input.centralityScore),
+      portabilityScore: score(input.portabilityScore),
+      tractabilityScore: score(input.tractabilityScore),
+      noveltyScore: score(input.noveltyScore),
+      loadBearingScore: score(input.loadBearingScore),
+      descriptionMarkdown: input.descriptionMarkdown ?? input.coreIdeaMarkdown ?? "",
+      coreIdeaMarkdown: input.coreIdeaMarkdown,
+      whereItWorkedMarkdown: input.whereItWorkedMarkdown,
+      whereItFailedMarkdown: input.whereItFailedMarkdown,
+      possibleTransfersMarkdown: input.possibleTransfersMarkdown,
+      killConditionsMarkdown: input.killConditionsMarkdown,
+      createdByUserId: input.createdByUserId
+    }
+  })
+}
+
+export async function updateMechanism(input: { workspaceId: string; id: string; patch: Record<string, unknown> }) {
+  return prisma.mechanism.update({ where: { id: input.id, workspaceId: input.workspaceId }, data: cleanPatch(input.patch, ["title", "status", "maturity", "centralityScore", "portabilityScore", "tractabilityScore", "noveltyScore", "loadBearingScore", "descriptionMarkdown", "coreIdeaMarkdown", "whereItWorkedMarkdown", "whereItFailedMarkdown", "possibleTransfersMarkdown", "killConditionsMarkdown"]) as any })
+}
+
+export async function listSpinoutCandidates(input: FrontierListInput) {
+  return prisma.spinoutCandidate.findMany({ where: { workspaceId: input.workspaceId, originProjectId: input.projectId, status: input.status as any }, orderBy: [{ status: "asc" }, { updatedAt: "desc" }], take: takeLimit(input.limit), include: { promotedProject: true } })
+}
+
+export async function getSpinoutCandidate(workspaceId: string, id: string) {
+  return prisma.spinoutCandidate.findFirstOrThrow({ where: { workspaceId, id }, include: { originProject: true, promotedProject: true } })
+}
+
+export async function createSpinoutCandidate(input: FrontierWriteInput & { originProjectId?: string }) {
+  return prisma.spinoutCandidate.create({
+    data: {
+      workspaceId: input.workspaceId,
+      originProjectId: input.originProjectId ?? input.projectId,
+      title: input.title,
+      slug: input.slug ? slugify(input.slug) : uniqueSlug(input.title),
+      status: input.status ?? "seed",
+      statementSketchMarkdown: input.statementSketchMarkdown ?? input.statement ?? "",
+      whyInterestingMarkdown: input.whyInterestingMarkdown,
+      relationToOriginMarkdown: input.relationToOriginMarkdown,
+      cheapestNextTestMarkdown: input.cheapestNextTestMarkdown,
+      possiblePayoffMarkdown: input.possiblePayoffMarkdown,
+      riskMarkdown: input.riskMarkdown,
+      createdByUserId: input.createdByUserId
+    }
+  })
+}
+
+export async function updateSpinoutCandidate(input: { workspaceId: string; id: string; patch: Record<string, unknown> }) {
+  return prisma.spinoutCandidate.update({ where: { id: input.id, workspaceId: input.workspaceId }, data: cleanPatch(input.patch, ["title", "status", "statementSketchMarkdown", "whyInterestingMarkdown", "relationToOriginMarkdown", "cheapestNextTestMarkdown", "possiblePayoffMarkdown", "riskMarkdown"]) as any })
+}
+
+export async function promoteSpinoutCandidate(input: { workspaceId: string; id: string; userId?: string }) {
+  const spinout = await prisma.spinoutCandidate.findFirstOrThrow({ where: { workspaceId: input.workspaceId, id: input.id } })
+  if (spinout.promotedProjectId) return getSpinoutCandidate(input.workspaceId, input.id)
+  const project = await createProject({ workspaceId: input.workspaceId, title: spinout.title, slug: spinout.slug, statement: spinout.statementSketchMarkdown, userId: input.userId })
+  await prisma.researchLink.create({ data: { workspaceId: input.workspaceId, projectId: project.id, sourceType: "Project", sourceId: project.id, relationType: "spun_out_from", targetType: "SpinoutCandidate", targetId: spinout.id, createdByUserId: input.userId } })
+  return prisma.spinoutCandidate.update({ where: { id: spinout.id, workspaceId: input.workspaceId }, data: { status: "promoted", promotedProjectId: project.id }, include: { promotedProject: true } })
+}
+
+export async function listAssumptionRegimes(input: FrontierListInput) {
+  return prisma.assumptionRegime.findMany({ where: { workspaceId: input.workspaceId, projectId: input.projectId, status: input.status as any }, orderBy: [{ status: "asc" }, { updatedAt: "desc" }], take: takeLimit(input.limit) })
+}
+
+export async function getAssumptionRegime(workspaceId: string, id: string) {
+  return prisma.assumptionRegime.findFirstOrThrow({ where: { workspaceId, id } })
+}
+
+export async function createAssumptionRegime(input: FrontierWriteInput) {
+  return prisma.assumptionRegime.create({ data: { workspaceId: input.workspaceId, projectId: input.projectId, title: input.title, slug: input.slug ? slugify(input.slug) : uniqueSlug(input.title), status: input.status ?? "seed", descriptionMarkdown: input.descriptionMarkdown ?? input.formalStatementMarkdown ?? "", formalStatementMarkdown: input.formalStatementMarkdown, includesMarkdown: input.includesMarkdown, excludesMarkdown: input.excludesMarkdown, motivationMarkdown: input.motivationMarkdown, createdByUserId: input.createdByUserId } })
+}
+
+export async function updateAssumptionRegime(input: { workspaceId: string; id: string; patch: Record<string, unknown> }) {
+  return prisma.assumptionRegime.update({ where: { id: input.id, workspaceId: input.workspaceId }, data: cleanPatch(input.patch, ["title", "status", "descriptionMarkdown", "formalStatementMarkdown", "includesMarkdown", "excludesMarkdown", "motivationMarkdown"]) as any })
+}
+
+export async function listTheoremContracts(input: FrontierListInput) {
+  return prisma.theoremContract.findMany({ where: { workspaceId: input.workspaceId, projectId: input.projectId, status: input.status as any }, orderBy: [{ status: "asc" }, { updatedAt: "desc" }], take: takeLimit(input.limit) })
+}
+
+export async function getTheoremContract(workspaceId: string, id: string) {
+  return prisma.theoremContract.findFirstOrThrow({ where: { workspaceId, id } })
+}
+
+export async function createTheoremContract(input: FrontierWriteInput) {
+  if (!input.projectId) throw new Error("TheoremContract requires projectId.")
+  return prisma.theoremContract.create({ data: { workspaceId: input.workspaceId, projectId: input.projectId, title: input.title, slug: input.slug ? slugify(input.slug) : uniqueSlug(input.title), status: input.status ?? "draft", theoremStatementMarkdown: input.theoremStatementMarkdown ?? input.statement ?? "", assumptionsMarkdown: input.assumptionsMarkdown, conclusionMarkdown: input.conclusionMarkdown, knownDependenciesMarkdown: input.knownDependenciesMarkdown, knownBlockersMarkdown: input.knownBlockersMarkdown, proofStrategyMarkdown: input.proofStrategyMarkdown, currentBestVersionMarkdown: input.currentBestVersionMarkdown, confidence: input.confidence, createdByUserId: input.createdByUserId } })
+}
+
+export async function updateTheoremContract(input: { workspaceId: string; id: string; patch: Record<string, unknown> }) {
+  return prisma.theoremContract.update({ where: { id: input.id, workspaceId: input.workspaceId }, data: cleanPatch(input.patch, ["title", "status", "theoremStatementMarkdown", "assumptionsMarkdown", "conclusionMarkdown", "knownDependenciesMarkdown", "knownBlockersMarkdown", "proofStrategyMarkdown", "currentBestVersionMarkdown", "confidence"]) as any })
+}
+
+export async function listFrontierSnapshots(input: FrontierListInput & { source?: string }) {
+  return prisma.researchFrontierSnapshot.findMany({ where: { workspaceId: input.workspaceId, projectId: input.projectId, source: input.source }, orderBy: { createdAt: "desc" }, take: takeLimit(input.limit) })
+}
+
+export async function getLatestFrontierSnapshot(input: { workspaceId: string; projectId?: string }) {
+  return prisma.researchFrontierSnapshot.findFirst({ where: { workspaceId: input.workspaceId, projectId: input.projectId }, orderBy: { createdAt: "desc" } })
+}
+
+export async function createFrontierSnapshot(input: FrontierWriteInput) {
+  return prisma.researchFrontierSnapshot.create({ data: { workspaceId: input.workspaceId, projectId: input.projectId, title: input.title, snapshotMarkdown: input.snapshotMarkdown ?? "", strongestCurrentTheoremMarkdown: input.strongestCurrentTheoremMarkdown, strongestConditionalTheoremMarkdown: input.strongestConditionalTheoremMarkdown, activeBlockersMarkdown: input.activeBlockersMarkdown, activeMechanismsMarkdown: input.activeMechanismsMarkdown, spinoutsMarkdown: input.spinoutsMarkdown, deadOrPausedBranchesMarkdown: input.deadOrPausedBranchesMarkdown, recommendedNextMovesMarkdown: input.recommendedNextMovesMarkdown, source: input.source, createdByUserId: input.createdByUserId } })
+}
+
+export async function listResearchArtifacts(input: FrontierListInput) {
+  return prisma.researchArtifact.findMany({ where: { workspaceId: input.workspaceId, projectId: input.projectId, kind: input.kind as any, status: input.status as any }, orderBy: [{ status: "asc" }, { updatedAt: "desc" }], take: takeLimit(input.limit) })
+}
+
+export async function getResearchArtifact(workspaceId: string, id: string) {
+  return prisma.researchArtifact.findFirstOrThrow({ where: { workspaceId, id } })
+}
+
+export async function createResearchArtifact(input: FrontierWriteInput) {
+  return prisma.researchArtifact.create({ data: { workspaceId: input.workspaceId, projectId: input.projectId, title: input.title, slug: input.slug ? slugify(input.slug) : uniqueSlug(input.title), kind: input.kind ?? "other", status: input.status ?? "draft", descriptionMarkdown: input.descriptionMarkdown, contentMarkdown: input.contentMarkdown, filePath: input.filePath, url: input.url, createdByUserId: input.createdByUserId } })
+}
+
+export async function updateResearchArtifact(input: { workspaceId: string; id: string; patch: Record<string, unknown> }) {
+  return prisma.researchArtifact.update({ where: { id: input.id, workspaceId: input.workspaceId }, data: cleanPatch(input.patch, ["title", "kind", "status", "descriptionMarkdown", "contentMarkdown", "filePath", "url"]) as any })
+}
+
+export async function listResearchLinks(input: FrontierListInput & { sourceType?: string; sourceId?: string; targetType?: string; targetId?: string }) {
+  return prisma.researchLink.findMany({ where: { workspaceId: input.workspaceId, projectId: input.projectId, sourceType: input.sourceType, sourceId: input.sourceId, targetType: input.targetType, targetId: input.targetId }, orderBy: { createdAt: "desc" }, take: takeLimit(input.limit) })
+}
+
+export async function createResearchLink(input: FrontierWriteInput) {
+  return prisma.researchLink.create({ data: { workspaceId: input.workspaceId, projectId: input.projectId, sourceType: input.sourceType, sourceId: input.sourceId, relationType: input.relationType, targetType: input.targetType, targetId: input.targetId, noteMarkdown: input.noteMarkdown, confidence: input.confidence, createdByUserId: input.createdByUserId } })
+}
+
+export async function deleteResearchLink(input: { workspaceId: string; id: string }) {
+  await prisma.researchLink.delete({ where: { id: input.id, workspaceId: input.workspaceId } })
+  return { ok: true }
+}
+
+function legacyProjectSeeds(project: { id: string; slug: string; title: string }) {
+  if (project.slug === "galton-watson-conductance-regularity") {
+    return {
+      mechanisms: [
+        ["finite-colour-skeleton-instability-under-competing-branch-counts", "finite-colour skeleton instability under competing branch counts", "A finite-colour skeleton can expose instability when competing branch maps force incompatible packet routing or mass allocation."],
+        ["endpoint-packet-control-under-nonlinear-transform", "endpoint packet control under nonlinear transform", "Track endpoint packets through nonlinear transforms to isolate where regularity gains are created or lost."],
+        ["convolution-branch-ac-bridge", "convolution branch AC bridge", "Use convolutional smoothing along branching decompositions as a bridge from discrete offspring structure to absolute-continuity claims."],
+        ["collision-entropy-growth-obstruction", "collision/entropy growth obstruction", "Measure collisions and entropy growth as the obstruction to propagating regularity through the conductance recursion."]
+      ],
+      regimes: [
+        ["bounded-non-deterministic-surviving-child-law", "bounded non-deterministic surviving-child law", "Offspring law has bounded non-deterministic surviving-child count."],
+        ["p1-equals-0", "p1 = 0", "Exclude one-child survival as a simplifying regime for conductance recursion."],
+        ["finite-support-finite-moment-variants", "finite support / finite moment variants", "Track finite support, finite moment, and finite exponential moment variants separately."]
+      ],
+      contract: ["galton-watson-conductance-regularity-under-explicit-offspring-assumptions", "Galton-Watson conductance regularity under explicit offspring assumptions", "Prove an honest conductance regularity theorem under stated offspring assumptions, keeping saturation and mass-loss blockers explicit."],
+      spinout: ["nonlinear-smoothing-transform-regularity-via-finite-colour-skeleton-instability", "nonlinear smoothing-transform regularity via finite-colour skeleton instability", "Abstract the finite-colour skeleton mechanism away from Galton-Watson conductance and test it on nonlinear smoothing transforms."],
+      snapshot: {
+        title: "Galton-Watson conductance frontier after legacy import",
+        snapshotMarkdown: "The strongest honest state is a conditional regularity program: finite-colour skeleton and endpoint-packet mechanisms look portable, but saturation and mass-loss remain live blockers.",
+        strongestConditionalTheoremMarkdown: "Conductance regularity appears plausible under bounded non-deterministic offspring and additional hypotheses preventing saturation/mass loss.",
+        activeBlockersMarkdown: "Saturation/mass-loss blocker; collision and entropy growth not yet fully controlled.",
+        recommendedNextMovesMarkdown: "Separate offspring regimes, test endpoint packet control in the p1 = 0 regime, and look for a minimal counterexample to the convolution branch AC bridge."
+      }
+    }
+  }
+  if (project.slug === "robust-posterior-gittins-scheduling") {
+    return {
+      mechanisms: [
+        ["signed-outward-drift-no-sliding-at-tie-surfaces", "signed outward drift / no-sliding at tie surfaces", "At policy tie surfaces, prove perturbations drift outward rather than sliding along ambiguous rank boundaries."],
+        ["local-rectangular-ambiguity-stability", "local rectangular ambiguity stability", "Local rectangular ambiguity can preserve index/rank stability when perturbations remain confined to finite-support posterior laws."],
+        ["robust-survival-envelope-exceptional-window-obstruction", "robust survival-envelope exceptional-window obstruction", "Survival-envelope ambiguity creates exceptional windows where smoothed ranks may fail outward-drift control."]
+      ],
+      regimes: [
+        ["finite-support-posterior-laws", "finite-support posterior laws", "Posterior laws have finite support."],
+        ["local-rectangular-ambiguity", "local rectangular ambiguity", "Ambiguity set is local and rectangular around the posterior model."],
+        ["survival-envelope-ambiguity", "survival-envelope ambiguity", "Robustness is expressed through survival-envelope ambiguity."]
+      ],
+      contract: ["local-finite-support-robust-posterior-gittins-stability-theorem", "local finite-support robust posterior-Gittins stability theorem", "Prove local robust posterior-Gittins stability for finite-support posterior laws under explicit local rectangular ambiguity assumptions."],
+      spinout: ["general-no-sliding-lemma-for-index-rank-policies", "general no-sliding lemma for index/rank policies", "Extract a general no-sliding lemma for tie surfaces in index/rank policies."],
+      snapshot: {
+        title: "Robust posterior-Gittins frontier after legacy import",
+        snapshotMarkdown: "The strongest honest state is local finite-support stability. Signed outward drift is the central mechanism; robust smoothed rank outward-drift remains the main blocker.",
+        strongestConditionalTheoremMarkdown: "Local finite-support robust posterior-Gittins stability looks plausible under local rectangular ambiguity.",
+        activeBlockersMarkdown: "Robust smoothed rank outward-drift blocker; survival-envelope exceptional windows.",
+        recommendedNextMovesMarkdown: "Prove the no-sliding lemma in the finite-support regime, then test survival-envelope exceptional windows as counterexamples."
+      }
+    }
+  }
+  return undefined
+}
+
+export async function buildLegacyDistillationPreview(workspaceId: string) {
+  const projects = await prisma.project.findMany({ where: { workspaceId }, orderBy: { slug: "asc" } })
+  const proposals = projects.flatMap((project) => {
+    const seed = legacyProjectSeeds(project)
+    if (!seed) return []
+    return [{
+      project: { id: project.id, slug: project.slug, title: project.title },
+      mechanisms: seed.mechanisms.map(([slug, title, descriptionMarkdown]) => ({ slug, title, descriptionMarkdown, status: "active", maturity: "sketched" })),
+      assumptionRegimes: seed.regimes.map(([slug, title, descriptionMarkdown]) => ({ slug, title, descriptionMarkdown, status: "active" })),
+      theoremContracts: [{ slug: seed.contract[0], title: seed.contract[1], theoremStatementMarkdown: seed.contract[2], status: "active", confidence: "medium" }],
+      spinoutCandidates: [{ slug: seed.spinout[0], title: seed.spinout[1], statementSketchMarkdown: seed.spinout[2], status: "plausible" }],
+      frontierSnapshots: [{ ...seed.snapshot, source: "legacy_import" }],
+      researchDeltas: [{ title: `${project.title}: legacy research delta`, sourceType: "legacy_import", sourceId: project.id, summaryMarkdown: seed.snapshot.snapshotMarkdown, whatChangedMarkdown: "Compressed legacy workstreams and reports into frontier objects without deleting original rows.", confidence: "medium" }]
+    }]
+  })
+  const seedVault = {
+    title: "Product condition cutoff in structured Markov chains",
+    slug: "product-condition-cutoff-in-structured-markov-chains",
+    status: "seed",
+    statementSketchMarkdown: "Investigate product-condition cutoffs in structured Markov chains as a separate seed problem preserved from the vault.",
+    whyInterestingMarkdown: "Potentially connects cutoff criteria, product chains, and structured stochastic dynamics."
+  }
+  return { workspaceId, generatedAt: new Date().toISOString(), proposals, seedVault }
+}
+
+function previewMarkdown(preview: Awaited<ReturnType<typeof buildLegacyDistillationPreview>>) {
+  const sections = preview.proposals.map((item) => [
+    `## ${item.project.title}`,
+    "### Mechanisms",
+    ...item.mechanisms.map((m) => `- ${m.title}: ${m.descriptionMarkdown}`),
+    "### Assumption Regimes",
+    ...item.assumptionRegimes.map((r) => `- ${r.title}: ${r.descriptionMarkdown}`),
+    "### Theorem Contract",
+    ...item.theoremContracts.map((c) => `- ${c.title}: ${c.theoremStatementMarkdown}`),
+    "### Spinouts",
+    ...item.spinoutCandidates.map((s) => `- ${s.title}: ${s.statementSketchMarkdown}`),
+    "### Frontier Snapshot",
+    item.frontierSnapshots[0]?.snapshotMarkdown ?? ""
+  ].join("\n"))
+  return [`# Legacy Distillation Preview`, `Generated: ${preview.generatedAt}`, ...sections, "## Seed Vault", `- ${preview.seedVault.title}: ${preview.seedVault.statementSketchMarkdown}`].join("\n\n")
+}
+
+export async function runLegacyDistillationPreview(input: { workspaceId: string; outputPath?: string }) {
+  const preview = await buildLegacyDistillationPreview(input.workspaceId)
+  const out = input.outputPath ?? path.join(process.cwd(), "artifacts", `legacy-distill-preview-${new Date().toISOString().replace(/[:.]/g, "-")}.md`)
+  await fs.mkdir(path.dirname(out), { recursive: true })
+  await fs.writeFile(out, previewMarkdown(preview), "utf8")
+  return { outputPath: out, preview }
+}
+
+export async function runLegacyDistillationApply(input: { workspaceId: string; userId?: string }) {
+  const preview = await buildLegacyDistillationPreview(input.workspaceId)
+  const created: Record<string, number> = { mechanisms: 0, assumptionRegimes: 0, theoremContracts: 0, spinoutCandidates: 0, frontierSnapshots: 0, researchDeltas: 0, researchLinks: 0 }
+  for (const item of preview.proposals) {
+    for (const m of item.mechanisms) {
+      await prisma.mechanism.upsert({ where: { workspaceId_slug: { workspaceId: input.workspaceId, slug: m.slug } }, update: {}, create: { workspaceId: input.workspaceId, projectId: item.project.id, ...m, createdByUserId: input.userId } as any })
+      created.mechanisms++
+    }
+    for (const r of item.assumptionRegimes) {
+      await prisma.assumptionRegime.upsert({ where: { workspaceId_slug: { workspaceId: input.workspaceId, slug: r.slug } }, update: {}, create: { workspaceId: input.workspaceId, projectId: item.project.id, ...r, createdByUserId: input.userId } as any })
+      created.assumptionRegimes++
+    }
+    for (const c of item.theoremContracts) {
+      await prisma.theoremContract.upsert({ where: { workspaceId_slug: { workspaceId: input.workspaceId, slug: c.slug } }, update: {}, create: { workspaceId: input.workspaceId, projectId: item.project.id, ...c, createdByUserId: input.userId } as any })
+      created.theoremContracts++
+    }
+    for (const s of item.spinoutCandidates) {
+      await prisma.spinoutCandidate.upsert({ where: { workspaceId_slug: { workspaceId: input.workspaceId, slug: s.slug } }, update: {}, create: { workspaceId: input.workspaceId, originProjectId: item.project.id, ...s, createdByUserId: input.userId } as any })
+      created.spinoutCandidates++
+    }
+    const existingSnapshot = await prisma.researchFrontierSnapshot.findFirst({ where: { workspaceId: input.workspaceId, projectId: item.project.id, source: "legacy_import", title: item.frontierSnapshots[0].title } })
+    if (!existingSnapshot) {
+      await prisma.researchFrontierSnapshot.create({ data: { workspaceId: input.workspaceId, projectId: item.project.id, ...item.frontierSnapshots[0], createdByUserId: input.userId } })
+      created.frontierSnapshots++
+    }
+    const existingDelta = await prisma.researchDelta.findFirst({ where: { workspaceId: input.workspaceId, projectId: item.project.id, sourceType: "legacy_import", sourceId: item.project.id, title: item.researchDeltas[0].title } })
+    if (!existingDelta) {
+      await prisma.researchDelta.create({ data: { workspaceId: input.workspaceId, projectId: item.project.id, ...item.researchDeltas[0], createdByUserId: input.userId } as any })
+      created.researchDeltas++
+    }
+  }
+  const seedProject = await prisma.project.findUnique({ where: { workspaceId_slug: { workspaceId: input.workspaceId, slug: preview.seedVault.slug } } })
+  if (!seedProject) {
+    await prisma.spinoutCandidate.upsert({ where: { workspaceId_slug: { workspaceId: input.workspaceId, slug: preview.seedVault.slug } }, update: {}, create: { workspaceId: input.workspaceId, ...preview.seedVault, createdByUserId: input.userId } as any })
+    created.spinoutCandidates++
+  }
+  return { ok: true, created }
 }

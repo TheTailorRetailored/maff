@@ -1,5 +1,5 @@
 import { useAuth0 } from "@auth0/auth0-react"
-import { BookOpen, CheckSquare, ClipboardList, Home, LogOut, Network, Settings, Sigma, TerminalSquare } from "lucide-react"
+import { BookOpen, CheckSquare, ClipboardList, GitBranch, Home, LogOut, Network, Settings, Sigma, TerminalSquare } from "lucide-react"
 import { useEffect, useState } from "react"
 import { Dashboard } from "./pages/Dashboard"
 import { Skills } from "./pages/Skills"
@@ -12,8 +12,9 @@ import { ReportView } from "./pages/ReportView"
 import { ReviewQueue } from "./pages/ReviewQueue"
 import { ObjectGraph } from "./pages/ObjectGraph"
 import { AgentRunView } from "./pages/AgentRunView"
+import { ResearchFrontier } from "./pages/ResearchFrontier"
 
-type Page = "dashboard" | "projects" | "control" | "workstream" | "report" | "agentRun" | "reviews" | "objectGraph" | "skills" | "lean" | "settings"
+type Page = "dashboard" | "projects" | "control" | "frontier" | "workstream" | "report" | "agentRun" | "reviews" | "objectGraph" | "skills" | "lean" | "settings"
 
 export function App() {
   const { isAuthenticated, isLoading, loginWithRedirect, logout, user } = useAuth0()
@@ -53,6 +54,7 @@ export function App() {
     ["dashboard", Home, "Dashboard"],
     ["projects", BookOpen, "Projects"],
     ["control", ClipboardList, "Control"],
+    ["frontier", GitBranch, "Frontier"],
     ["reviews", CheckSquare, "Reviews"],
     ["objectGraph", Network, "Objects"],
     ["skills", Sigma, "Skills"],
@@ -79,6 +81,7 @@ export function App() {
         {page === "dashboard" && <Dashboard onOpenWorkspace={(id) => { setWorkspaceId(id); setPage("projects") }} onOpenProject={(id, wid) => { setWorkspaceId(wid); setProjectId(id); setPage("control") }} onOpenWorkstream={(id, wid) => { setWorkspaceId(wid); setWorkstreamId(id); setPage("workstream") }} />}
         {page === "projects" && <Projects workspaceId={workspaceId} setWorkspaceId={setWorkspaceId} onOpenProject={(id) => { setProjectId(id); setPage("control") }} />}
         {page === "control" && <ProjectControlRoom workspaceId={workspaceId} setWorkspaceId={setWorkspaceId} projectId={projectId} onOpenWorkstream={(id) => { setWorkstreamId(id); setPage("workstream") }} />}
+        {page === "frontier" && <ResearchFrontier workspaceId={workspaceId} setWorkspaceId={setWorkspaceId} projectId={projectId} onOpenProject={(id) => { setProjectId(id); setPage("control") }} />}
         {page === "workstream" && <WorkstreamView workspaceId={workspaceId} workstreamId={workstreamId} onOpenReport={(id) => { setReportId(id); setPage("report") }} />}
         {page === "report" && <ReportView workspaceId={workspaceId} reportId={reportId} />}
         {page === "agentRun" && <AgentRunView />}

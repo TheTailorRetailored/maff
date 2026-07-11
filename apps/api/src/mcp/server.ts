@@ -18,7 +18,10 @@ const s = { type: "string" } as const
 const n = { type: "number" } as const
 const anyObj = { type: "object", additionalProperties: true } as const
 const strArray = { type: "array", items: s } as const
-
+const objectOutputSchema: JsonSchema = { type: "object", additionalProperties: true }
+const searchKeys = ["claims", "routes", "gaps", "papers", "known_results", "research_deltas", "research_artifacts", "mechanisms", "spinout_candidates", "assumption_regimes", "theorem_contracts", "frontier_snapshots"]
+const searchOutputSchema: JsonSchema = objectSchema(Object.fromEntries(searchKeys.map((key) => [key, { type: "array", items: objectOutputSchema }])), searchKeys)
+const idObjectOutputSchema: JsonSchema = { type: "object", required: ["id"], properties: { id: s }, additionalProperties: true }
 const listResultKeys: Record<string, string> = {
   list_workspaces: "workspaces",
   list_projects: "projects",
@@ -31,16 +34,17 @@ const listResultKeys: Record<string, string> = {
   list_mechanisms: "mechanisms",
   list_spinout_candidates: "spinouts",
   list_assumption_regimes: "assumptions",
-  list_theorem_contracts: "contracts"
+  list_theorem_contracts: "contracts",
+  list_frontier_snapshots: "snapshots"
 }
-
-const defaultOutputSchema: JsonSchema = { type: "object", additionalProperties: true }
-
-function outputSchemaForTool(name: string): JsonSchema {
-  const key = listResultKeys[name]
-  return key
-    ? objectSchema({ [key]: { type: "array", items: { type: "object", additionalProperties: true } } }, [key])
-    : defaultOutputSchema
+const readOnlyToolNames = new Set(["get_my_maff_context", "list_workspaces", "get_project", "list_projects", "get_project_control_room", "list_project_goals", "list_workstreams", "get_workstream", "get_agent_briefing", "list_review_rounds", "get_report", "get_object_graph", "search_research_objects", "list_research_deltas", "list_mechanisms", "list_spinout_candidates", "list_assumption_regimes", "list_theorem_contracts", "list_frontier_snapshots", "get_latest_frontier_snapshot", "list_research_artifacts", "list_research_links", "get_quartz_site_status"])
+const idempotentToolNames = new Set(["rebuild_quartz_site"])
+const outputSchemaFor = (name: string): JsonSchema => {
+  const listKey = listResultKeys[name]
+  if (listKey) return objectSchema({ [listKey]: { type: "array", items: objectOutputSchema } }, [listKey])
+  if (name === "search_research_objects") return searchOutputSchema
+  if (["create_project", "create_research_delta", "create_research_artifact", "create_spinout_candidate", "create_research_link"].includes(name)) return idObjectOutputSchema
+  return objectOutputSchema
 }
 const reviewVerdict = {
   type: "string",
@@ -62,14 +66,15 @@ const reviewVerdict = {
   ]
 } as const
 
-type ToolDef = { name: string; description: string; scope: string; role: WorkspaceRole; inputSchema: JsonSchema; outputSchema: JsonSchema }
+type ToolDef = { name: string; description: string; scope: string; role: WorkspaceRole; inputSchema: JsonSchema; outputSchema: JsonSchema; annotations: JsonSchema }
 const tool = (name: string, description: string, role: WorkspaceRole, inputSchema: JsonSchema, scope = scopes.maffAccess): ToolDef => ({
   name,
   description,
   scope,
   role,
   inputSchema,
-  outputSchema: outputSchemaForTool(name)
+  outputSchema: outputSchemaFor(name),
+  annotations: { readOnlyHint: readOnlyToolNames.has(name), openWorldHint: false, destructiveHint: false, idempotentHint: idempotentToolNames.has(name) }
 })
 export const mcpServerVersion = "0.4.1-structured-content-objects"
 
@@ -129,6 +134,28 @@ export const toolDefinitions: ToolDef[] = [
   tool("search_research_objects", "Search typed Maff research objects.", "viewer", objectSchema({ workspace_id: s, project_id: s, query: s, type: s }, ["workspace_id"])),
   tool("create_artifact", "Register a durable artifact without arbitrary file writes.", "editor", objectSchema({ workspace_id: s, project_id: s, workstream_id: s, kind: s, title: s, uri: s, path: s, content_hash: s, metadata: anyObj, created_by_agent_run_id: s }, ["workspace_id", "project_id", "title"])),
 
+  tool("create_research_delta", "Capture a compact research delta: what changed, portable value, blockers, and next move. Low-friction by design.", "editor", objectSchema({ workspace_id: s, project_id: s, source_type: s, source_id: s, title: s, summary_markdown: s, what_changed_markdown: s, mainline_effect_markdown: s, reusable_ideas_markdown: s, blockers_markdown: s, next_move_markdown: s, confidence: s }, ["workspace_id", "title"])),
+  tool("list_research_deltas", "List compact research deltas by workspace/project/source.", "viewer", objectSchema({ workspace_id: s, project_id: s, source_type: s, source_id: s, limit: n }, ["workspace_id"])),
+  tool("create_mechanism", "Capture a reusable mathematical mechanism seed without requiring a full theorem workflow.", "editor", objectSchema({ workspace_id: s, project_id: s, title: s, slug: s, status: s, maturity: s, description_markdown: s, core_idea_markdown: s, where_it_worked_markdown: s, where_it_failed_markdown: s, possible_transfers_markdown: s, kill_conditions_markdown: s, centrality_score: n, portability_score: n, tractability_score: n, novelty_score: n, load_bearing_score: n }, ["workspace_id", "title"])),
+  tool("list_mechanisms", "List reusable mechanisms by workspace/project/status.", "viewer", objectSchema({ workspace_id: s, project_id: s, status: s, maturity: s, limit: n }, ["workspace_id"])),
+  tool("update_mechanism", "Patch a reusable mechanism.", "editor", objectSchema({ workspace_id: s, mechanism_id: s, patch: anyObj }, ["workspace_id", "mechanism_id", "patch"])),
+  tool("create_spinout_candidate", "Capture a possible theorem or project discovered from the current research.", "editor", objectSchema({ workspace_id: s, project_id: s, origin_project_id: s, title: s, slug: s, status: s, statement_sketch_markdown: s, why_interesting_markdown: s, relation_to_origin_markdown: s, cheapest_next_test_markdown: s, possible_payoff_markdown: s, risk_markdown: s }, ["workspace_id", "title"])),
+  tool("list_spinout_candidates", "List spinout theorem/project candidates.", "viewer", objectSchema({ workspace_id: s, project_id: s, status: s, limit: n }, ["workspace_id"])),
+  tool("promote_spinout_candidate", "Promote a SpinoutCandidate into a Project while preserving a link back to the spinout.", "editor", objectSchema({ workspace_id: s, spinout_id: s }, ["workspace_id", "spinout_id"])),
+  tool("create_assumption_regime", "Capture a theorem assumption regime or variant.", "editor", objectSchema({ workspace_id: s, project_id: s, title: s, slug: s, status: s, description_markdown: s, formal_statement_markdown: s, includes_markdown: s, excludes_markdown: s, motivation_markdown: s }, ["workspace_id", "title"])),
+  tool("list_assumption_regimes", "List assumption regimes by workspace/project/status.", "viewer", objectSchema({ workspace_id: s, project_id: s, status: s, limit: n }, ["workspace_id"])),
+  tool("create_theorem_contract", "Capture the current theorem target without making it a hard workflow gate.", "editor", objectSchema({ workspace_id: s, project_id: s, title: s, slug: s, status: s, theorem_statement_markdown: s, assumptions_markdown: s, conclusion_markdown: s, known_dependencies_markdown: s, known_blockers_markdown: s, proof_strategy_markdown: s, current_best_version_markdown: s, confidence: s }, ["workspace_id", "project_id", "title"])),
+  tool("list_theorem_contracts", "List theorem contracts by workspace/project/status.", "viewer", objectSchema({ workspace_id: s, project_id: s, status: s, limit: n }, ["workspace_id"])),
+  tool("create_frontier_snapshot", "Append a compressed frontier snapshot for a project or workspace.", "editor", objectSchema({ workspace_id: s, project_id: s, title: s, snapshot_markdown: s, strongest_current_theorem_markdown: s, strongest_conditional_theorem_markdown: s, active_blockers_markdown: s, active_mechanisms_markdown: s, spinouts_markdown: s, dead_or_paused_branches_markdown: s, recommended_next_moves_markdown: s, source: s }, ["workspace_id", "title"])),
+  tool("list_frontier_snapshots", "List compressed frontier snapshots.", "viewer", objectSchema({ workspace_id: s, project_id: s, source: s, limit: n }, ["workspace_id"])),
+  tool("get_latest_frontier_snapshot", "Read the latest compressed frontier snapshot.", "viewer", objectSchema({ workspace_id: s, project_id: s }, ["workspace_id"])),
+  tool("create_research_artifact", "Register a durable research output such as a proof skeleton, memo, theorem map, or migration report.", "editor", objectSchema({ workspace_id: s, project_id: s, title: s, slug: s, kind: s, status: s, description_markdown: s, content_markdown: s, file_path: s, url: s }, ["workspace_id", "title"])),
+  tool("list_research_artifacts", "List durable research artifacts.", "viewer", objectSchema({ workspace_id: s, project_id: s, kind: s, status: s, limit: n }, ["workspace_id"])),
+  tool("create_research_link", "Create a generic research relation between any two frontier or legacy objects.", "editor", objectSchema({ workspace_id: s, project_id: s, source_type: s, source_id: s, relation_type: s, target_type: s, target_id: s, note_markdown: s, confidence: s }, ["workspace_id", "source_type", "source_id", "relation_type", "target_type", "target_id"])),
+  tool("list_research_links", "List generic research links by source, target, project, or workspace.", "viewer", objectSchema({ workspace_id: s, project_id: s, source_type: s, source_id: s, target_type: s, target_id: s, limit: n }, ["workspace_id"])),
+  tool("run_legacy_distillation_preview", "Preview non-destructive legacy distillation into frontier objects. Writes an artifact file, not DB rows.", "editor", objectSchema({ workspace_id: s, output_path: s }, ["workspace_id"])),
+  tool("run_legacy_distillation_apply", "Apply the idempotent legacy distillation seed layer into the database.", "editor", objectSchema({ workspace_id: s }, ["workspace_id"])),
+
   tool("create_lean_project", "Create a Lean project.", "editor", objectSchema({ workspace_id: s, project_name: s }, ["workspace_id", "project_name"])),
   tool("create_lean_stub", "Create a Lean theorem file and LeanTheorem record.", "editor", objectSchema({ workspace_id: s, formalization_target_id: s, theorem_statement: s, imports: strArray }, ["workspace_id", "formalization_target_id", "theorem_statement"])),
   tool("lean_check", "Run the Lean worker check for a typed LeanTheorem.", "editor", objectSchema({ workspace_id: s, lean_theorem_id: s }, ["workspace_id", "lean_theorem_id"])),
@@ -142,7 +169,8 @@ export const toolDefinitions: ToolDef[] = [
 const toolByName = new Map(toolDefinitions.map((definition) => [definition.name, definition]))
 
 function wwwAuthenticate(required: string) {
-  return `Bearer resource_metadata="${config.publicBaseUrl}/.well-known/oauth-protected-resource", error="insufficient_scope", error_description="Missing required scope ${required}", scope="${required}"`
+  const quoted = (value: string) => value.replace(/\\/g, "\\\\").replace(/"/g, "\\\"").replace(/[\u0000-\u001F\u007F]/g, " ")
+  return `Bearer resource_metadata="${quoted(config.publicBaseUrl)}/.well-known/oauth-protected-resource", error="insufficient_scope", error_description="Missing required scope ${quoted(required)}", scope="${quoted(required)}"`
 }
 
 function insufficientScopeError(required: string, ctx: ToolContext, toolName: string) {
@@ -217,6 +245,27 @@ async function callTool(toolName: string, args: any, ctx: ToolContext) {
     case "get_object_graph": return runtime.getObjectGraph({ workspaceId, projectId: args.project_id, sourceType: args.source_type, sourceId: args.source_id })
     case "search_research_objects": return runtime.searchResearchObjects({ workspaceId, projectId: args.project_id, query: args.query, type: args.type })
     case "create_artifact": return runtime.createArtifact({ workspaceId, projectId: args.project_id, workstreamId: args.workstream_id, kind: args.kind, title: args.title, uri: args.uri, path: args.path, contentHash: args.content_hash, metadata: args.metadata, createdByAgentRunId: args.created_by_agent_run_id })
+    case "create_research_delta": return runtime.createResearchDelta({ workspaceId, projectId: args.project_id, sourceType: args.source_type, sourceId: args.source_id, title: args.title, summaryMarkdown: args.summary_markdown, whatChangedMarkdown: args.what_changed_markdown, mainlineEffectMarkdown: args.mainline_effect_markdown, reusableIdeasMarkdown: args.reusable_ideas_markdown, blockersMarkdown: args.blockers_markdown, nextMoveMarkdown: args.next_move_markdown, confidence: args.confidence, createdByUserId: userId })
+    case "list_research_deltas": return runtime.listResearchDeltas({ workspaceId, projectId: args.project_id, sourceType: args.source_type, sourceId: args.source_id, limit: args.limit })
+    case "create_mechanism": return runtime.createMechanism({ workspaceId, projectId: args.project_id, title: args.title, slug: args.slug, status: args.status, maturity: args.maturity, descriptionMarkdown: args.description_markdown, coreIdeaMarkdown: args.core_idea_markdown, whereItWorkedMarkdown: args.where_it_worked_markdown, whereItFailedMarkdown: args.where_it_failed_markdown, possibleTransfersMarkdown: args.possible_transfers_markdown, killConditionsMarkdown: args.kill_conditions_markdown, centralityScore: args.centrality_score, portabilityScore: args.portability_score, tractabilityScore: args.tractability_score, noveltyScore: args.novelty_score, loadBearingScore: args.load_bearing_score, createdByUserId: userId })
+    case "list_mechanisms": return runtime.listMechanisms({ workspaceId, projectId: args.project_id, status: args.status, maturity: args.maturity, limit: args.limit })
+    case "update_mechanism": return runtime.updateMechanism({ workspaceId, id: args.mechanism_id, patch: args.patch })
+    case "create_spinout_candidate": return runtime.createSpinoutCandidate({ workspaceId, projectId: args.project_id, originProjectId: args.origin_project_id, title: args.title, slug: args.slug, status: args.status, statementSketchMarkdown: args.statement_sketch_markdown, whyInterestingMarkdown: args.why_interesting_markdown, relationToOriginMarkdown: args.relation_to_origin_markdown, cheapestNextTestMarkdown: args.cheapest_next_test_markdown, possiblePayoffMarkdown: args.possible_payoff_markdown, riskMarkdown: args.risk_markdown, createdByUserId: userId })
+    case "list_spinout_candidates": return runtime.listSpinoutCandidates({ workspaceId, projectId: args.project_id, status: args.status, limit: args.limit })
+    case "promote_spinout_candidate": return runtime.promoteSpinoutCandidate({ workspaceId, id: args.spinout_id, userId })
+    case "create_assumption_regime": return runtime.createAssumptionRegime({ workspaceId, projectId: args.project_id, title: args.title, slug: args.slug, status: args.status, descriptionMarkdown: args.description_markdown, formalStatementMarkdown: args.formal_statement_markdown, includesMarkdown: args.includes_markdown, excludesMarkdown: args.excludes_markdown, motivationMarkdown: args.motivation_markdown, createdByUserId: userId })
+    case "list_assumption_regimes": return runtime.listAssumptionRegimes({ workspaceId, projectId: args.project_id, status: args.status, limit: args.limit })
+    case "create_theorem_contract": return runtime.createTheoremContract({ workspaceId, projectId: args.project_id, title: args.title, slug: args.slug, status: args.status, theoremStatementMarkdown: args.theorem_statement_markdown, assumptionsMarkdown: args.assumptions_markdown, conclusionMarkdown: args.conclusion_markdown, knownDependenciesMarkdown: args.known_dependencies_markdown, knownBlockersMarkdown: args.known_blockers_markdown, proofStrategyMarkdown: args.proof_strategy_markdown, currentBestVersionMarkdown: args.current_best_version_markdown, confidence: args.confidence, createdByUserId: userId })
+    case "list_theorem_contracts": return runtime.listTheoremContracts({ workspaceId, projectId: args.project_id, status: args.status, limit: args.limit })
+    case "create_frontier_snapshot": return runtime.createFrontierSnapshot({ workspaceId, projectId: args.project_id, title: args.title, snapshotMarkdown: args.snapshot_markdown, strongestCurrentTheoremMarkdown: args.strongest_current_theorem_markdown, strongestConditionalTheoremMarkdown: args.strongest_conditional_theorem_markdown, activeBlockersMarkdown: args.active_blockers_markdown, activeMechanismsMarkdown: args.active_mechanisms_markdown, spinoutsMarkdown: args.spinouts_markdown, deadOrPausedBranchesMarkdown: args.dead_or_paused_branches_markdown, recommendedNextMovesMarkdown: args.recommended_next_moves_markdown, source: args.source, createdByUserId: userId })
+    case "list_frontier_snapshots": return runtime.listFrontierSnapshots({ workspaceId, projectId: args.project_id, source: args.source, limit: args.limit })
+    case "get_latest_frontier_snapshot": return runtime.getLatestFrontierSnapshot({ workspaceId, projectId: args.project_id })
+    case "create_research_artifact": return runtime.createResearchArtifact({ workspaceId, projectId: args.project_id, title: args.title, slug: args.slug, kind: args.kind, status: args.status, descriptionMarkdown: args.description_markdown, contentMarkdown: args.content_markdown, filePath: args.file_path, url: args.url, createdByUserId: userId })
+    case "list_research_artifacts": return runtime.listResearchArtifacts({ workspaceId, projectId: args.project_id, kind: args.kind, status: args.status, limit: args.limit })
+    case "create_research_link": return runtime.createResearchLink({ workspaceId, projectId: args.project_id, sourceType: args.source_type, sourceId: args.source_id, relationType: args.relation_type, targetType: args.target_type, targetId: args.target_id, noteMarkdown: args.note_markdown, confidence: args.confidence, createdByUserId: userId })
+    case "list_research_links": return runtime.listResearchLinks({ workspaceId, projectId: args.project_id, sourceType: args.source_type, sourceId: args.source_id, targetType: args.target_type, targetId: args.target_id, limit: args.limit })
+    case "run_legacy_distillation_preview": return runtime.runLegacyDistillationPreview({ workspaceId, outputPath: args.output_path })
+    case "run_legacy_distillation_apply": return runtime.runLegacyDistillationApply({ workspaceId, userId })
     case "create_lean_project": return createLeanProject({ workspaceId, projectName: args.project_name })
     case "create_lean_stub": return createLeanStub({ workspaceId, formalizationTargetId: args.formalization_target_id, theoremStatement: args.theorem_statement, imports: args.imports, userId })
     case "lean_check": return leanCheck({ workspaceId, leanTheoremId: args.lean_theorem_id, userId })
@@ -446,6 +495,27 @@ function compactLeanCheckResult(value: any) {
 
 function compactResearchObject(value: any) {
   if (!value) return value
+  if ("summaryMarkdown" in value && "whatChangedMarkdown" in value) {
+    return { id: value.id, type: "ResearchDelta", title: value.title, confidence: value.confidence, summary_preview: clip(value.summaryMarkdown, 180), what_changed_preview: clip(value.whatChangedMarkdown, 180) }
+  }
+  if ("contentMarkdown" in value && "filePath" in value) {
+    return { id: value.id, type: "ResearchArtifact", title: value.title, kind: value.kind, status: value.status, description_preview: clip(value.descriptionMarkdown, 180), content_preview: clip(value.contentMarkdown, 180), file_path: value.filePath, url: value.url }
+  }
+  if ("maturity" in value && "coreIdeaMarkdown" in value) {
+    return { id: value.id, type: "Mechanism", title: value.title, status: value.status, maturity: value.maturity, description_preview: clip(value.descriptionMarkdown, 180), core_idea_preview: clip(value.coreIdeaMarkdown, 180) }
+  }
+  if ("statementSketchMarkdown" in value) {
+    return { id: value.id, type: "SpinoutCandidate", title: value.title, status: value.status, statement_preview: clip(value.statementSketchMarkdown, 180), why_interesting_preview: clip(value.whyInterestingMarkdown, 180) }
+  }
+  if ("formalStatementMarkdown" in value && "includesMarkdown" in value) {
+    return { id: value.id, type: "AssumptionRegime", title: value.title, status: value.status, description_preview: clip(value.descriptionMarkdown, 180), formal_statement_preview: clip(value.formalStatementMarkdown, 180) }
+  }
+  if ("theoremStatementMarkdown" in value) {
+    return { id: value.id, type: "TheoremContract", title: value.title, status: value.status, confidence: value.confidence, theorem_statement_preview: clip(value.theoremStatementMarkdown, 180) }
+  }
+  if ("snapshotMarkdown" in value) {
+    return { id: value.id, type: "ResearchFrontierSnapshot", title: value.title, source: value.source, snapshot_preview: clip(value.snapshotMarkdown, 180) }
+  }
   if ("claimKind" in value || "confidence" in value) {
     return { id: value.id, type: "Claim", title: value.title, status: value.status, kind: value.kind, confidence: value.confidence, statement_preview: clip(value.statementMarkdown, 180) }
   }
@@ -611,6 +681,7 @@ export function compactToolResult(toolName: string, value: unknown) {
     if (toolName === "link_objects") return compactGraphEdge(value)
     if (toolName === "lean_check") return compactLeanCheckResult(value)
     if (toolName === "create_lean_stub") return { result: (value as any).result, lean_theorem: compactResearchObject((value as any).leanTheorem) }
+    if (["list_research_deltas", "list_research_artifacts", "list_mechanisms", "list_spinout_candidates", "list_assumption_regimes", "list_theorem_contracts", "list_frontier_snapshots"].includes(toolName)) return compactList(value as any[], compactResearchObject)
     if (toolName === "mark_lean_verified") return compactResearchObject(value)
     if (toolName.startsWith("create_") || toolName === "update_claim_status" || toolName === "resolve_gap") return compactResearchObject(value)
     if (toolName === "get_object_graph") {
@@ -627,7 +698,14 @@ export function compactToolResult(toolName: string, value: unknown) {
       routes: compactList((value as any).routes, compactResearchObject),
       gaps: compactList((value as any).gaps, compactResearchObject),
       papers: compactList((value as any).papers, compactResearchObject),
-      known_results: compactList((value as any).knownResults, compactResearchObject)
+      known_results: compactList((value as any).known_results ?? (value as any).knownResults, compactResearchObject),
+      research_deltas: compactList((value as any).research_deltas, compactResearchObject),
+      research_artifacts: compactList((value as any).research_artifacts, compactResearchObject),
+      mechanisms: compactList((value as any).mechanisms, compactResearchObject),
+      spinout_candidates: compactList((value as any).spinout_candidates, compactResearchObject),
+      assumption_regimes: compactList((value as any).assumption_regimes, compactResearchObject),
+      theorem_contracts: compactList((value as any).theorem_contracts, compactResearchObject),
+      frontier_snapshots: compactList((value as any).frontier_snapshots, compactResearchObject)
     }
   }
   return value
@@ -639,14 +717,13 @@ function resourceResult(uri: string, value: unknown) {
 
 function toolForList(definition: ToolDef) {
   const securitySchemes = [{ type: "oauth2", scopes: [definition.scope] }]
-  const readOnlyHint = /^(get_|list_|search_)/.test(definition.name) || definition.name === "lean_goal"
   return {
     name: definition.name,
     description: definition.description,
     inputSchema: definition.inputSchema,
     input_schema: definition.inputSchema,
     outputSchema: definition.outputSchema,
-    annotations: { readOnlyHint, openWorldHint: false, destructiveHint: false },
+    annotations: definition.annotations,
     securitySchemes,
     _meta: { securitySchemes }
   }

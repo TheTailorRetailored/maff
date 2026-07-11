@@ -13,6 +13,7 @@ services:
       - default
 
   api:
+    restart: unless-stopped
     build:
       context: .
       dockerfile: ./apps/api/Dockerfile

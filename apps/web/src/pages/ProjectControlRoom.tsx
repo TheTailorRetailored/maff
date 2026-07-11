@@ -83,6 +83,17 @@ export function ProjectControlRoom({ workspaceId, setWorkspaceId, projectId, onO
             <p>{room.project.coordinatorSummary || room.project.statement}</p>
             {room.suggested_next_assignment && <button onClick={() => onOpenWorkstream(room.suggested_next_assignment!.id)}>Suggested: {room.suggested_next_assignment.title}</button>}
           </section>
+          <section className="panel frontier-hero">
+            <div>
+              <h2>{room.frontier?.latestSnapshot?.title ?? "Research Frontier"}</h2>
+              <p>{room.frontier?.latestSnapshot?.snapshotMarkdown ?? "No compressed frontier snapshot yet."}</p>
+            </div>
+            <div className="frontier-metrics">
+              <span>{room.frontier?.contracts.length ?? 0}<small>contracts</small></span>
+              <span>{room.frontier?.mechanisms.length ?? 0}<small>mechanisms</small></span>
+              <span>{room.frontier?.spinouts.length ?? 0}<small>spinouts</small></span>
+            </div>
+          </section>
           <div className="grid two">
             <section>
               <h2>Goals</h2>

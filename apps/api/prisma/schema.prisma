@@ -279,6 +279,79 @@ enum GraphEdgeType {
   parent_of
 }
 
+enum ResearchConfidence {
+  low
+  medium
+  high
+}
+
+enum MechanismStatus {
+  seed
+  explored
+  active
+  reusable
+  killed
+  archived
+}
+
+enum MechanismMaturity {
+  seed
+  sketched
+  tested
+  sharpened
+  usable
+  paper_ready
+}
+
+enum SpinoutStatus {
+  seed
+  plausible
+  active
+  promoted
+  killed
+  archived
+}
+
+enum AssumptionRegimeStatus {
+  seed
+  active
+  deprecated
+  impossible
+  archived
+}
+
+enum TheoremContractStatus {
+  draft
+  active
+  narrowed
+  proved_informally
+  refuted
+  paused
+  archived
+}
+
+enum ResearchArtifactKind {
+  paper_draft
+  proof_skeleton
+  survey_memo
+  verification_script
+  experiment_notebook
+  counterexample_catalogue
+  formalization_stub
+  lean_stub
+  theorem_map
+  exposition_note
+  migration_report
+  other
+}
+
+enum ResearchArtifactStatus {
+  draft
+  active
+  reviewed
+  archived
+}
+
 model User {
   id          String   @id @default(uuid()) @db.Uuid
   auth0Sub    String   @unique
@@ -335,6 +408,14 @@ model Workspace {
   formalizationTargets FormalizationTarget[]
   leanTheorems LeanTheorem[]
   graphEdges GraphEdge[]
+  researchDeltas ResearchDelta[]
+  mechanisms Mechanism[]
+  spinoutCandidates SpinoutCandidate[]
+  assumptionRegimes AssumptionRegime[]
+  theoremContracts TheoremContract[]
+  frontierSnapshots ResearchFrontierSnapshot[]
+  researchArtifacts ResearchArtifact[]
+  researchLinks ResearchLink[]
 }
 
 model WorkspaceMember {
@@ -495,6 +576,14 @@ model Project {
   formalizationTargets FormalizationTarget[]
   leanTheorems LeanTheorem[]
   graphEdges GraphEdge[]
+  researchDeltas ResearchDelta[]
+  mechanisms Mechanism[]
+  originSpinouts SpinoutCandidate[] @relation("SpinoutOriginProject")
+  promotedSpinouts SpinoutCandidate[] @relation("SpinoutPromotedProject")
+  assumptionRegimes AssumptionRegime[]
+  theoremContracts TheoremContract[]
+  frontierSnapshots ResearchFrontierSnapshot[]
+  researchArtifacts ResearchArtifact[]
 
   @@unique([workspaceId, slug])
   @@index([workspaceId, status])
@@ -960,4 +1049,221 @@ model GraphEdge {
   @@index([workspaceId, projectId, edgeType])
   @@index([workspaceId, sourceType, sourceId])
   @@index([workspaceId, targetType, targetId])
+}
+
+model ResearchDelta {
+  id                         String              @id @default(uuid()) @db.Uuid
+  workspaceId                String              @db.Uuid
+  projectId                  String?             @db.Uuid
+  sourceType                 String?
+  sourceId                   String?
+  title                      String
+  summaryMarkdown            String
+  whatChangedMarkdown        String
+  mainlineEffectMarkdown     String?
+  reusableIdeasMarkdown      String?
+  blockersMarkdown           String?
+  nextMoveMarkdown           String?
+  confidence                 ResearchConfidence?
+  createdByUserId            String?             @db.Uuid
+  createdAt                  DateTime            @default(now())
+  updatedAt                  DateTime            @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project   Project?  @relation(fields: [projectId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId])
+  @@index([workspaceId, projectId])
+  @@index([workspaceId, sourceType, sourceId])
+  @@index([workspaceId, createdAt])
+}
+
+model Mechanism {
+  id                        String            @id @default(uuid()) @db.Uuid
+  workspaceId               String            @db.Uuid
+  projectId                 String?           @db.Uuid
+  title                     String
+  slug                      String
+  status                    MechanismStatus   @default(seed)
+  maturity                  MechanismMaturity @default(seed)
+  centralityScore           Int?
+  portabilityScore          Int?
+  tractabilityScore         Int?
+  noveltyScore              Int?
+  loadBearingScore          Int?
+  descriptionMarkdown       String
+  coreIdeaMarkdown          String?
+  whereItWorkedMarkdown     String?
+  whereItFailedMarkdown     String?
+  possibleTransfersMarkdown String?
+  killConditionsMarkdown    String?
+  createdByUserId           String?           @db.Uuid
+  createdAt                 DateTime          @default(now())
+  updatedAt                 DateTime          @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project   Project?  @relation(fields: [projectId], references: [id], onDelete: SetNull)
+
+  @@unique([workspaceId, slug])
+  @@index([workspaceId])
+  @@index([workspaceId, projectId])
+  @@index([workspaceId, status])
+  @@index([workspaceId, maturity])
+}
+
+model SpinoutCandidate {
+  id                       String         @id @default(uuid()) @db.Uuid
+  workspaceId              String         @db.Uuid
+  originProjectId          String?        @db.Uuid
+  promotedProjectId        String?        @db.Uuid
+  title                    String
+  slug                     String
+  status                   SpinoutStatus  @default(seed)
+  statementSketchMarkdown  String
+  whyInterestingMarkdown   String?
+  relationToOriginMarkdown String?
+  cheapestNextTestMarkdown String?
+  possiblePayoffMarkdown   String?
+  riskMarkdown             String?
+  createdByUserId          String?        @db.Uuid
+  createdAt                DateTime       @default(now())
+  updatedAt                DateTime       @updatedAt
+
+  workspace       Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  originProject   Project?  @relation("SpinoutOriginProject", fields: [originProjectId], references: [id], onDelete: SetNull)
+  promotedProject Project?  @relation("SpinoutPromotedProject", fields: [promotedProjectId], references: [id], onDelete: SetNull)
+
+  @@unique([workspaceId, slug])
+  @@index([workspaceId])
+  @@index([workspaceId, originProjectId])
+  @@index([workspaceId, status])
+}
+
+model AssumptionRegime {
+  id                      String                 @id @default(uuid()) @db.Uuid
+  workspaceId             String                 @db.Uuid
+  projectId               String?                @db.Uuid
+  title                   String
+  slug                    String
+  status                  AssumptionRegimeStatus @default(seed)
+  descriptionMarkdown     String
+  formalStatementMarkdown String?
+  includesMarkdown        String?
+  excludesMarkdown        String?
+  motivationMarkdown      String?
+  createdByUserId         String?                @db.Uuid
+  createdAt               DateTime               @default(now())
+  updatedAt               DateTime               @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project   Project?  @relation(fields: [projectId], references: [id], onDelete: SetNull)
+
+  @@unique([workspaceId, slug])
+  @@index([workspaceId])
+  @@index([workspaceId, projectId])
+  @@index([workspaceId, status])
+}
+
+model TheoremContract {
+  id                         String                @id @default(uuid()) @db.Uuid
+  workspaceId                String                @db.Uuid
+  projectId                  String                @db.Uuid
+  title                      String
+  slug                       String
+  status                     TheoremContractStatus @default(draft)
+  theoremStatementMarkdown   String
+  assumptionsMarkdown        String?
+  conclusionMarkdown         String?
+  knownDependenciesMarkdown  String?
+  knownBlockersMarkdown      String?
+  proofStrategyMarkdown      String?
+  currentBestVersionMarkdown String?
+  confidence                 ResearchConfidence?
+  createdByUserId            String?               @db.Uuid
+  createdAt                  DateTime              @default(now())
+  updatedAt                  DateTime              @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project   Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, slug])
+  @@index([workspaceId])
+  @@index([workspaceId, projectId])
+  @@index([workspaceId, status])
+}
+
+model ResearchFrontierSnapshot {
+  id                                  String   @id @default(uuid()) @db.Uuid
+  workspaceId                         String   @db.Uuid
+  projectId                           String?  @db.Uuid
+  title                               String
+  snapshotMarkdown                    String
+  strongestCurrentTheoremMarkdown     String?
+  strongestConditionalTheoremMarkdown String?
+  activeBlockersMarkdown              String?
+  activeMechanismsMarkdown            String?
+  spinoutsMarkdown                    String?
+  deadOrPausedBranchesMarkdown        String?
+  recommendedNextMovesMarkdown        String?
+  source                              String?
+  createdByUserId                     String?  @db.Uuid
+  createdAt                           DateTime @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project   Project?  @relation(fields: [projectId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId])
+  @@index([workspaceId, projectId])
+  @@index([workspaceId, source])
+  @@index([workspaceId, createdAt])
+}
+
+model ResearchArtifact {
+  id                  String                 @id @default(uuid()) @db.Uuid
+  workspaceId         String                 @db.Uuid
+  projectId           String?                @db.Uuid
+  title               String
+  slug                String
+  kind                ResearchArtifactKind   @default(other)
+  status              ResearchArtifactStatus @default(draft)
+  descriptionMarkdown String?
+  contentMarkdown     String?
+  filePath            String?
+  url                 String?
+  createdByUserId     String?                @db.Uuid
+  createdAt           DateTime               @default(now())
+  updatedAt           DateTime               @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project   Project?  @relation(fields: [projectId], references: [id], onDelete: SetNull)
+
+  @@unique([workspaceId, slug])
+  @@index([workspaceId])
+  @@index([workspaceId, projectId])
+  @@index([workspaceId, kind])
+  @@index([workspaceId, status])
+}
+
+model ResearchLink {
+  id            String              @id @default(uuid()) @db.Uuid
+  workspaceId   String              @db.Uuid
+  projectId     String?             @db.Uuid
+  sourceType    String
+  sourceId      String
+  relationType  String
+  targetType    String
+  targetId      String
+  noteMarkdown  String?
+  confidence    ResearchConfidence?
+  createdByUserId String?           @db.Uuid
+  createdAt     DateTime            @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
+  @@index([workspaceId, projectId])
+  @@index([workspaceId, sourceType, sourceId])
+  @@index([workspaceId, targetType, targetId])
+  @@index([workspaceId, sourceType, sourceId, targetType, targetId])
+  @@index([workspaceId, relationType])
 }
