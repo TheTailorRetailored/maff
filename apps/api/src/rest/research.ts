@@ -1,6 +1,6 @@
 import type { Router } from "express"
 import { z } from "zod"
-import { requireUser } from "../auth/auth0.js"
+import { requireUser } from "../auth/oidc.js"
 import { requireWorkspaceRole } from "../auth/permissions.js"
 import * as runtime from "../research/runtime.js"
 import { asyncHandler } from "./asyncHandler.js"
@@ -366,5 +366,47 @@ export function registerResearchRuntimeRoutes(router: Router) {
     const user = requireUser(req)
     await requireWorkspaceRole(user.id, req.params.id, "viewer")
     res.json(await runtime.getObjectGraph({ workspaceId: req.params.id, projectId: typeof req.query.projectId === "string" ? req.query.projectId : undefined }))
+  }))
+
+  router.get("/workspaces/:id/projects/:projectId/health", asyncHandler(async (req, res) => {
+    const user = requireUser(req)
+    await requireWorkspaceRole(user.id, req.params.id, "viewer")
+    res.json(await runtime.getProjectHealth(req.params.id, req.params.projectId))
+  }))
+
+  router.post("/workspaces/:id/projects/:projectId/manuscripts", asyncHandler(async (req, res) => {
+    const user = requireUser(req)
+    await requireWorkspaceRole(user.id, req.params.id, "editor")
+    res.status(201).json(await runtime.createManuscriptVersion({ workspaceId: req.params.id, projectId: req.params.projectId, artifactId: req.body.artifactId, parentArtifactIds: req.body.parentArtifactIds, claimIds: req.body.claimIds, theoremFingerprint: req.body.theoremFingerprint, citationFingerprint: req.body.citationFingerprint }))
+  }))
+
+  router.post("/workspaces/:id/manuscripts/:manuscriptVersionId/promote", asyncHandler(async (req, res) => {
+    const user = requireUser(req)
+    await requireWorkspaceRole(user.id, req.params.id, "editor")
+    res.json(await runtime.promoteManuscriptVersion({ workspaceId: req.params.id, manuscriptVersionId: req.params.manuscriptVersionId }))
+  }))
+
+  router.post("/workspaces/:id/manuscripts/:manuscriptVersionId/freeze", asyncHandler(async (req, res) => {
+    const user = requireUser(req)
+    await requireWorkspaceRole(user.id, req.params.id, "editor")
+    res.json(await runtime.setManuscriptFreeze({ workspaceId: req.params.id, manuscriptVersionId: req.params.manuscriptVersionId, level: req.body.level }))
+  }))
+
+  router.post("/workspaces/:id/projects/:projectId/external-reviews", asyncHandler(async (req, res) => {
+    const user = requireUser(req)
+    await requireWorkspaceRole(user.id, req.params.id, "editor")
+    res.status(201).json(await runtime.importExternalReview({ workspaceId: req.params.id, projectId: req.params.projectId, manuscriptVersionId: req.body.manuscriptVersionId, theoremOrArtifactRef: req.body.theoremOrArtifactRef, originalReviewText: req.body.originalReviewText, originalReviewUri: req.body.originalReviewUri, provenance: req.body.provenance, reviewerIdentity: req.body.reviewerIdentity, independenceStatement: req.body.independenceStatement, reviewScope: req.body.reviewScope, verdict: req.body.verdict, issues: req.body.issues, requiredChanges: req.body.requiredChanges }))
+  }))
+
+  router.post("/workspaces/:id/projects/:projectId/strategic-reviews", asyncHandler(async (req, res) => {
+    const user = requireUser(req)
+    await requireWorkspaceRole(user.id, req.params.id, "editor")
+    res.status(201).json(await runtime.createStrategicReviewRound({ workspaceId: req.params.id, projectId: req.params.projectId, verdict: req.body.verdict, reviewerIndependence: req.body.reviewerIndependence, whatChangedMarkdown: req.body.whatChangedMarkdown, loopDiagnosisMarkdown: req.body.loopDiagnosisMarkdown, blockerStructureMarkdown: req.body.blockerStructureMarkdown, alternativesMarkdown: req.body.alternativesMarkdown, branchAllocation: req.body.branchAllocation, nextMoves: req.body.nextMoves, probabilityEstimates: req.body.probabilityEstimates, metrics: req.body.metrics }))
+  }))
+
+  router.post("/workspaces/:id/projects/:projectId/branches", asyncHandler(async (req, res) => {
+    const user = requireUser(req)
+    await requireWorkspaceRole(user.id, req.params.id, "editor")
+    res.status(201).json(await runtime.createProjectBranch({ workspaceId: req.params.id, projectId: req.params.projectId, title: req.body.title, state: req.body.state, rationaleMarkdown: req.body.rationaleMarkdown, targetObjectType: req.body.targetObjectType, targetObjectId: req.body.targetObjectId }))
   }))
 }

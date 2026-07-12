@@ -16,7 +16,7 @@ environment files are not part of the repository.
 
 ## Services
 
-- `api`: TypeScript REST and MCP server with Auth0 JWT verification through JWKS.
+- `api`: TypeScript REST and MCP server with provider-neutral OIDC JWT verification through issuer-derived JWKS.
 - `web`: React/Vite authenticated workbench for workspaces, nodes, graph, tasks, skills, and Lean jobs.
 - `db`: PostgreSQL index/cache and permission store.
 - `lean-worker`: internal Lean 4 worker with persistent Elan, cache, Lake, and workspace volumes.
@@ -48,7 +48,7 @@ The claim-centric model replaced an earlier star-shaped Conjecture/ProofRoute/Ga
 
 ```bash
 cp .env.example .env
-# fill Auth0 and Postgres values
+# fill OIDC and Postgres values
 docker compose up --build
 ```
 
@@ -59,7 +59,7 @@ Local ports are bound to localhost:
 - Lean worker: `http://127.0.0.1:8765`
 - Postgres: `127.0.0.1:5432`
 
-To preview the synthetic, read-only portfolio view without Auth0 or an API:
+To preview the synthetic, read-only portfolio view without OIDC or an API:
 
 ```powershell
 cd apps/web
@@ -69,7 +69,7 @@ npm run dev -- --host 127.0.0.1
 
 Demo mode is selected at build time and exposes no authenticated application data or write paths.
 
-For Auth0 local development, add local callback, logout, and web origins for `http://localhost:3000` and `http://127.0.0.1:3000`.
+For local OIDC development, register the exact callback and logout URL selected in `.env`; do not use wildcard production callbacks.
 
 ## VPS With Repo-Managed Caddy
 
@@ -77,7 +77,7 @@ For Auth0 local development, add local callback, logout, and web origins for `ht
 git clone <private-repo-url> maff
 cd maff
 cp .env.example .env
-# fill Auth0 variables and POSTGRES_PASSWORD
+# fill OIDC variables and POSTGRES_PASSWORD
 docker compose --profile proxy up -d --build
 ```
 
@@ -103,24 +103,24 @@ Configure the external proxy with prefix-preserving routes:
 
 Do not use `handle_path /api*`, `rewrite`, or equivalent prefix stripping unless the Express routes are changed to match.
 
-## Auth0 Setup Checklist
+## OIDC / Keycloak Setup Checklist
 
-1. Create an Auth0 API with Identifier equal to `AUTH0_AUDIENCE`.
-2. Create a SPA app for the web UI.
-3. Configure allowed callback, logout, and web origins.
-4. Ensure the SPA requests `audience = AUTH0_AUDIENCE`.
-5. Ensure access tokens are RS256 JWTs.
-6. Set `AUTH0_AUDIENCE` to the MCP protected resource, for example `https://maff.lachlanbridges.com/mcp`.
-7. Add API permissions: `maff:access` and `maff:admin`.
-8. Enable Auth0 OIDC Dynamic Application Registration if ChatGPT should self-register as an MCP OAuth client.
-9. The Maff Web SPA uses `AUTH0_CLIENT_ID`, but MCP clients use their own dynamically registered client ids. Maff does not require `azp` or `client_id` to match the SPA client id.
-10. For MCP clients, ensure OAuth requests include the same audience/resource.
-11. For initial ChatGPT connector setup, use advanced OAuth base scopes: `openid profile email offline_access maff:access`.
-12. Confirm `/api/auth/debug-token` shows `has_maff_access: true`, the expected `aud`, `iss`, and internal user id.
+1. Use the existing `bridges` realm. Production `OIDC_ISSUER` is exactly `https://auth.lachlanbridges.com/realms/bridges` (no trailing slash).
+2. Use a public `maff-web` SPA client with Authorization Code flow, PKCE required with S256, and exact callback/logout URLs. It has no client secret.
+3. Use a `maff` role container/resource client for Maff-only roles and set `OIDC_ROLE_CLIENT_ID=maff`. Roles are `reader`, `contributor`, `reviewer`, and `service-admin`.
+4. Set `OIDC_AUDIENCE` exactly to `https://maff.lachlanbridges.com/mcp`; configure an audience mapper on token-producing clients.
+5. Add OAuth client scopes `maff:read`, `maff:write`, `maff:review`, and `maff:admin`. The SPA normally requests the first three.
+6. Predefine `maff-chatgpt` as a public client with client authentication off, token endpoint authentication method `none`, Authorization Code flow on, PKCE S256 required, the exact ChatGPT callback, and the Maff MCP audience. Maff does not implement DCR.
+7. Grant both the delegated scope and the matching `maff` client role. Unrelated client roles and realm roles are ignored. Workspace membership/role is checked independently.
+8. Confirm `/api/auth/debug-token` shows the expected `aud`, `iss`, granted scopes, and internal user id without copying tokens into logs or tickets.
 
-The API verifies JWTs locally via JWKS and does not use `/userinfo` for authorization.
+OIDC subjects are stored as exact `(issuer, subject)` identities attached to stable internal users. Historical `auth0Sub` values remain intact for rollback, but Auth0 tokens are not accepted after the issuer cutover. Email is never an automatic account-link key.
 
-Maff only acts as an MCP protected resource. It does not implement OAuth registration, authorization, or token endpoints; Auth0 handles those pieces.
+For the approved existing user, obtain the Keycloak subject through an authenticated administrative process, verify the approved internal user independently, take a database backup, and run `npm run admin:link-oidc-identity:src -- --user-id <internal uuid> --approved-by-user-id <administrator uuid> --issuer https://auth.lachlanbridges.com/realms/bridges --subject <keycloak subject>`. The transaction rejects conflicting identities and writes an audit record. Do not paste production identifiers into source, PRs, logs, or support threads. Perform the explicit link before that user signs in through Keycloak, because an unlinked first login creates a distinct internal user rather than merging by email.
+
+The API derives the Keycloak JWKS URL only from the configured issuer, verifies RS256 signatures, issuer, audience, expiry and not-before locally, and does not use `/userinfo` or decoded-but-unverified claims for authorization.
+
+Maff only acts as an MCP protected resource. It does not implement dynamic client registration, OAuth registration, authorization, or token endpoints; Keycloak handles those pieces. The old Auth0 DCR dependency is removed by using the predefined `maff-chatgpt` client.
 
 Later users always receive their own private workspace. Shared workspace membership is explicit by default; set `AUTO_JOIN_SHARED_WORKSPACE=true` only if you want new users to be added automatically as viewers.
 
@@ -139,7 +139,7 @@ GET /.well-known/oauth-protected-resource
 GET /.well-known/oauth-protected-resource/mcp
 ```
 
-Both endpoints publish `resource: AUTH0_AUDIENCE`, `authorization_servers: [AUTH0_ISSUER]`, supported scopes (`maff:access`, `maff:admin`), and `resource_documentation: PUBLIC_BASE_URL`.
+Both endpoints publish `resource: OIDC_AUDIENCE`, `authorization_servers: [OIDC_ISSUER]`, supported scopes (`maff:read`, `maff:write`, `maff:review`, `maff:admin`), and `resource_documentation: PUBLIC_BASE_URL`.
 
 MCP exposes structured research tools such as `maff_bootstrap`, `create_claim`, `add_route_to_claim`, `log_proof_attempt`, `create_task`, `get_skill_pack`, `rebuild_quartz_site`, and Lean formalization tools. It intentionally does not expose arbitrary file writes, shell execution, or deletion tools.
 
@@ -186,7 +186,7 @@ npm run typecheck
 npm run test:smoke
 ```
 
-The smoke script verifies path traversal rejection, YAML frontmatter round-tripping, wikilink and typed-edge parsing, and MCP tool discovery. Full deployment validation still requires Docker and real Auth0 tokens.
+The smoke script verifies path traversal rejection, YAML frontmatter round-tripping, wikilink and typed-edge parsing, OIDC rejection behavior, authorization intersections, and the 89-tool MCP registry snapshot. Full migration validation still requires disposable Docker/Postgres.
 
 ## Caveats
 

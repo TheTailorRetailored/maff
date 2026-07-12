@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto"
 import type { Request, Response } from "express"
 import type { WorkspaceRole } from "@prisma/client"
-import { scopes, hasPermission } from "../auth/scopes.js"
+import { acceptedClientRolesForScope, scopes, hasBearerAuthorization } from "../auth/scopes.js"
 import { requireWorkspaceRole } from "../auth/permissions.js"
 import { config } from "../config.js"
 import { readResource, listResources } from "./resources.js"
@@ -10,7 +10,7 @@ import { quartzStatus, rebuildQuartz } from "./tools/siteTools.js"
 import { getPrompt, listPrompts } from "./prompts.js"
 import * as runtime from "../research/runtime.js"
 
-type ToolContext = { userId: string; claimsScope?: string; permissions?: string[]; aud?: unknown; sub?: string; azp?: string; clientId?: string }
+type ToolContext = { userId: string; claimsScope?: string; resourceAccess?: unknown; aud?: unknown; sub?: string; azp?: string; clientId?: string }
 type JsonSchema = Record<string, unknown>
 type JsonObject = Record<string, unknown>
 
@@ -68,7 +68,7 @@ const reviewVerdict = {
 } as const
 
 type ToolDef = { name: string; description: string; scope: string; role: WorkspaceRole; inputSchema: JsonSchema; outputSchema: JsonSchema; annotations: JsonSchema }
-const tool = (name: string, description: string, role: WorkspaceRole, inputSchema: JsonSchema, scope = scopes.maffAccess): ToolDef => ({
+const tool = (name: string, description: string, role: WorkspaceRole, inputSchema: JsonSchema, scope: string = role === "viewer" ? scopes.maffRead : role === "admin" ? scopes.maffAdmin : scopes.maffWrite): ToolDef => ({
   name,
   description,
   scope,
@@ -78,6 +78,7 @@ const tool = (name: string, description: string, role: WorkspaceRole, inputSchem
   annotations: { readOnlyHint: readOnlyToolNames.has(name), openWorldHint: false, destructiveHint: false, idempotentHint: idempotentToolNames.has(name) }
 })
 export const mcpServerVersion = "0.5.0-nontransitive-review-gates"
+export const expectedMcpToolCount = 89
 
 export const toolDefinitions: ToolDef[] = [
   tool("get_my_maff_context", "Recover where the user is up to. Infers the user's workspace, summarizes active projects, ready assignments, reports needing review, and suggested simple chat prompts.", "viewer", objectSchema({ workspace: s, project: s })),
@@ -112,7 +113,7 @@ export const toolDefinitions: ToolDef[] = [
   tool("create_or_update_workstream_report", "Create or update the primary report for a workstream.", "editor", objectSchema({ workspace_id: s, workstream_id: s, title: s, body_markdown: s, uncertainty_notes: strArray, linked_object_refs: strArray, artifact_refs: strArray }, ["workspace_id", "workstream_id", "title", "body_markdown"])),
   tool("submit_workstream_report", "Create/update a WorkstreamReport and submit it for mandatory review.", "editor", objectSchema({ workspace_id: s, workstream_id: s, title: s, body_markdown: s, uncertainty_notes: strArray, linked_object_refs: strArray, artifact_refs: strArray }, ["workspace_id", "workstream_id", "title", "body_markdown"])),
   tool("submit_report_for_review", "Submit an existing report for review. Pass report_id or workstream_id.", "editor", objectSchema({ workspace_id: s, report_id: s, workstream_id: s }, ["workspace_id"])),
-  tool("record_review_round", "Record a mandatory review verdict. Reviewer agents may create ReviewRound records only.", "editor", objectSchema({ workspace_id: s, workstream_id: s, report_id: s, target_object_type: s, target_object_id: s, reviewer_role: s, verdict: reviewVerdict, review_type: s, target_version: s, scope: anyObj, inspected_artifact_ids: strArray, checked_obligation_ids: strArray, parent_math_reopenable: { type: "boolean" }, prior_approvals_evidence_only: { type: "boolean" }, independence: s, obligation_checks: { type: "array", items: anyObj }, issues: strArray, required_changes: strArray, checked_refs: strArray, body_markdown: s, created_by_agent_run_id: s }, ["workspace_id", "workstream_id", "verdict", "body_markdown"])),
+  tool("record_review_round", "Record a mandatory review verdict. Reviewer agents may create ReviewRound records only.", "editor", objectSchema({ workspace_id: s, workstream_id: s, report_id: s, target_object_type: s, target_object_id: s, reviewer_role: s, verdict: reviewVerdict, review_type: s, target_version: s, scope: anyObj, inspected_artifact_ids: strArray, checked_obligation_ids: strArray, parent_math_reopenable: { type: "boolean" }, prior_approvals_evidence_only: { type: "boolean" }, independence: s, obligation_checks: { type: "array", items: anyObj }, issues: strArray, required_changes: strArray, checked_refs: strArray, body_markdown: s, created_by_agent_run_id: s }, ["workspace_id", "workstream_id", "verdict", "body_markdown"]), scopes.maffReview),
   tool("list_review_rounds", "List ReviewRound records for a workstream.", "viewer", objectSchema({ workspace_id: s, workstream_id: s }, ["workspace_id", "workstream_id"])),
   tool("get_report", "Read a WorkstreamReport with review history.", "viewer", objectSchema({ workspace_id: s, report_id: s }, ["workspace_id", "report_id"])),
 
@@ -152,10 +153,11 @@ export const toolDefinitions: ToolDef[] = [
   tool("get_latest_frontier_snapshot", "Read the latest compressed frontier snapshot.", "viewer", objectSchema({ workspace_id: s, project_id: s }, ["workspace_id"])),
   tool("create_research_artifact", "Register a durable research output such as a proof skeleton, memo, theorem map, or migration report.", "editor", objectSchema({ workspace_id: s, project_id: s, title: s, slug: s, kind: s, status: s, description_markdown: s, content_markdown: s, file_path: s, url: s }, ["workspace_id", "title"])),
   tool("create_manuscript_version", "Create an unverified manuscript candidate. It cannot become canonical until its exact proof-obligation ledger is non-empty.", "editor", objectSchema({ workspace_id: s, project_id: s, artifact_id: s, parent_artifact_ids: strArray, claim_ids: strArray, theorem_fingerprint: s, citation_fingerprint: s }, ["workspace_id", "project_id", "artifact_id"])),
-  tool("promote_manuscript_version", "Promote a ledger-complete manuscript candidate to canonical; rejects zero-obligation manuscripts.", "editor", objectSchema({ workspace_id: s, manuscript_version_id: s }, ["workspace_id", "manuscript_version_id"])),
-  tool("set_manuscript_freeze", "Set lexical, interface, or mathematical freeze. Only a mathematically ready exact version can receive mathematical freeze.", "editor", objectSchema({ workspace_id: s, manuscript_version_id: s, level: s }, ["workspace_id", "manuscript_version_id", "level"])),
-  tool("import_external_review", "Immutable import of an externally performed review; it is not represented as a Maff AgentRun.", "editor", objectSchema({ workspace_id: s, project_id: s, manuscript_version_id: s, theorem_or_artifact_ref: s, original_review_text: s, original_review_uri: s, provenance: s, reviewer_identity: s, independence_statement: s, review_scope: s, verdict: reviewVerdict, issues: strArray, required_changes: strArray }, ["workspace_id", "project_id", "theorem_or_artifact_ref", "original_review_text", "provenance", "independence_statement", "review_scope", "verdict"])),
-  tool("create_strategic_review", "Record an independent StrategicReviewer assessment with required frontier, blocker, branch, next-move, and probability fields.", "editor", objectSchema({ workspace_id: s, project_id: s, verdict: s, reviewer_independence: s, what_changed_markdown: s, loop_diagnosis_markdown: s, blocker_structure_markdown: s, alternatives_markdown: s, branch_allocation: { type: "array", items: anyObj }, next_moves: { type: "array", items: anyObj }, probability_estimates: { type: "array", items: anyObj }, metrics: anyObj }, ["workspace_id", "project_id", "verdict", "reviewer_independence", "what_changed_markdown", "loop_diagnosis_markdown", "blocker_structure_markdown", "alternatives_markdown"])),
+  tool("create_proof_obligation", "Record an exact-version proof obligation and its dependency/source ledger.", "editor", objectSchema({ workspace_id: s, project_id: s, manuscript_version_id: s, title: s, statement_markdown: s, dependencies: { type: "array", items: anyObj }, claim_id: s, source_artifact_id: s, proof_location: s, manuscript_location: s, external_theorems: { type: "array", items: anyObj }, external_assumptions_matched: { type: "boolean" }, exact_manuscript_proof_present: { type: "boolean" }, required: { type: "boolean" } }, ["workspace_id", "project_id", "manuscript_version_id", "title", "statement_markdown"])),
+  tool("promote_manuscript_version", "Promote a ledger-complete manuscript candidate to canonical; rejects zero-obligation manuscripts.", "editor", objectSchema({ workspace_id: s, manuscript_version_id: s }, ["workspace_id", "manuscript_version_id"]), scopes.maffReview),
+  tool("set_manuscript_freeze", "Set lexical, interface, or mathematical freeze. Only a mathematically ready exact version can receive mathematical freeze.", "editor", objectSchema({ workspace_id: s, manuscript_version_id: s, level: s }, ["workspace_id", "manuscript_version_id", "level"]), scopes.maffReview),
+  tool("import_external_review", "Immutable import of an externally performed review; it is not represented as a Maff AgentRun.", "editor", objectSchema({ workspace_id: s, project_id: s, manuscript_version_id: s, theorem_or_artifact_ref: s, original_review_text: s, original_review_uri: s, provenance: s, reviewer_identity: s, independence_statement: s, review_scope: s, verdict: reviewVerdict, issues: strArray, required_changes: strArray }, ["workspace_id", "project_id", "theorem_or_artifact_ref", "original_review_text", "provenance", "independence_statement", "review_scope", "verdict"]), scopes.maffReview),
+  tool("create_strategic_review", "Record an independent StrategicReviewer assessment with required frontier, blocker, branch, next-move, and probability fields.", "editor", objectSchema({ workspace_id: s, project_id: s, verdict: s, reviewer_independence: s, what_changed_markdown: s, loop_diagnosis_markdown: s, blocker_structure_markdown: s, alternatives_markdown: s, branch_allocation: { type: "array", items: anyObj }, next_moves: { type: "array", items: anyObj }, probability_estimates: { type: "array", items: anyObj }, metrics: anyObj }, ["workspace_id", "project_id", "verdict", "reviewer_independence", "what_changed_markdown", "loop_diagnosis_markdown", "blocker_structure_markdown", "alternatives_markdown"]), scopes.maffReview),
   tool("get_project_health", "Read strategic-review epoch, warning metrics, branches, and circuit-breaker state.", "viewer", objectSchema({ workspace_id: s, project_id: s }, ["workspace_id", "project_id"])),
   tool("create_project_branch", "Create an explicit mainline/exploratory/paused/killed/spinout branch state.", "editor", objectSchema({ workspace_id: s, project_id: s, title: s, state: s, rationale_markdown: s, target_object_type: s, target_object_id: s }, ["workspace_id", "project_id", "title"])),
   tool("get_integration_coverage", "Return source-to-manuscript proof-obligation coverage for one manuscript version.", "viewer", objectSchema({ workspace_id: s, manuscript_version_id: s }, ["workspace_id", "manuscript_version_id"])),
@@ -193,7 +195,7 @@ function insufficientScopeError(required: string, _ctx: ToolContext, toolName: s
 async function authorize(ctx: ToolContext, toolName: string, workspaceId?: string) {
   const definition = toolByName.get(toolName)
   if (!definition) throw new Error(`Unknown tool: ${toolName}`)
-  if (!hasPermission({ scopeText: ctx.claimsScope, permissions: ctx.permissions, required: definition.scope })) {
+  if (!hasBearerAuthorization({ scopeText: ctx.claimsScope, resourceAccess: ctx.resourceAccess, roleClientId: config.oidc.roleClientId, required: definition.scope })) {
     throw insufficientScopeError(definition.scope, ctx, toolName)
   }
   if (workspaceId) await requireWorkspaceRole(ctx.userId, workspaceId, definition.role)
@@ -280,7 +282,7 @@ export async function callTool(toolName: string, args: any, ctx: ToolContext) {
     case "create_strategic_review": return runtime.createStrategicReviewRound({ workspaceId, projectId: args.project_id, verdict: args.verdict, reviewerIndependence: args.reviewer_independence, whatChangedMarkdown: args.what_changed_markdown, loopDiagnosisMarkdown: args.loop_diagnosis_markdown, blockerStructureMarkdown: args.blocker_structure_markdown, alternativesMarkdown: args.alternatives_markdown, branchAllocation: args.branch_allocation, nextMoves: args.next_moves, probabilityEstimates: args.probability_estimates, metrics: args.metrics })
     case "get_project_health": return runtime.getProjectHealth(workspaceId, args.project_id)
     case "create_project_branch": return runtime.createProjectBranch({ workspaceId, projectId: args.project_id, title: args.title, state: args.state, rationaleMarkdown: args.rationale_markdown, targetObjectType: args.target_object_type, targetObjectId: args.target_object_id })
-    case "create_proof_obligation": return runtime.createProofObligation({ workspaceId, projectId: args.project_id, manuscriptVersionId: args.manuscript_version_id, title: args.title, statementMarkdown: args.statement_markdown, claimId: args.claim_id, sourceArtifactId: args.source_artifact_id, manuscriptLocation: args.manuscript_location, required: args.required })
+    case "create_proof_obligation": return runtime.createProofObligation({ workspaceId, projectId: args.project_id, manuscriptVersionId: args.manuscript_version_id, title: args.title, statementMarkdown: args.statement_markdown, dependencies: args.dependencies, claimId: args.claim_id, sourceArtifactId: args.source_artifact_id, proofLocation: args.proof_location, manuscriptLocation: args.manuscript_location, externalTheorems: args.external_theorems, externalAssumptionsMatched: args.external_assumptions_matched, exactManuscriptProofPresent: args.exact_manuscript_proof_present, required: args.required })
     case "get_integration_coverage": return runtime.getIntegrationCoverage(workspaceId, args.manuscript_version_id)
     case "compute_submission_readiness": return runtime.computeProjectSubmissionReadiness(workspaceId, args.project_id)
     case "list_research_artifacts": return runtime.listResearchArtifacts({ workspaceId, projectId: args.project_id, kind: args.kind, status: args.status, limit: args.limit })
@@ -804,6 +806,10 @@ export function mcpToolsListResult() {
   return { tools: toolDefinitions.map(toolForList) }
 }
 
+export function mcpAuthorizationMatrix() {
+  return toolDefinitions.map(({ name, scope, role }) => ({ name, scope, clientRoles: acceptedClientRolesForScope(scope), workspaceRole: role }))
+}
+
 export async function mcpHandler(req: Request, res: Response) {
   try {
     if (!req.auth) return res.status(401).json({ error: "missing_token" })
@@ -811,7 +817,7 @@ export async function mcpHandler(req: Request, res: Response) {
     const ctx: ToolContext = {
       userId: req.auth.user.id,
       claimsScope: req.auth.claims.scope,
-      permissions: req.auth.claims.permissions,
+      resourceAccess: req.auth.claims.resource_access,
       aud: req.auth.claims.aud,
       sub: req.auth.claims.sub,
       azp: typeof req.auth.claims.azp === "string" ? req.auth.claims.azp : undefined,

@@ -1,24 +1,32 @@
 import type { NextFunction, Request, Response } from "express"
 import type { WorkspaceRole } from "@prisma/client"
-import { createRemoteJWKSet, jwtVerify, type JWTPayload } from "jose"
+import { createRemoteJWKSet, jwtVerify, type JWTPayload, type KeyLike } from "jose"
 import { config } from "../config.js"
 import { prisma } from "../db/prisma.js"
-import { hasPermission, scopes } from "./scopes.js"
+import { hasBearerAuthorization, scopes } from "./scopes.js"
 
-const jwks = config.auth0.jwksUri ? createRemoteJWKSet(new URL(config.auth0.jwksUri)) : undefined
+export function jwksUriForIssuer(issuer: string) {
+  if (!issuer || issuer.endsWith("/")) throw new Error("OIDC issuer must be an exact URL without a trailing slash")
+  const parsed = new URL(issuer)
+  if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.search || parsed.hash) throw new Error("OIDC issuer must be a clean HTTPS URL")
+  return new URL(`${issuer}/protocol/openid-connect/certs`)
+}
+
+const jwks = config.oidc.issuer ? createRemoteJWKSet(jwksUriForIssuer(config.oidc.issuer)) : undefined
 
 export type AuthClaims = JWTPayload & {
   sub: string
   email?: string
+  email_verified?: boolean
   scope?: string
-  permissions?: string[]
   org_id?: string
+  resource_access?: Record<string, { roles?: string[] }>
 }
 
 declare global {
   namespace Express {
     interface Request {
-      auth?: { claims: AuthClaims; user: { id: string; auth0Sub: string; email: string | null; displayName: string | null } }
+      auth?: { claims: AuthClaims; user: { id: string; auth0Sub: string | null; email: string | null; displayName: string | null } }
     }
   }
 }
@@ -35,7 +43,7 @@ function quotedAuthParameter(value: string) {
   return value.replace(/\\/g, "\\\\").replace(/"/g, "\\\"").replace(/[\u0000-\u001F\u007F]/g, " ")
 }
 
-export function authChallenge(res: Response, message = "Bearer token required", scope = scopes.maffAccess, error = "invalid_token") {
+export function authChallenge(res: Response, message = "Bearer token required", scope: string = scopes.maffRead, error = "invalid_token") {
   res.setHeader("WWW-Authenticate", `Bearer resource_metadata="${quotedAuthParameter(config.publicBaseUrl)}/.well-known/oauth-protected-resource", error="${quotedAuthParameter(error)}", error_description="${quotedAuthParameter(message)}", scope="${quotedAuthParameter(scope)}"`)
 }
 
@@ -46,24 +54,24 @@ export function emailMatchesRequiredDomain(email: string | undefined, requiredDo
   return normalizedDomain.length > 0 && email.trim().toLowerCase().endsWith(`@${normalizedDomain}`)
 }
 
-export async function verifyAuth0Token(token: string): Promise<AuthClaims> {
-  if (!jwks || !config.auth0.issuer || !config.auth0.audience) {
-    throw new Error("Auth0 is not configured")
+export async function verifyOidcToken(token: string): Promise<AuthClaims> {
+  if (!jwks || !config.oidc.issuer || !config.oidc.audience) {
+    throw new Error("OIDC is not configured")
   }
-  const result = await jwtVerify(token, jwks, {
-    issuer: config.auth0.issuer,
-    audience: config.auth0.audience,
-    algorithms: ["RS256"]
-  })
+  const result = await jwtVerify(token, jwks, { issuer: config.oidc.issuer, audience: config.oidc.audience, algorithms: ["RS256"] })
   const claims = result.payload as AuthClaims
   if (!claims.sub) throw new Error("Token missing subject")
-  if (config.auth0.allowedOrgs.length && (!claims.org_id || !config.auth0.allowedOrgs.includes(claims.org_id))) {
+  if (config.oidc.allowedOrganizations.length && (!claims.org_id || !config.oidc.allowedOrganizations.includes(claims.org_id))) {
     throw new Error("Token organization not allowed")
   }
-  if (!emailMatchesRequiredDomain(claims.email, config.auth0.requiredEmailDomain)) {
+  if (!emailMatchesRequiredDomain(claims.email, config.oidc.requiredEmailDomain)) {
     throw new Error("Email domain not allowed")
   }
   return claims
+}
+
+export function verifySignedJwt(token: string, key: KeyLike | Uint8Array, issuer: string, audience: string) {
+  return jwtVerify(token, key, { issuer, audience, algorithms: ["RS256"] })
 }
 
 export function userEmailUpdateData(email: string | undefined) {
@@ -71,10 +79,16 @@ export function userEmailUpdateData(email: string | undefined) {
 }
 
 export async function findOrCreateUser(claims: AuthClaims) {
-  const existing = await prisma.user.findUnique({ where: { auth0Sub: claims.sub } })
+  const issuer = String(claims.iss)
+  const identity = await prisma.userIdentity.findUnique({ where: { issuer_subject: { issuer, subject: claims.sub } }, include: { user: true } })
+  let existing = identity?.user
   const user = existing
     ? await prisma.user.update({ where: { id: existing.id }, data: userEmailUpdateData(claims.email) })
-    : await prisma.user.create({ data: { auth0Sub: claims.sub, email: claims.email ?? null, displayName: claims.email ?? claims.sub } })
+    : await prisma.$transaction(async (tx) => {
+        const created = await tx.user.create({ data: { email: claims.email ?? null, displayName: claims.email ?? claims.sub } })
+        await tx.userIdentity.create({ data: { userId: created.id, issuer, subject: claims.sub } })
+        return created
+      })
 
   if (!existing) {
     const safeName = (claims.email?.split("@")[0] ?? "user").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "user"
@@ -119,9 +133,9 @@ export function requireAuth(requiredScope?: string) {
         authChallenge(res)
         return res.status(401).json({ error: "missing_token" })
       }
-      const claims = await verifyAuth0Token(token)
-      if (requiredScope && !hasPermission({ scopeText: claims.scope, permissions: claims.permissions, required: requiredScope })) {
-        return res.status(403).json({ error: "missing_scope", requiredScope })
+      const claims = await verifyOidcToken(token)
+      if (requiredScope && !hasBearerAuthorization({ scopeText: claims.scope, resourceAccess: claims.resource_access, roleClientId: config.oidc.roleClientId, required: requiredScope })) {
+        return res.status(403).json({ error: "insufficient_entitlement", requiredScope })
       }
       const user = await findOrCreateUser(claims)
       req.auth = { claims, user }
@@ -130,6 +144,17 @@ export function requireAuth(requiredScope?: string) {
       authChallenge(res, error instanceof Error ? error.message : "Invalid token")
       res.status(401).json({ error: "invalid_token", message: error instanceof Error ? error.message : "Invalid token" })
     }
+  }
+}
+
+export function requirePermission(requiredScope: string) {
+  return (req: Request, res: Response, next: NextFunction) => {
+    if (!req.auth) return res.status(401).json({ error: "missing_token" })
+    if (!hasBearerAuthorization({ scopeText: req.auth.claims.scope, resourceAccess: req.auth.claims.resource_access, roleClientId: config.oidc.roleClientId, required: requiredScope })) {
+      authChallenge(res, `Missing required scope ${requiredScope}`, requiredScope, "insufficient_scope")
+      return res.status(403).json({ error: "insufficient_entitlement", requiredScope })
+    }
+    next()
   }
 }
 

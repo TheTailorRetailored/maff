@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto"
 import { prisma } from "./db/prisma.js"
 import { requireWorkspaceRole } from "./auth/permissions.js"
 import * as runtime from "./research/runtime.js"
+import { callTool } from "./mcp/server.js"
 
 if (!process.env.DATABASE_URL) {
   console.log("Skipping Maff v2 database smoke checks: DATABASE_URL is not set.")
@@ -11,6 +12,23 @@ if (!process.env.DATABASE_URL) {
 
 const suffix = randomUUID().slice(0, 8)
 const user = await prisma.user.create({ data: { auth0Sub: `smoke|${suffix}`, email: `smoke-${suffix}@maff.local` } })
+const stableUserId = user.id
+const keycloakIssuer = "https://auth.lachlanbridges.com/realms/bridges"
+const keycloakIdentity = await prisma.userIdentity.create({ data: { userId: user.id, issuer: keycloakIssuer, subject: `keycloak-${suffix}` } })
+await prisma.userIdentity.create({ data: { userId: user.id, issuer: "https://synthetic-legacy.example/", subject: `legacy-${suffix}` } })
+assert.equal((await prisma.userIdentity.findMany({ where: { userId: user.id } })).length, 2, "one stable user may retain multiple exact external identities")
+const duplicateTarget = await prisma.user.create({ data: { auth0Sub: `smoke-duplicate|${suffix}`, email: `duplicate-${suffix}@maff.local` } })
+await assert.rejects(() => prisma.userIdentity.create({ data: { userId: duplicateTarget.id, issuer: keycloakIdentity.issuer, subject: keycloakIdentity.subject } }), /Unique constraint/)
+assert.equal((await prisma.user.findUniqueOrThrow({ where: { id: stableUserId } })).id, stableUserId)
+const identitiesBeforeRollback = await prisma.userIdentity.count()
+const auditsBeforeRollback = await prisma.auditLog.count()
+await assert.rejects(() => prisma.$transaction(async (tx) => {
+  const provisional = await tx.userIdentity.create({ data: { userId: duplicateTarget.id, issuer: keycloakIssuer, subject: `rollback-${suffix}` } })
+  await tx.auditLog.create({ data: { userId: user.id, action: "identity.oidc.link", targetType: "UserIdentity", targetId: provisional.id, details: { synthetic: true } } })
+  await tx.userIdentity.create({ data: { userId: duplicateTarget.id, issuer: keycloakIdentity.issuer, subject: keycloakIdentity.subject } })
+}), /Unique constraint/)
+assert.equal(await prisma.userIdentity.count(), identitiesBeforeRollback)
+assert.equal(await prisma.auditLog.count(), auditsBeforeRollback)
 const workspace = await prisma.workspace.create({ data: { slug: `smoke-v2-${suffix}`, name: `Smoke v2 ${suffix}`, type: "private", ownerUserId: user.id } })
 await prisma.workspaceMember.create({ data: { workspaceId: workspace.id, userId: user.id, role: "owner" } })
 
@@ -73,6 +91,10 @@ await assert.rejects(
 assert.equal(await prisma.reviewRound.count({ where: { workspaceId: workspace.id, workstreamId: workstream.id } }), reviewsBeforeMalformedInput)
 const outsider = await prisma.user.create({ data: { auth0Sub: `smoke-outsider|${suffix}`, email: `smoke-outsider-${suffix}@maff.local` } })
 await assert.rejects(() => requireWorkspaceRole(outsider.id, workspace.id, "viewer"), /Workspace permission denied/)
+await assert.rejects(
+  () => callTool("get_project", { workspace_id: workspace.id, project_id: project.id }, { userId: outsider.id, claimsScope: "maff:read", resourceAccess: { maff: { roles: ["reader"] } } }),
+  /Workspace permission denied/
+)
 
 const controlRoom = await runtime.getProjectControlRoom(workspace.id, project.id)
 assert.ok(controlRoom.workstreams_by_status.completed?.some((item) => item.id === workstream.id))

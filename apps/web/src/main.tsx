@@ -1,6 +1,6 @@
 import React from "react"
 import ReactDOM from "react-dom/client"
-import { MaffAuthProvider } from "./auth/auth0Provider"
+import { MaffAuthProvider } from "./auth/oidcProvider"
 import { App } from "./App"
 import { DemoApp } from "./DemoApp"
 import "./style.css"

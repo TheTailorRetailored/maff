@@ -1,8 +1,8 @@
 import express from "express"
 import path from "node:path"
 import { config } from "../config.js"
-import { requireAuth, requireUser } from "../auth/auth0.js"
-import { scopes } from "../auth/scopes.js"
+import { requireAuth, requirePermission, requireUser } from "../auth/oidc.js"
+import { advertisedScopes, scopes } from "../auth/scopes.js"
 import { requireWorkspaceRole } from "../auth/permissions.js"
 import { prisma } from "../db/prisma.js"
 import { assertInsideRoot } from "../vault/paths.js"
@@ -15,10 +15,15 @@ import { registerWorkspaceRoutes } from "./workspaces.js"
 import { registerLeanRoutes } from "./lean.js"
 import { registerResearchRuntimeRoutes } from "./research.js"
 import { asyncHandler } from "./asyncHandler.js"
+import { restAuthorizationRequirement } from "../auth/authorizationMatrix.js"
 
 export function apiRouter() {
   const router = express.Router()
-  router.use(requireAuth())
+  router.use(requireAuth(scopes.maffRead))
+  router.use((req, res, next) => {
+    if (["GET", "HEAD", "OPTIONS"].includes(req.method)) return next()
+    return requirePermission(restAuthorizationRequirement(req.method, req.path).scope)(req, res, next)
+  })
   registerAuthDebugRoutes(router)
   registerWorkspaceRoutes(router)
   registerLeanRoutes(router)
@@ -63,9 +68,9 @@ export function apiRouter() {
 
 export function oauthProtectedResource() {
   return {
-    resource: config.auth0.audience,
-    authorization_servers: [config.auth0.issuer],
-    scopes_supported: Object.values(scopes),
+    resource: config.oidc.audience,
+    authorization_servers: [config.oidc.issuer],
+    scopes_supported: advertisedScopes,
     resource_documentation: config.publicBaseUrl
   }
 }

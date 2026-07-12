@@ -20,7 +20,8 @@
     "admin:reset-legacy": "node dist/admin/resetLegacyResearch.js",
     "admin:reset-legacy:src": "tsx src/admin/resetLegacyResearch.ts",
     "admin:reset-research": "node dist/admin/resetResearchWorkspace.js",
-    "admin:reset-research:src": "tsx src/admin/resetResearchWorkspace.ts"
+    "admin:reset-research:src": "tsx src/admin/resetResearchWorkspace.ts",
+    "admin:link-oidc-identity:src": "tsx src/admin/linkOidcIdentity.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.13.0",

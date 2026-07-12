@@ -1,3 +1,8 @@
+export const productionOidc = {
+  issuer: "https://auth.lachlanbridges.com/realms/bridges",
+  audience: "https://maff.lachlanbridges.com/mcp"
+} as const
+
 export const config = {
   port: Number(process.env.PORT ?? 3001),
   dataDir: process.env.DATA_DIR ?? "./data",
@@ -6,14 +11,12 @@ export const config = {
   autoJoinSharedWorkspace: (process.env.AUTO_JOIN_SHARED_WORKSPACE ?? "false").toLowerCase() === "true",
   sharedWorkspaceAutoJoinEmails: (process.env.SHARED_WORKSPACE_AUTO_JOIN_EMAILS ?? "").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean),
   sharedWorkspaceAutoJoinRole: process.env.SHARED_WORKSPACE_AUTO_JOIN_ROLE ?? "viewer",
-  auth0: {
-    domain: process.env.AUTH0_DOMAIN ?? "",
-    issuer: process.env.AUTH0_ISSUER ?? "",
-    audience: process.env.AUTH0_AUDIENCE ?? "",
-    jwksUri: process.env.AUTH0_JWKS_URI ?? "",
-    clientId: process.env.AUTH0_CLIENT_ID ?? "",
-    allowedOrgs: (process.env.AUTH0_ALLOWED_ORGS ?? "").split(",").map((s) => s.trim()).filter(Boolean),
-    requiredEmailDomain: process.env.AUTH0_REQUIRED_EMAIL_DOMAIN || undefined
+  oidc: {
+    issuer: process.env.OIDC_ISSUER ?? "",
+    audience: process.env.OIDC_AUDIENCE ?? "",
+    roleClientId: process.env.OIDC_ROLE_CLIENT_ID ?? "",
+    allowedOrganizations: (process.env.OIDC_ALLOWED_ORGANIZATIONS ?? "").split(",").map((s) => s.trim()).filter(Boolean),
+    requiredEmailDomain: process.env.OIDC_REQUIRED_EMAIL_DOMAIN || undefined
   },
   leanWorkerUrl: process.env.LEAN_WORKER_URL ?? "http://localhost:8765",
   quartzDir: process.env.QUARTZ_DIR ?? "./quartz",

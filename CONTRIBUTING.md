@@ -4,4 +4,4 @@ Maff is a pre-release research system. Keep changes focused, preserve Markdown v
 
 Before opening a change, run the API typecheck and smoke suite, build the web app, and build the Lean worker. Changes to permissions, paths, MCP mutations, or Lean execution need an explicit security review in the pull request description.
 
-Do not commit `.env` files, Auth0 identifiers from a live tenant, database dumps, real workspace vaults, or generated Lean workspaces.
+Do not commit `.env` files, OIDC identifiers from live accounts, database dumps, real workspace vaults, or generated Lean workspaces.
