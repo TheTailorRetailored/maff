@@ -151,8 +151,13 @@ export const toolDefinitions: ToolDef[] = [
   tool("list_frontier_snapshots", "List compressed frontier snapshots.", "viewer", objectSchema({ workspace_id: s, project_id: s, source: s, limit: n }, ["workspace_id"])),
   tool("get_latest_frontier_snapshot", "Read the latest compressed frontier snapshot.", "viewer", objectSchema({ workspace_id: s, project_id: s }, ["workspace_id"])),
   tool("create_research_artifact", "Register a durable research output such as a proof skeleton, memo, theorem map, or migration report.", "editor", objectSchema({ workspace_id: s, project_id: s, title: s, slug: s, kind: s, status: s, description_markdown: s, content_markdown: s, file_path: s, url: s }, ["workspace_id", "title"])),
-  tool("create_manuscript_version", "Make a ResearchArtifact the explicit canonical working-paper version. Parent approvals are evidence only and never transfer.", "editor", objectSchema({ workspace_id: s, project_id: s, artifact_id: s, parent_artifact_ids: strArray, claim_ids: strArray, theorem_fingerprint: s, citation_fingerprint: s }, ["workspace_id", "project_id", "artifact_id"])),
-  tool("create_proof_obligation", "Record a proof obligation that must be preserved in one manuscript version.", "editor", objectSchema({ workspace_id: s, project_id: s, manuscript_version_id: s, title: s, statement_markdown: s, claim_id: s, source_artifact_id: s, manuscript_location: s, required: { type: "boolean" } }, ["workspace_id", "project_id", "manuscript_version_id", "title", "statement_markdown"])),
+  tool("create_manuscript_version", "Create an unverified manuscript candidate. It cannot become canonical until its exact proof-obligation ledger is non-empty.", "editor", objectSchema({ workspace_id: s, project_id: s, artifact_id: s, parent_artifact_ids: strArray, claim_ids: strArray, theorem_fingerprint: s, citation_fingerprint: s }, ["workspace_id", "project_id", "artifact_id"])),
+  tool("promote_manuscript_version", "Promote a ledger-complete manuscript candidate to canonical; rejects zero-obligation manuscripts.", "editor", objectSchema({ workspace_id: s, manuscript_version_id: s }, ["workspace_id", "manuscript_version_id"])),
+  tool("set_manuscript_freeze", "Set lexical, interface, or mathematical freeze. Only a mathematically ready exact version can receive mathematical freeze.", "editor", objectSchema({ workspace_id: s, manuscript_version_id: s, level: s }, ["workspace_id", "manuscript_version_id", "level"])),
+  tool("import_external_review", "Immutable import of an externally performed review; it is not represented as a Maff AgentRun.", "editor", objectSchema({ workspace_id: s, project_id: s, manuscript_version_id: s, theorem_or_artifact_ref: s, original_review_text: s, original_review_uri: s, provenance: s, reviewer_identity: s, independence_statement: s, review_scope: s, verdict: reviewVerdict, issues: strArray, required_changes: strArray }, ["workspace_id", "project_id", "theorem_or_artifact_ref", "original_review_text", "provenance", "independence_statement", "review_scope", "verdict"])),
+  tool("create_strategic_review", "Record an independent StrategicReviewer assessment with required frontier, blocker, branch, next-move, and probability fields.", "editor", objectSchema({ workspace_id: s, project_id: s, verdict: s, reviewer_independence: s, what_changed_markdown: s, loop_diagnosis_markdown: s, blocker_structure_markdown: s, alternatives_markdown: s, branch_allocation: { type: "array", items: anyObj }, next_moves: { type: "array", items: anyObj }, probability_estimates: { type: "array", items: anyObj }, metrics: anyObj }, ["workspace_id", "project_id", "verdict", "reviewer_independence", "what_changed_markdown", "loop_diagnosis_markdown", "blocker_structure_markdown", "alternatives_markdown"])),
+  tool("get_project_health", "Read strategic-review epoch, warning metrics, branches, and circuit-breaker state.", "viewer", objectSchema({ workspace_id: s, project_id: s }, ["workspace_id", "project_id"])),
+  tool("create_project_branch", "Create an explicit mainline/exploratory/paused/killed/spinout branch state.", "editor", objectSchema({ workspace_id: s, project_id: s, title: s, state: s, rationale_markdown: s, target_object_type: s, target_object_id: s }, ["workspace_id", "project_id", "title"])),
   tool("get_integration_coverage", "Return source-to-manuscript proof-obligation coverage for one manuscript version.", "viewer", objectSchema({ workspace_id: s, manuscript_version_id: s }, ["workspace_id", "manuscript_version_id"])),
   tool("compute_submission_readiness", "Compute version-aware manuscript gates, stale reviews, relevant gap closure, and blocking paths.", "viewer", objectSchema({ workspace_id: s, project_id: s }, ["workspace_id", "project_id"])),
   tool("list_research_artifacts", "List durable research artifacts.", "viewer", objectSchema({ workspace_id: s, project_id: s, kind: s, status: s, limit: n }, ["workspace_id"])),
@@ -269,6 +274,12 @@ export async function callTool(toolName: string, args: any, ctx: ToolContext) {
     case "get_latest_frontier_snapshot": return runtime.getLatestFrontierSnapshot({ workspaceId, projectId: args.project_id })
     case "create_research_artifact": return runtime.createResearchArtifact({ workspaceId, projectId: args.project_id, title: args.title, slug: args.slug, kind: args.kind, status: args.status, descriptionMarkdown: args.description_markdown, contentMarkdown: args.content_markdown, filePath: args.file_path, url: args.url, createdByUserId: userId })
     case "create_manuscript_version": return runtime.createManuscriptVersion({ workspaceId, projectId: args.project_id, artifactId: args.artifact_id, parentArtifactIds: args.parent_artifact_ids, claimIds: args.claim_ids, theoremFingerprint: args.theorem_fingerprint, citationFingerprint: args.citation_fingerprint })
+    case "promote_manuscript_version": return runtime.promoteManuscriptVersion({ workspaceId, manuscriptVersionId: args.manuscript_version_id })
+    case "set_manuscript_freeze": return runtime.setManuscriptFreeze({ workspaceId, manuscriptVersionId: args.manuscript_version_id, level: args.level })
+    case "import_external_review": return runtime.importExternalReview({ workspaceId, projectId: args.project_id, manuscriptVersionId: args.manuscript_version_id, theoremOrArtifactRef: args.theorem_or_artifact_ref, originalReviewText: args.original_review_text, originalReviewUri: args.original_review_uri, provenance: args.provenance, reviewerIdentity: args.reviewer_identity, independenceStatement: args.independence_statement, reviewScope: args.review_scope, verdict: args.verdict, issues: args.issues, requiredChanges: args.required_changes })
+    case "create_strategic_review": return runtime.createStrategicReviewRound({ workspaceId, projectId: args.project_id, verdict: args.verdict, reviewerIndependence: args.reviewer_independence, whatChangedMarkdown: args.what_changed_markdown, loopDiagnosisMarkdown: args.loop_diagnosis_markdown, blockerStructureMarkdown: args.blocker_structure_markdown, alternativesMarkdown: args.alternatives_markdown, branchAllocation: args.branch_allocation, nextMoves: args.next_moves, probabilityEstimates: args.probability_estimates, metrics: args.metrics })
+    case "get_project_health": return runtime.getProjectHealth(workspaceId, args.project_id)
+    case "create_project_branch": return runtime.createProjectBranch({ workspaceId, projectId: args.project_id, title: args.title, state: args.state, rationaleMarkdown: args.rationale_markdown, targetObjectType: args.target_object_type, targetObjectId: args.target_object_id })
     case "create_proof_obligation": return runtime.createProofObligation({ workspaceId, projectId: args.project_id, manuscriptVersionId: args.manuscript_version_id, title: args.title, statementMarkdown: args.statement_markdown, claimId: args.claim_id, sourceArtifactId: args.source_artifact_id, manuscriptLocation: args.manuscript_location, required: args.required })
     case "get_integration_coverage": return runtime.getIntegrationCoverage(workspaceId, args.manuscript_version_id)
     case "compute_submission_readiness": return runtime.computeProjectSubmissionReadiness(workspaceId, args.project_id)
@@ -432,6 +443,13 @@ function compactReview(review: any) {
     report_id: review.reportId,
     target_object_type: review.targetObjectType,
     target_object_id: review.targetObjectId,
+    review_type: review.reviewType,
+    target_version: review.targetVersion,
+    independence: review.independence,
+    parent_math_reopenable: review.parentMathReopenable,
+    prior_approvals_evidence_only: review.priorApprovalsEvidenceOnly,
+    inspected_artifact_count: Array.isArray(review.inspectedArtifactIds) ? review.inspectedArtifactIds.length : undefined,
+    checked_obligation_count: Array.isArray(review.checkedObligationIds) ? review.checkedObligationIds.length : undefined,
     reviewer_role: review.reviewerRole,
     verdict: review.verdict,
     issue_count: Array.isArray(review.issues) ? review.issues.length : undefined,
@@ -650,6 +668,10 @@ function compactControlRoom(value: any) {
     key_claims: takeList(value.key_claims, 3, compactResearchObject),
     open_gaps: takeList(value.open_gaps, 3, compactResearchObject),
     recent_reviews: takeList(value.recent_reviews, 3, compactReview),
+    canonical_working_paper: value.canonical_working_paper ? { id: value.canonical_working_paper.id, version: value.canonical_working_paper.version, content_hash: value.canonical_working_paper.content_hash, theorem_fingerprint: value.canonical_working_paper.theorem_fingerprint } : null,
+    readiness: value.readiness ? { submission_ready: value.readiness.submission_ready, status: value.readiness.status, missing_gate_references: value.readiness.missing_gate_references, reasons: value.readiness.reasons, gates: Object.fromEntries(Object.entries(value.readiness.gates ?? {}).map(([name, gate]: [string, any]) => [name, { satisfied: gate.satisfied, missing_obligation_ids: gate.missing_obligation_ids, missing_claim_ids: gate.missing_claim_ids }])), stale_review_count: Array.isArray(value.readiness.stale_review_references) ? value.readiness.stale_review_references.length : 0, blocking_object_count: Array.isArray(value.readiness.blocking_object_references) ? value.readiness.blocking_object_references.length : 0 } : undefined,
+    workstream_dependency_states: takeList(value.workstream_dependency_states, 12, (state) => state),
+    project_health: value.project_health,
     suggested_next_assignment: compactWorkstream(value.suggested_next_assignment),
     suggested_chat_prompts: value.suggested_chat_prompts
   }

@@ -183,6 +183,26 @@ function normalizeLines(value: unknown): string[] {
   return []
 }
 
+/** Records only graph-changing work and queues/pauses strategic review at configured thresholds. */
+async function recordSubstantiveAction(input: { workspaceId: string; projectId: string; actionType: string; targetType?: string; targetId?: string; meaningfulDelta?: boolean; summary?: string }) {
+  return prisma.$transaction(async (tx) => {
+    const project = await tx.project.findFirstOrThrow({ where: { workspaceId: input.workspaceId, id: input.projectId } })
+    let epoch = await tx.projectEpoch.findFirst({ where: { workspaceId: input.workspaceId, projectId: input.projectId }, orderBy: { number: "desc" } })
+    if (!epoch || epoch.strategicReviewCompletedAt) epoch = await tx.projectEpoch.create({ data: { workspaceId: input.workspaceId, projectId: input.projectId, number: (epoch?.number ?? 0) + 1 } })
+    const actionCount = epoch.substantiveActionCount + 1
+    const queue = !epoch.strategicReviewQueuedAt && actionCount >= project.strategicReviewInterval
+    const pause = !epoch.downstreamPausedAt && actionCount >= project.strategicReviewHardLimit && !epoch.strategicReviewCompletedAt
+    epoch = await tx.projectEpoch.update({ where: { id: epoch.id }, data: { substantiveActionCount: actionCount, strategicReviewQueuedAt: queue ? new Date() : undefined, downstreamPausedAt: pause ? new Date() : undefined } })
+    await tx.projectSubstantiveAction.create({ data: { workspaceId: input.workspaceId, projectEpochId: epoch.id, actionType: input.actionType, targetType: input.targetType, targetId: input.targetId, meaningfulDelta: input.meaningfulDelta ?? false, summary: input.summary } })
+    return epoch
+  })
+}
+
+async function assertProjectAllowsDownstreamWork(workspaceId: string, projectId: string) {
+  const epoch = await prisma.projectEpoch.findFirst({ where: { workspaceId, projectId, downstreamPausedAt: { not: null }, strategicReviewCompletedAt: null }, orderBy: { number: "desc" } })
+  if (epoch) throw new Error(`Downstream specialist work is paused: strategic review is overdue for project epoch ${epoch.number}. Record an independent StrategicReviewRound or explicitly rebase the project.`)
+}
+
 async function workspaceSlug(workspaceId: string) {
   return (await prisma.workspace.findUniqueOrThrow({ where: { id: workspaceId } })).slug
 }
@@ -342,6 +362,7 @@ export async function createWorkstream(input: {
   dependencyWorkstreamIds?: string[]
 }) {
   await requireRunnableGoal(input.workspaceId, input.goalId, input.kind)
+  if (!["project_coordination", "triage", "hostile_review"].includes(input.kind)) await assertProjectAllowsDownstreamWork(input.workspaceId, input.projectId)
   const role = input.coordinatorRole ?? roleByKind[input.kind]
   const prerequisites = [...new Set(input.dependencyWorkstreamIds ?? [])].filter(Boolean)
   if (prerequisites.length) {
@@ -436,6 +457,7 @@ export async function claimAgentAssignment(input: { workspaceId: string; project
       orderBy: [{ priority: "desc" }, { updatedAt: "asc" }]
     })
   const dependencyState = await workstreamDependenciesSatisfied(input.workspaceId, workstream.id)
+  if (!["project_coordination", "triage", "hostile_review"].includes(workstream.kind)) await assertProjectAllowsDownstreamWork(input.workspaceId, workstream.projectId)
   if (!dependencyState.satisfied) {
     const blocked = dependencyState.dependencies.filter((d) => d.prerequisite.status !== "completed" || !d.prerequisite.reviews.some((r) => r.verdict === "approved")).map((d) => d.prerequisiteWorkstreamId)
     throw new Error(`Workstream is blocked by incomplete prerequisite workstreams: ${blocked.join(", ")}`)
@@ -733,6 +755,14 @@ export async function recordReviewRound(input: {
   if (!allowedReviewTypes.includes(reviewType)) throw new Error(`Invalid review type: ${reviewType}`)
   if (input.independence && !allowedIndependence.includes(input.independence)) throw new Error(`Invalid review independence: ${input.independence}`)
   if (reviewType !== "legacy_unspecified" && !input.targetVersion) throw new Error("Scoped reviews require targetVersion (canonical ManuscriptVersion id or content hash).")
+  const manuscriptReviewTypes = new Set(["proof_integration", "end_to_end_mathematical", "novelty", "bibliography", "compile", "editorial", "source_fidelity"])
+  let manuscriptTarget: { id: string; contentHash: string } | null = null
+  if (manuscriptReviewTypes.has(reviewType)) {
+    manuscriptTarget = await prisma.manuscriptVersion.findFirst({ where: { workspaceId: input.workspaceId, OR: [{ id: input.targetVersion }, { contentHash: input.targetVersion }] }, select: { id: true, contentHash: true } })
+    if (!manuscriptTarget) throw new Error("This review type requires an exact accessible ManuscriptVersion id or content hash.")
+    if (input.targetObjectType && input.targetObjectType !== "ManuscriptVersion") throw new Error("Manuscript review targetObjectType must be ManuscriptVersion.")
+    if (input.targetObjectId && input.targetObjectId !== manuscriptTarget.id) throw new Error("Manuscript review targetObjectId must match the exact ManuscriptVersion.")
+  }
   if (verdict === "approved" && workstream.kind === "computation") {
     const report = input.reportId ? await prisma.workstreamReport.findFirst({ where: { workspaceId: input.workspaceId, id: input.reportId } }) : null
     const artifactRefs = normalizeLines(report?.artifactRefs)
@@ -760,15 +790,15 @@ export async function recordReviewRound(input: {
     const existing = await prisma.reviewRound.findFirst({ where: { workspaceId: input.workspaceId, workstreamId: input.workstreamId, reportId, createdByAgentRunId: input.createdByAgentRunId, reviewType: reviewType as any, targetVersion: input.targetVersion } })
     if (existing) throw new Error(`A review from this AgentRun already exists for this report and review scope: ${existing.id}`)
   }
-  return prisma.$transaction(async (tx) => {
+  const recordedReview = await prisma.$transaction(async (tx) => {
     const review = await tx.reviewRound.create({
       data: {
         workspaceId: input.workspaceId,
         projectId: workstream.projectId,
         workstreamId: input.workstreamId,
         reportId,
-        targetObjectType: input.targetObjectType ?? "WorkstreamReport",
-        targetObjectId: input.targetObjectId ?? input.reportId ?? workstream.reportId ?? input.workstreamId,
+        targetObjectType: manuscriptTarget ? "ManuscriptVersion" : input.targetObjectType ?? "WorkstreamReport",
+        targetObjectId: manuscriptTarget?.id ?? input.targetObjectId ?? input.reportId ?? workstream.reportId ?? input.workstreamId,
         reviewerRole: input.reviewerRole ?? "HostileReviewer",
         verdict,
         issues: jsonArray(input.issues),
@@ -793,6 +823,8 @@ export async function recordReviewRound(input: {
     if (review.reportId) await tx.workstreamReport.update({ where: { id: review.reportId, workspaceId: input.workspaceId }, data: { status: reportStatus } })
     return review
   })
+  await recordSubstantiveAction({ workspaceId: input.workspaceId, projectId: workstream.projectId, actionType: "review_recorded", targetType: "ReviewRound", targetId: recordedReview.id, summary: `${reviewType}:${recordedReview.verdict}` })
+  return recordedReview
 }
 
 export async function completeWorkstream(input: { workspaceId: string; workstreamId: string }) {
@@ -878,7 +910,7 @@ export async function createProofRoute(input: { workspaceId: string; projectId: 
 }
 
 export async function createProofAttempt(input: { workspaceId: string; projectId: string; claimId: string; routeId?: string; workstreamId?: string; bodyMarkdown: string; status?: string; gapSummary?: string }) {
-  return prisma.proofAttempt.create({
+  const attempt = await prisma.proofAttempt.create({
     data: {
       workspaceId: input.workspaceId,
       projectId: input.projectId,
@@ -890,10 +922,12 @@ export async function createProofAttempt(input: { workspaceId: string; projectId
       gapSummary: input.gapSummary
     }
   })
+  if (["candidate", "failed", "gap_found", "reviewed", "rejected"].includes(attempt.status)) await recordSubstantiveAction({ workspaceId: input.workspaceId, projectId: input.projectId, actionType: "proof_attempt_finished", targetType: "ProofAttempt", targetId: attempt.id, meaningfulDelta: attempt.status === "reviewed", summary: attempt.status })
+  return attempt
 }
 
 export async function createGap(input: { workspaceId: string; projectId: string; claimId?: string; proofAttemptId?: string; routeId?: string; title: string; descriptionMarkdown: string; severity?: string; status?: string; suggestedResolution?: string }) {
-  return prisma.gap.create({
+  const gap = await prisma.gap.create({
     data: {
       workspaceId: input.workspaceId,
       projectId: input.projectId,
@@ -907,6 +941,8 @@ export async function createGap(input: { workspaceId: string; projectId: string;
       suggestedResolution: input.suggestedResolution
     }
   })
+  await recordSubstantiveAction({ workspaceId: input.workspaceId, projectId: input.projectId, actionType: "gap_created", targetType: "Gap", targetId: gap.id, summary: gap.title })
+  return gap
 }
 
 export async function resolveGap(input: { workspaceId: string; gapId: string; suggestedResolution?: string }) {
@@ -1097,7 +1133,8 @@ export async function getProjectControlRoom(workspaceId: string, projectId: stri
   }, {})
   const frontier = await getResearchFrontierSummary({ workspaceId, projectId })
   const readiness = await computeSubmissionReadiness(workspaceId, projectId)
-  return { project, canonical_working_paper: readiness.canonical_manuscript ?? null, readiness, workstream_dependency_states: dependencyStates.map((item) => ({ workstream_id: item.workstream.id, satisfied: item.satisfied, blocking_prerequisite_ids: item.dependencies.filter((d) => d.prerequisite.status !== "completed" || !d.prerequisite.reviews.some((r) => r.verdict === "approved")).map((d) => d.prerequisiteWorkstreamId) })), goals_by_status: groupedGoals, workstreams_by_status: groupedWorkstreams, needs_review: needsReview, blocked_or_escalated: blocked, recent_agent_runs: recentAgentRuns, key_claims: keyClaims, open_gaps: openGaps, recent_reviews: reviews, suggested_next_assignment: suggested, suggested_chat_prompts: suggestedPrompts, frontier }
+  const projectHealth = await getProjectHealth(workspaceId, projectId)
+  return { project, canonical_working_paper: readiness.canonical_manuscript ?? null, readiness, project_health: projectHealth, workstream_dependency_states: dependencyStates.map((item) => ({ workstream_id: item.workstream.id, satisfied: item.satisfied, blocking_prerequisite_ids: item.dependencies.filter((d) => d.prerequisite.status !== "completed" || !d.prerequisite.reviews.some((r) => r.verdict === "approved")).map((d) => d.prerequisiteWorkstreamId) })), goals_by_status: groupedGoals, workstreams_by_status: groupedWorkstreams, needs_review: needsReview, blocked_or_escalated: blocked, recent_agent_runs: recentAgentRuns, key_claims: keyClaims, open_gaps: openGaps, recent_reviews: reviews.map((review) => ({ ...review, scoped_status: reviewScopedStatus(review) })), suggested_next_assignment: suggested, suggested_chat_prompts: suggestedPrompts, frontier }
 }
 
 type FrontierListInput = { workspaceId: string; projectId?: string; status?: string; kind?: string; limit?: number }
@@ -1325,25 +1362,131 @@ export async function createResearchArtifact(input: FrontierWriteInput) {
 
 function fingerprint(value: string) { return createHash("sha256").update(value).digest("hex") }
 
-/** Creates a new canonical version; parent approvals are links/evidence only and never copied. */
+/** Creates an unverified candidate. It can only become the canonical working paper after a non-empty exact ledger exists. */
 export async function createManuscriptVersion(input: { workspaceId: string; projectId: string; artifactId: string; parentArtifactIds?: string[]; claimIds?: string[]; theoremFingerprint?: string; citationFingerprint?: string }) {
   const artifact = await prisma.researchArtifact.findFirstOrThrow({ where: { workspaceId: input.workspaceId, projectId: input.projectId, id: input.artifactId } })
   const contentHash = fingerprint(artifact.contentMarkdown ?? "")
   return prisma.$transaction(async (tx) => {
-    const prior = await tx.manuscriptVersion.findFirst({ where: { workspaceId: input.workspaceId, projectId: input.projectId, isCanonical: true } })
     const existing = await tx.manuscriptVersion.findFirst({ where: { projectId: input.projectId, contentHash } })
     if (existing) return existing
-    if (prior) await tx.manuscriptVersion.update({ where: { id: prior.id }, data: { isCanonical: false, supersededAt: new Date() } })
-    const version = await tx.manuscriptVersion.create({ data: { workspaceId: input.workspaceId, projectId: input.projectId, artifactId: artifact.id, version: (prior?.version ?? 0) + 1, contentHash, theoremFingerprint: input.theoremFingerprint ?? fingerprint(JSON.stringify(input.claimIds ?? [])), citationFingerprint: input.citationFingerprint ?? fingerprint((artifact.contentMarkdown ?? "").match(/\\[[^\]]+\]|\\cite\{[^}]+\}/g)?.join("|") ?? ""), isCanonical: true } })
-    await tx.project.update({ where: { id: input.projectId }, data: { currentWorkingPaperId: version.id } })
+    const latest = await tx.manuscriptVersion.findFirst({ where: { workspaceId: input.workspaceId, projectId: input.projectId }, orderBy: { version: "desc" } })
+    const version = await tx.manuscriptVersion.create({ data: { workspaceId: input.workspaceId, projectId: input.projectId, artifactId: artifact.id, version: (latest?.version ?? 0) + 1, contentHash, theoremFingerprint: input.theoremFingerprint ?? fingerprint(JSON.stringify(input.claimIds ?? [])), citationFingerprint: input.citationFingerprint ?? fingerprint((artifact.contentMarkdown ?? "").match(/\\[[^\]]+\]|\\cite\{[^}]+\}/g)?.join("|") ?? ""), isCanonical: false, verificationState: "unverified_candidate", freezeLevel: "none" } })
     if (input.parentArtifactIds?.length) await tx.researchLink.createMany({ data: [...new Set(input.parentArtifactIds)].map((targetId) => ({ workspaceId: input.workspaceId, projectId: input.projectId, sourceType: "ManuscriptVersion", sourceId: version.id, relationType: "derived_from", targetType: "ResearchArtifact", targetId })) })
     if (input.claimIds?.length) await tx.researchLink.createMany({ data: [...new Set(input.claimIds)].map((targetId) => ({ workspaceId: input.workspaceId, projectId: input.projectId, sourceType: "ManuscriptVersion", sourceId: version.id, relationType: "contribution_claim", targetType: "Claim", targetId })) })
     return version
   })
 }
 
-export async function createProofObligation(input: { workspaceId: string; projectId: string; manuscriptVersionId: string; title: string; statementMarkdown: string; claimId?: string; sourceArtifactId?: string; manuscriptLocation?: string; required?: boolean }) {
-  return prisma.proofObligation.create({ data: { ...input, required: input.required ?? true } })
+/** Promotion is the ledger circuit breaker: a nontrivial canonical manuscript may not have zero obligations. */
+export async function promoteManuscriptVersion(input: { workspaceId: string; manuscriptVersionId: string }) {
+  return prisma.$transaction(async (tx) => {
+    const version = await tx.manuscriptVersion.findFirstOrThrow({ where: { workspaceId: input.workspaceId, id: input.manuscriptVersionId } })
+    const obligations = await tx.proofObligation.count({ where: { workspaceId: input.workspaceId, manuscriptVersionId: version.id, required: true } })
+    if (obligations === 0) throw new Error("A canonical manuscript requires at least one required proof obligation in its exact-version ledger.")
+    const prior = await tx.manuscriptVersion.findFirst({ where: { workspaceId: input.workspaceId, projectId: version.projectId, isCanonical: true } })
+    if (prior && prior.id !== version.id) await tx.manuscriptVersion.update({ where: { id: prior.id }, data: { isCanonical: false, supersededAt: new Date() } })
+    const promoted = await tx.manuscriptVersion.update({ where: { id: version.id }, data: { isCanonical: true, verificationState: "ledger_complete" } })
+    await tx.project.update({ where: { id: version.projectId }, data: { currentWorkingPaperId: version.id } })
+    return promoted
+  })
+}
+
+export async function setManuscriptFreeze(input: { workspaceId: string; manuscriptVersionId: string; level: "lexical" | "interface" | "mathematical" }) {
+  const version = await prisma.manuscriptVersion.findFirstOrThrow({ where: { workspaceId: input.workspaceId, id: input.manuscriptVersionId } })
+  if (input.level === "mathematical") {
+    const readiness = await computeSubmissionReadiness(input.workspaceId, version.projectId)
+    if (!readiness.submission_ready) throw new Error("Mathematical freeze requires exact-version mathematical submission readiness; lexical/interface freezes never close mathematics.")
+  }
+  const now = new Date()
+  return prisma.manuscriptVersion.update({ where: { id: version.id }, data: {
+    freezeLevel: input.level,
+    lexicalFrozenAt: input.level === "lexical" ? now : undefined,
+    interfaceFrozenAt: input.level === "interface" ? now : undefined,
+    mathematicalFrozenAt: input.level === "mathematical" ? now : undefined,
+    verificationState: input.level === "mathematical" ? "mathematically_reviewed" : undefined
+  } })
+}
+
+export async function importExternalReview(input: { workspaceId: string; projectId: string; manuscriptVersionId?: string; theoremOrArtifactRef: string; originalReviewText: string; originalReviewUri?: string; provenance: string; reviewerIdentity?: string; independenceStatement: string; reviewScope: string; verdict: string; issues?: unknown; requiredChanges?: unknown }) {
+  const allowed = ["human", "journal_referee", "fresh_external_ai_chat", "internal_maff_agent", "unknown"]
+  if (!allowed.includes(input.provenance)) throw new Error(`Invalid external-review provenance: ${input.provenance}`)
+  if (input.manuscriptVersionId) await prisma.manuscriptVersion.findFirstOrThrow({ where: { workspaceId: input.workspaceId, projectId: input.projectId, id: input.manuscriptVersionId } })
+  const imported = await prisma.externalReviewImport.create({ data: { ...input, provenance: input.provenance as any, verdict: asReviewVerdict(input.verdict), issues: jsonArray(input.issues), requiredChanges: jsonArray(input.requiredChanges) } })
+  await recordSubstantiveAction({ workspaceId: input.workspaceId, projectId: input.projectId, actionType: "external_review_imported", targetType: "ExternalReviewImport", targetId: imported.id, summary: input.reviewScope })
+  return imported
+}
+
+export async function createStrategicReviewRound(input: { workspaceId: string; projectId: string; verdict: string; reviewerIndependence: string; whatChangedMarkdown: string; loopDiagnosisMarkdown: string; blockerStructureMarkdown: string; alternativesMarkdown: string; branchAllocation?: unknown; nextMoves?: unknown; probabilityEstimates?: unknown; metrics?: unknown }) {
+  const valid = ["continue", "continue_with_rebase", "split", "pivot", "pause", "terminate"]
+  if (!valid.includes(input.verdict)) throw new Error(`Invalid strategic-review verdict: ${input.verdict}`)
+  if (!/independent/i.test(input.reviewerIndependence)) throw new Error("StrategicReviewer must declare independence from the current proof work.")
+  if (!Array.isArray(input.nextMoves) || input.nextMoves.length !== 3) throw new Error("A StrategicReviewRound requires exactly three next moves, each with test, information gain, success/kill conditions, and resulting decision.")
+  if (!Array.isArray(input.probabilityEstimates) || input.probabilityEstimates.length < 5) throw new Error("A StrategicReviewRound requires separate range estimates for truth, provability, methods, publishable fallback, and next-epoch progress.")
+  const epoch = await prisma.projectEpoch.findFirst({ where: { workspaceId: input.workspaceId, projectId: input.projectId }, orderBy: { number: "desc" } })
+  const computedMetrics = await getProjectHealthMetrics(input.workspaceId, input.projectId)
+  const review = await prisma.strategicReviewRound.create({ data: { ...input, verdict: input.verdict as any, projectEpochId: epoch?.id, branchAllocation: jsonArray(input.branchAllocation), nextMoves: jsonArray(input.nextMoves), probabilityEstimates: jsonArray(input.probabilityEstimates), metrics: jsonObject(input.metrics ?? computedMetrics) } })
+  if (epoch) await prisma.projectEpoch.update({ where: { id: epoch.id }, data: { strategicReviewCompletedAt: new Date(), downstreamPausedAt: null } })
+  return review
+}
+
+export async function createProjectBranch(input: { workspaceId: string; projectId: string; title: string; state?: string; rationaleMarkdown?: string; targetObjectType?: string; targetObjectId?: string }) {
+  const allowed = ["mainline", "exploratory", "paused", "killed", "spinout_candidate"]
+  if (input.state && !allowed.includes(input.state)) throw new Error(`Invalid branch state: ${input.state}`)
+  return prisma.projectBranch.create({ data: { ...input, state: input.state as any ?? "exploratory" } })
+}
+
+export async function listStrategicReviews(workspaceId: string, projectId: string) {
+  return prisma.strategicReviewRound.findMany({ where: { workspaceId, projectId }, orderBy: { createdAt: "desc" } })
+}
+
+export async function getProjectHealth(workspaceId: string, projectId: string) {
+  const [epoch, reviews, actions, branches, workstreams, gaps] = await Promise.all([
+    prisma.projectEpoch.findFirst({ where: { workspaceId, projectId }, orderBy: { number: "desc" } }),
+    listStrategicReviews(workspaceId, projectId),
+    prisma.projectSubstantiveAction.findMany({ where: { workspaceId, epoch: { projectId } }, orderBy: { createdAt: "desc" }, take: 50 }),
+    prisma.projectBranch.findMany({ where: { workspaceId, projectId }, orderBy: { updatedAt: "desc" } }),
+    prisma.workstream.findMany({ where: { workspaceId, projectId } }),
+    prisma.gap.findMany({ where: { workspaceId, projectId, status: { in: ["open", "assigned"] } } })
+  ])
+  const actionCount = epoch?.substantiveActionCount ?? 0
+  return { epoch, strategic_reviews: reviews, branches, metrics: { frontier_delta_rate: actions.filter((a) => a.meaningfulDelta).length / Math.max(actionCount, 1), gap_reopen_rate: gaps.filter((g) => g.status === "open").length / Math.max(gaps.length, 1), blocked_workstream_fraction: workstreams.filter((w) => ["blocked", "escalated", "revision_required"].includes(w.status)).length / Math.max(workstreams.length, 1), review_debt: workstreams.filter((w) => w.status === "needs_review").length }, circuit_breakers: { strategic_review_queued: Boolean(epoch?.strategicReviewQueuedAt && !epoch?.strategicReviewCompletedAt), downstream_paused: Boolean(epoch?.downstreamPausedAt && !epoch?.strategicReviewCompletedAt) } }
+}
+
+export async function createProofObligation(input: { workspaceId: string; projectId: string; manuscriptVersionId: string; title: string; statementMarkdown: string; dependencies?: unknown; claimId?: string; sourceArtifactId?: string; proofLocation?: string; manuscriptLocation?: string; externalTheorems?: unknown; externalAssumptionsMatched?: boolean; exactManuscriptProofPresent?: boolean; required?: boolean }) {
+  const version = await prisma.manuscriptVersion.findFirstOrThrow({ where: { workspaceId: input.workspaceId, projectId: input.projectId, id: input.manuscriptVersionId } })
+  return prisma.proofObligation.create({ data: { workspaceId: input.workspaceId, projectId: input.projectId, manuscriptVersionId: version.id, title: input.title, statementMarkdown: input.statementMarkdown, dependencies: jsonArray(input.dependencies), claimId: input.claimId, sourceArtifactId: input.sourceArtifactId, proofLocation: input.proofLocation, manuscriptLocation: input.manuscriptLocation, externalTheorems: jsonArray(input.externalTheorems), externalAssumptionsMatched: input.externalAssumptionsMatched, exactManuscriptProofPresent: input.exactManuscriptProofPresent, required: input.required ?? true } })
+}
+
+const scopedApprovalLabel: Record<string, string> = {
+  ingredient_correctness: "local_artifact_correctness",
+  proof_integration: "integration_fidelity",
+  novelty: "novelty_scope",
+  compile: "compile_render",
+  end_to_end_mathematical: "exact_version_mathematical"
+}
+
+export function reviewScopedStatus(review: { verdict: string; reviewType: string }) {
+  return review.verdict === "approved" ? `approved: ${scopedApprovalLabel[review.reviewType] ?? review.reviewType}` : `${review.verdict}: ${review.reviewType}`
+}
+
+export async function getProjectHealthMetrics(workspaceId: string, projectId: string) {
+  const [epoch, actions, deltas, obligations, checks, gaps, reports, manuscripts, workstreams, reviews] = await Promise.all([
+    prisma.projectEpoch.findFirst({ where: { workspaceId, projectId }, orderBy: { number: "desc" } }),
+    prisma.projectSubstantiveAction.findMany({ where: { workspaceId, epoch: { projectId } }, orderBy: { createdAt: "desc" }, take: 100 }),
+    prisma.researchDelta.count({ where: { workspaceId, projectId } }),
+    prisma.proofObligation.count({ where: { workspaceId, projectId, required: true } }),
+    prisma.reviewObligationCheck.count({ where: { workspaceId, proofObligation: { projectId }, status: "preserved" } }),
+    prisma.gap.findMany({ where: { workspaceId, projectId } }),
+    prisma.workstreamReport.findMany({ where: { workspaceId, projectId }, orderBy: { updatedAt: "desc" }, take: 10 }),
+    prisma.manuscriptVersion.count({ where: { workspaceId, projectId } }),
+    prisma.workstream.findMany({ where: { workspaceId, projectId }, select: { status: true } }),
+    prisma.reviewRound.findMany({ where: { workspaceId, projectId }, orderBy: { createdAt: "desc" }, take: 30 })
+  ])
+  const actionCount = epoch?.substantiveActionCount ?? 0
+  const active = workstreams.filter((w) => ["ready", "claimed", "running", "needs_review", "revision_required", "blocked", "escalated"].includes(w.status))
+  const blocked = active.filter((w) => ["blocked", "escalated", "revision_required"].includes(w.status))
+  const repeat = reports.length > 1 ? reports.slice(1).filter((report) => report.bodyMarkdown === reports[0].bodyMarkdown).length / (reports.length - 1) : 0
+  return { epoch_number: epoch?.number ?? 0, substantive_actions: actionCount, strategic_review_queued: Boolean(epoch?.strategicReviewQueuedAt), downstream_paused: Boolean(epoch?.downstreamPausedAt), frontier_delta_rate: actionCount ? deltas / Math.max(actionCount / 10, 1) : 0, obligation_closure_rate: obligations ? checks / obligations : 0, gap_reopen_count: gaps.filter((gap) => /reopen/i.test(gap.descriptionMarkdown)).length, integration_churn: manuscripts, semantic_repeat_score: repeat, blocked_workstream_fraction: active.length ? blocked.length / active.length : 0, review_debt: workstreams.filter((w) => ["needs_review", "revision_required"].includes(w.status)).length, stale_assumption_count: 0, work_to_frontier_ratio: deltas ? actions.length / deltas : actions.length, recent_review_count: reviews.length }
 }
 
 export async function getIntegrationCoverage(workspaceId: string, manuscriptVersionId: string) {
@@ -1360,6 +1503,7 @@ export async function updateResearchArtifact(input: { workspaceId: string; id: s
   if (input.patch.contentMarkdown !== undefined && artifact.contentMarkdown !== before.contentMarkdown && artifact.projectId) {
     const canonical = await prisma.manuscriptVersion.findFirst({ where: { workspaceId: input.workspaceId, projectId: artifact.projectId, artifactId: artifact.id, isCanonical: true } })
     if (canonical) {
+      await prisma.manuscriptVersion.update({ where: { id: canonical.id }, data: { isCanonical: false, supersededAt: new Date() } })
       const links = await prisma.researchLink.findMany({ where: { workspaceId: input.workspaceId, projectId: artifact.projectId, sourceType: "ManuscriptVersion", sourceId: canonical.id } })
       await createManuscriptVersion({ workspaceId: input.workspaceId, projectId: artifact.projectId, artifactId: artifact.id, parentArtifactIds: links.filter((l) => l.targetType === "ResearchArtifact" && l.relationType === "derived_from").map((l) => l.targetId), claimIds: links.filter((l) => l.targetType === "Claim" && l.relationType === "contribution_claim").map((l) => l.targetId) })
     }

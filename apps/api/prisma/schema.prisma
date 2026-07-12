@@ -157,6 +157,45 @@ enum ReviewIndependence {
   external_referee_style
 }
 
+/// Candidate manuscripts are not canonical mathematical working papers until their ledger is complete.
+enum ManuscriptVerificationState {
+  unverified_candidate
+  ledger_complete
+  mathematically_reviewed
+}
+
+enum ManuscriptFreezeLevel {
+  none
+  lexical
+  interface
+  mathematical
+}
+
+enum ExternalReviewProvenance {
+  human
+  journal_referee
+  fresh_external_ai_chat
+  internal_maff_agent
+  unknown
+}
+
+enum StrategicReviewVerdict {
+  continue
+  continue_with_rebase
+  split
+  pivot
+  pause
+  terminate
+}
+
+enum BranchState {
+  mainline
+  exploratory
+  paused
+  killed
+  spinout_candidate
+}
+
 enum ArtifactKind {
   markdown
   latex
@@ -442,6 +481,11 @@ model Workspace {
   proofObligations ProofObligation[]
   reviewObligationChecks ReviewObligationCheck[]
   workstreamDependencies WorkstreamDependency[]
+  externalReviewImports ExternalReviewImport[]
+  projectEpochs ProjectEpoch[]
+  projectSubstantiveActions ProjectSubstantiveAction[]
+  strategicReviews StrategicReviewRound[]
+  projectBranches ProjectBranch[]
   researchLinks ResearchLink[]
 }
 
@@ -579,6 +623,8 @@ model Project {
   status                ProjectStatus @default(seed)
   coordinatorSummary    String?
   currentWorkingPaperId String?       @db.Uuid
+  strategicReviewInterval Int          @default(10)
+  strategicReviewHardLimit Int         @default(15)
   createdByUserId       String?       @db.Uuid
   createdAt             DateTime      @default(now())
   updatedAt             DateTime      @updatedAt
@@ -613,6 +659,10 @@ model Project {
   researchArtifacts ResearchArtifact[]
   manuscriptVersions ManuscriptVersion[]
   proofObligations ProofObligation[]
+  projectEpochs ProjectEpoch[]
+  strategicReviews StrategicReviewRound[]
+  externalReviewImports ExternalReviewImport[]
+  branches ProjectBranch[]
 
   @@unique([workspaceId, slug])
   @@index([workspaceId, status])
@@ -804,6 +854,11 @@ model ManuscriptVersion {
   theoremFingerprint  String
   citationFingerprint String
   isCanonical         Boolean  @default(false)
+  verificationState   ManuscriptVerificationState @default(unverified_candidate)
+  freezeLevel         ManuscriptFreezeLevel @default(none)
+  lexicalFrozenAt     DateTime?
+  interfaceFrozenAt   DateTime?
+  mathematicalFrozenAt DateTime?
   supersededAt        DateTime?
   createdAt           DateTime @default(now())
 
@@ -811,6 +866,7 @@ model ManuscriptVersion {
   project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
   artifact ResearchArtifact @relation(fields: [artifactId], references: [id], onDelete: Cascade)
   obligations ProofObligation[]
+  externalReviewImports ExternalReviewImport[]
 
   @@unique([projectId, version])
   @@unique([projectId, contentHash])
@@ -825,8 +881,13 @@ model ProofObligation {
   claimId             String?  @db.Uuid
   title               String
   statementMarkdown   String
+  dependencies        Json     @default("[]")
   sourceArtifactId    String?  @db.Uuid
+  proofLocation       String?
   manuscriptLocation  String?
+  externalTheorems    Json     @default("[]")
+  externalAssumptionsMatched Boolean?
+  exactManuscriptProofPresent Boolean?
   required            Boolean  @default(true)
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
@@ -870,6 +931,113 @@ model WorkstreamDependency {
   prerequisite Workstream @relation("PrerequisiteWorkstream", fields: [prerequisiteWorkstreamId], references: [id], onDelete: Cascade)
   @@unique([dependentWorkstreamId, prerequisiteWorkstreamId])
   @@index([workspaceId, prerequisiteWorkstreamId])
+}
+
+/// Immutable source import; derived gaps/obligations refer back to this record without rewriting it.
+model ExternalReviewImport {
+  id                    String                   @id @default(uuid()) @db.Uuid
+  workspaceId           String                   @db.Uuid
+  projectId             String                   @db.Uuid
+  manuscriptVersionId   String?                  @db.Uuid
+  theoremOrArtifactRef  String
+  originalReviewText    String
+  originalReviewUri     String?
+  provenance            ExternalReviewProvenance
+  reviewerIdentity      String?
+  independenceStatement String
+  reviewScope           String
+  verdict               ReviewVerdict
+  issues                Json                     @default("[]")
+  requiredChanges       Json                     @default("[]")
+  createdAt             DateTime                 @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  manuscriptVersion ManuscriptVersion? @relation(fields: [manuscriptVersionId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId, projectId, createdAt])
+  @@index([workspaceId, manuscriptVersionId])
+}
+
+/// A numbered epoch measures material graph changes only; reads and unchanged summaries do not enter it.
+model ProjectEpoch {
+  id                        String   @id @default(uuid()) @db.Uuid
+  workspaceId               String   @db.Uuid
+  projectId                 String   @db.Uuid
+  number                    Int
+  substantiveActionCount    Int      @default(0)
+  strategicReviewQueuedAt   DateTime?
+  strategicReviewCompletedAt DateTime?
+  downstreamPausedAt        DateTime?
+  createdAt                 DateTime @default(now())
+  updatedAt                 DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  actions ProjectSubstantiveAction[]
+  strategicReviews StrategicReviewRound[]
+
+  @@unique([projectId, number])
+  @@index([workspaceId, projectId, createdAt])
+}
+
+model ProjectSubstantiveAction {
+  id             String   @id @default(uuid()) @db.Uuid
+  workspaceId    String   @db.Uuid
+  projectEpochId String   @db.Uuid
+  actionType     String
+  targetType     String?
+  targetId       String?
+  meaningfulDelta Boolean @default(false)
+  summary        String?
+  createdAt      DateTime @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  epoch ProjectEpoch @relation(fields: [projectEpochId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, projectEpochId, createdAt])
+}
+
+model StrategicReviewRound {
+  id                       String                 @id @default(uuid()) @db.Uuid
+  workspaceId              String                 @db.Uuid
+  projectId                String                 @db.Uuid
+  projectEpochId           String?                @db.Uuid
+  verdict                  StrategicReviewVerdict
+  reviewerIndependence     String
+  whatChangedMarkdown      String
+  loopDiagnosisMarkdown    String
+  blockerStructureMarkdown String
+  alternativesMarkdown     String
+  branchAllocation         Json                   @default("[]")
+  nextMoves                Json                   @default("[]")
+  probabilityEstimates     Json                   @default("[]")
+  metrics                  Json                   @default("{}")
+  createdAt                DateTime               @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  epoch ProjectEpoch? @relation(fields: [projectEpochId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId, projectId, createdAt])
+}
+
+model ProjectBranch {
+  id                    String      @id @default(uuid()) @db.Uuid
+  workspaceId           String      @db.Uuid
+  projectId             String      @db.Uuid
+  title                 String
+  state                 BranchState @default(exploratory)
+  rationaleMarkdown     String?
+  targetObjectType      String?
+  targetObjectId        String?
+  createdAt             DateTime    @default(now())
+  updatedAt             DateTime    @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, projectId, state])
 }
 
 model Artifact {

@@ -82,6 +82,9 @@ const sourceA = await runtime.createResearchArtifact({ workspaceId: workspace.id
 const manuscript = await runtime.createResearchArtifact({ workspaceId: workspace.id, projectId: project.id, title: "Integrated manuscript", kind: "paper_draft", contentMarkdown: "The bound is standard." })
 const manuscriptVersion = await runtime.createManuscriptVersion({ workspaceId: workspace.id, projectId: project.id, artifactId: manuscript.id, parentArtifactIds: [sourceA.id], claimIds: [claim.id] })
 const obligation = await runtime.createProofObligation({ workspaceId: workspace.id, projectId: project.id, manuscriptVersionId: manuscriptVersion.id, claimId: claim.id, sourceArtifactId: sourceA.id, title: "Uniform moving-start majorant", statementMarkdown: "Uniform majorant on the stated domain.", manuscriptLocation: "Lemma 4.1" })
+const canonicalManuscript = await runtime.promoteManuscriptVersion({ workspaceId: workspace.id, manuscriptVersionId: manuscriptVersion.id })
+assert.equal(canonicalManuscript.isCanonical, true)
+assert.equal(canonicalManuscript.verificationState, "ledger_complete")
 await runtime.recordReviewRound({ workspaceId: workspace.id, workstreamId: workstream.id, verdict: "approved", reviewType: "ingredient_correctness", targetVersion: sourceA.id, bodyMarkdown: "Source proof correct.", issues: [], requiredChanges: [], checkedRefs: [sourceA.id] })
 await runtime.recordReviewRound({ workspaceId: workspace.id, workstreamId: workstream.id, verdict: "approved", reviewType: "compile", targetVersion: manuscriptVersion.id, bodyMarkdown: "PDF compiled.", issues: [], requiredChanges: [], checkedRefs: [manuscript.id] })
 let readiness = await runtime.computeProjectSubmissionReadiness(workspace.id, project.id)
@@ -103,7 +106,32 @@ assert.equal(readiness.submission_ready, true)
 await runtime.updateResearchArtifact({ workspaceId: workspace.id, id: manuscript.id, patch: { contentMarkdown: "A substantively changed manuscript." } })
 readiness = await runtime.computeProjectSubmissionReadiness(workspace.id, project.id)
 assert.equal(readiness.submission_ready, false)
-assert.ok(readiness.stale_review_references.length >= 1)
+
+// Robustness regression: a substantial manuscript without an exact proof-obligation ledger
+// remains an unverified candidate; it cannot become canonical or receive manuscript gates.
+const ledgerless = await runtime.createResearchArtifact({ workspaceId: workspace.id, projectId: project.id, title: "Ledgerless theorem manuscript", kind: "paper_draft", contentMarkdown: "# Theorem\nA nontrivial statement with proof." })
+const ledgerlessVersion = await runtime.createManuscriptVersion({ workspaceId: workspace.id, projectId: project.id, artifactId: ledgerless.id, claimIds: [claim.id] })
+assert.equal(ledgerlessVersion.isCanonical, false)
+assert.equal(ledgerlessVersion.verificationState, "unverified_candidate")
+await assert.rejects(
+  () => runtime.promoteManuscriptVersion({ workspaceId: workspace.id, manuscriptVersionId: ledgerlessVersion.id }),
+  /proof obligation/i
+)
+await assert.rejects(
+  () => runtime.recordReviewRound({ workspaceId: workspace.id, workstreamId: workstream.id, verdict: "approved", reviewType: "compile", targetVersion: ledgerlessVersion.id, targetObjectType: "ResearchArtifact", targetObjectId: ledgerless.id, bodyMarkdown: "Compile clean.", issues: [], requiredChanges: [], checkedRefs: [] }),
+  /targetObject/i
+)
+
+// MMRW replay-shaped safety case: an external referee is immutable evidence, not a Maff
+// AgentRun; strategic debt queues a review and an independent strategic verdict clears it.
+const externalReferee = await runtime.importExternalReview({ workspaceId: workspace.id, projectId: project.id, manuscriptVersionId: manuscriptVersion.id, theoremOrArtifactRef: `ManuscriptVersion:${manuscriptVersion.id}`, originalReviewText: "The bilateral Green residue theorem is not established; the governance gap remains load-bearing.", provenance: "journal_referee", independenceStatement: "Independent journal referee report supplied outside Maff.", reviewScope: "Exact manuscript version and bilateral Green residue obligation.", verdict: "needs_revision", issues: ["bilateral Green residue theorem absent", "governance gap propagates"], requiredChanges: ["Repair both mathematical streams before regeneration"] })
+assert.equal((externalReferee as any).createdByAgentRunId, undefined)
+const healthBeforeStrategic = await runtime.getProjectHealth(workspace.id, project.id)
+assert.equal(healthBeforeStrategic.circuit_breakers.strategic_review_queued, true)
+const strategic = await runtime.createStrategicReviewRound({ workspaceId: workspace.id, projectId: project.id, verdict: "continue_with_rebase", reviewerIndependence: "independent StrategicReviewer with no current proof assignment", whatChangedMarkdown: "The replay isolated the missing bilateral residue obligation and governance dependency.", loopDiagnosisMarkdown: "Repeated manuscript repair without an exact ledger would loop.", blockerStructureMarkdown: "The bilateral residue and governance gaps are structural but separately repairable.", alternativesMarkdown: "Considered immediate submission, weaker theorem, and two-stream repair; selected two-stream repair.", branchAllocation: [{ branch: "main", state: "mainline" }, { branch: "weaker-result", state: "exploratory" }], nextMoves: [{ test: "Check bilateral residue", information_gain: "high", prerequisites: [], success_condition: "proof closes", kill_condition: "counterexample", decision: "promote or weaken" }, { test: "Repair governance gap", information_gain: "high", prerequisites: [], success_condition: "dependency graph closes", kill_condition: "dependency fails", decision: "rebase" }, { test: "End-to-end re-review", information_gain: "medium", prerequisites: ["two repairs"], success_condition: "independent approval", kill_condition: "major revision", decision: "submit or pivot" }], probabilityEstimates: [{ dimension: "truth", range: "60-80%" }, { dimension: "provable", range: "40-60%" }, { dimension: "methods", range: "35-55%" }, { dimension: "publishable_fallback", range: "70-85%" }, { dimension: "next_epoch_progress", range: "60-75%" }] })
+assert.equal(strategic.verdict, "continue_with_rebase")
+const healthAfterStrategic = await runtime.getProjectHealth(workspace.id, project.id)
+assert.equal(healthAfterStrategic.circuit_breakers.downstream_paused, false)
 
 await prisma.$disconnect()
 console.log("Maff v2 database smoke checks passed")

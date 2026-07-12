@@ -44,11 +44,13 @@ export async function computeSubmissionReadiness(workspaceId: string, projectId:
   const integrationReviews = gate("proof_integration")
   const coveredObligations = new Set(obligationChecks.filter((c) => integrationReviews.some((r) => r.id === c.reviewRoundId)).map((c) => c.proofObligationId))
   const missingObligations = version.obligations.filter((o) => o.required && !coveredObligations.has(o.id))
+  const zeroObligationLedger = version.obligations.filter((o) => o.required).length === 0
   const noveltyCoveredClaims = new Set(gate("novelty").flatMap((r) => strings((r.scope as any)?.claim_ids)))
   const noveltyMissing = claims.filter((c) => !noveltyCoveredClaims.has(c.id))
   const endToEnd = gate("end_to_end_mathematical").filter((r) => r.independence === "independent_reviewer" || r.independence === "external_referee_style")
   const gates: Record<string, any> = {
-    proof_integration: { satisfied: integrationReviews.length > 0 && missingObligations.length === 0, review_ids: integrationReviews.map((r) => r.id), missing_obligation_ids: missingObligations.map((o) => o.id) },
+    proof_obligation_ledger: { satisfied: !zeroObligationLedger, reason: "A nontrivial canonical manuscript must have a non-empty exact-version proof-obligation ledger." },
+    proof_integration: { satisfied: !zeroObligationLedger && integrationReviews.length > 0 && missingObligations.length === 0, review_ids: integrationReviews.map((r) => r.id), missing_obligation_ids: missingObligations.map((o) => o.id), invalid_zero_obligation_ledger: zeroObligationLedger },
     end_to_end_mathematical: { satisfied: endToEnd.length > 0, review_ids: endToEnd.map((r) => r.id), reason: "Requires an independent reviewer of this exact manuscript version." },
     novelty: { satisfied: noveltyMissing.length === 0, review_ids: gate("novelty").map((r) => r.id), missing_claim_ids: noveltyMissing.map((c) => c.id) },
     bibliography: { satisfied: gate("bibliography").length > 0, review_ids: gate("bibliography").map((r) => r.id) },

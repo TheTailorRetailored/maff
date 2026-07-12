@@ -94,6 +94,14 @@ export function ProjectControlRoom({ workspaceId, setWorkspaceId, projectId, onO
               <span>{room.frontier?.spinouts.length ?? 0}<small>spinouts</small></span>
             </div>
           </section>
+          <section className="panel">
+            <h2>Assurance gates</h2>
+            <p>{room.readiness?.submission_ready ? "Submission-ready only after all exact-version gates pass." : "Not submission-ready: each green status is limited to its stated assurance scope."}</p>
+            <div className="stack">
+              {Object.entries(room.readiness?.gates ?? {}).map(([gate, state]) => <div className="task-card" key={gate}><strong>{gate}</strong><StatusBadge status={state.satisfied ? "approved" : "blocked"} /></div>)}
+              {room.recent_reviews.map((review) => <div className="task-card" key={review.id}><span>{review.scoped_status ?? `${review.verdict}: ${review.reviewType}`}</span><small>exact target {review.targetVersion ?? "legacy/unspecified"}</small></div>)}
+            </div>
+          </section>
           <div className="grid two">
             <section>
               <h2>Goals</h2>
