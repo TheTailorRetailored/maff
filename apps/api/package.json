@@ -24,6 +24,7 @@
     "admin:reset-research": "node dist/admin/resetResearchWorkspace.js",
     "admin:reset-research:src": "tsx src/admin/resetResearchWorkspace.ts",
     "admin:link-oidc-identity:src": "tsx src/admin/linkOidcIdentity.ts",
+    "admin:diagnose-ephemeral-artifacts": "node dist/admin/diagnoseEphemeralArtifacts.js",
     "admin:diagnose-ephemeral-artifacts:src": "tsx src/admin/diagnoseEphemeralArtifacts.ts"
   },
   "dependencies": {
