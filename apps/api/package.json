@@ -17,6 +17,7 @@
     "test:smoke": "node dist/smoke.js",
     "test:smoke:src": "tsx src/smoke.ts",
     "test:smoke:db": "tsx src/smokeRuntimeDb.ts",
+    "test:migration:fixture": "tsx src/migrationFixture.ts",
     "admin:reset-legacy": "node dist/admin/resetLegacyResearch.js",
     "admin:reset-legacy:src": "tsx src/admin/resetLegacyResearch.ts",
     "admin:reset-research": "node dist/admin/resetResearchWorkspace.js",
