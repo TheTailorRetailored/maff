@@ -85,7 +85,7 @@ const tool = (name: string, description: string, role: WorkspaceRole, inputSchem
   annotations: { readOnlyHint: readOnlyToolNames.has(name), openWorldHint: false, destructiveHint: false, idempotentHint: idempotentToolNames.has(name) },
   meta
 })
-export const mcpServerVersion = "0.6.2-artifact-upload-return"
+export const mcpServerVersion = "0.6.3-embedded-artifact-content"
 export const expectedMcpToolCount = 99
 
 export const toolDefinitions: ToolDef[] = [
@@ -148,7 +148,7 @@ export const toolDefinitions: ToolDef[] = [
   tool("download_artifact", "Return an authorised connector-style file reference for streaming exact Artifact bytes; bytes are never embedded as JSON/base64.", "viewer", objectSchema({ workspace_id: s, artifact_id: s }, ["workspace_id", "artifact_id"])),
   tool("list_artifacts", "List physical Artifacts by project, workstream, ResearchArtifact, or ManuscriptVersion.", "viewer", objectSchema({ workspace_id: s, project_id: s, workstream_id: s, research_artifact_id: s, manuscript_version_id: s }, ["workspace_id"])),
   tool("list_artifact_archive", "List entries in an ingested ZIP Artifact after integrity verification.", "viewer", objectSchema({ workspace_id: s, artifact_id: s }, ["workspace_id", "artifact_id"])),
-  tool("read_artifact_archive_file", "Return an authorised streaming file reference for one selected file in an ingested ZIP Artifact.", "viewer", objectSchema({ workspace_id: s, artifact_id: s, path: s }, ["workspace_id", "artifact_id", "path"])),
+  tool("read_artifact_archive_file", "Read one selected file from an ingested ZIP Artifact inside the authorised tool call. Text is returned directly; PDF, image, and other binary content is returned as an embedded MCP resource, so no second authenticated fetch is required.", "viewer", objectSchema({ workspace_id: s, artifact_id: s, path: s }, ["workspace_id", "artifact_id", "path"])),
   tool("verify_artifact", "Recompute stored Artifact SHA-256 and byte size, failing explicitly for missing or corrupt managed data.", "viewer", objectSchema({ workspace_id: s, artifact_id: s }, ["workspace_id", "artifact_id"])),
   tool("attach_artifact_to_manuscript_version", "Immutably link an ingested physical Artifact to an exact ManuscriptVersion with a role such as source_bundle or compiled_pdf.", "editor", objectSchema({ workspace_id: s, artifact_id: s, manuscript_version_id: s, role: s }, ["workspace_id", "artifact_id", "manuscript_version_id", "role"])),
   tool("export_physical_artifacts", "Export authorised streaming references for all physical Artifacts linked to a workstream or exact ManuscriptVersion.", "viewer", objectSchema({ workspace_id: s, workstream_id: s, manuscript_version_id: s }, ["workspace_id"])),
@@ -286,7 +286,7 @@ export async function callTool(toolName: string, args: any, ctx: ToolContext) {
     case "download_artifact": return runtime.downloadArtifactReference(workspaceId, args.artifact_id)
     case "list_artifacts": return runtime.listArtifacts({ workspaceId, projectId: args.project_id, workstreamId: args.workstream_id, researchArtifactId: args.research_artifact_id, manuscriptVersionId: args.manuscript_version_id })
     case "list_artifact_archive": return runtime.listArtifactArchive(workspaceId, args.artifact_id)
-    case "read_artifact_archive_file": return runtime.artifactArchiveEntryReference(workspaceId, args.artifact_id, args.path)
+    case "read_artifact_archive_file": return runtime.artifactArchiveEntryContent(workspaceId, args.artifact_id, args.path)
     case "verify_artifact": return runtime.verifyArtifact(workspaceId, args.artifact_id)
     case "attach_artifact_to_manuscript_version": return runtime.attachArtifactToManuscriptVersion({ workspaceId, artifactId: args.artifact_id, manuscriptVersionId: args.manuscript_version_id, role: args.role })
     case "export_physical_artifacts": return runtime.exportPhysicalArtifacts({ workspaceId, workstreamId: args.workstream_id, manuscriptVersionId: args.manuscript_version_id })
@@ -347,9 +347,27 @@ export function structuredContentForTool(toolName: string, value: unknown): Json
 
 export function contentResult(toolName: string, value: unknown) {
   const structuredContent = structuredContentForTool(toolName, value)
+  const embeddedResource = (structuredContent as any).embedded_resource
+  if (toolName === "read_artifact_archive_file" && embeddedResource && typeof embeddedResource.uri === "string") {
+    const metadata = { ...structuredContent } as any
+    delete metadata.embedded_resource
+    const resource = {
+      uri: embeddedResource.uri,
+      mimeType: embeddedResource.mime_type ?? metadata.mime_type ?? "application/octet-stream",
+      ...(typeof embeddedResource.text === "string" ? { text: embeddedResource.text } : { blob: embeddedResource.blob })
+    }
+    return {
+      structuredContent: metadata,
+      content: [
+        { type: "resource", resource },
+        ...(typeof embeddedResource.text === "string" ? [{ type: "text", text: embeddedResource.text }] : []),
+        { type: "text", text: JSON.stringify(metadata, null, 2) }
+      ]
+    }
+  }
   const directUri = (structuredContent as any).uri
   const downloadUri = (structuredContent as any).download?.uri
-  if ((toolName === "download_artifact" || toolName === "read_artifact_archive_file") && typeof directUri === "string") {
+  if (toolName === "download_artifact" && typeof directUri === "string") {
     return {
       structuredContent,
       content: [

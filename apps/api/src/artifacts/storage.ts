@@ -136,3 +136,23 @@ export async function openZipEntry(storageKey: string, requestedPath: string): P
     zip.readEntry()
   })
 }
+
+export async function readZipEntryBytes(storageKey: string, requestedPath: string, maxByteSize = 8 * 1024 * 1024) {
+  const selected = await openZipEntry(storageKey, requestedPath)
+  if (selected.entry.uncompressedSize > maxByteSize) {
+    selected.stream.destroy()
+    throw Object.assign(new Error(`Archive entry exceeds the ${maxByteSize}-byte embedded-read limit.`), { status: 413 })
+  }
+  const chunks: Buffer[] = []
+  let byteSize = 0
+  for await (const chunk of selected.stream) {
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+    byteSize += bytes.length
+    if (byteSize > maxByteSize) {
+      selected.stream.destroy()
+      throw Object.assign(new Error(`Archive entry exceeds the ${maxByteSize}-byte embedded-read limit.`), { status: 413 })
+    }
+    chunks.push(bytes)
+  }
+  return { entry: selected.entry, bytes: Buffer.concat(chunks, byteSize) }
+}

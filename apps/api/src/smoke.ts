@@ -142,7 +142,7 @@ for (const prop of ["report_id", "workstream_id"]) {
   assert.ok(submitReportProps[prop], `submit_report_for_review schema must advertise ${prop}`)
 }
 
-assert.equal(mcpServerVersion, "0.6.2-artifact-upload-return")
+assert.equal(mcpServerVersion, "0.6.3-embedded-artifact-content")
 const toolsList = mcpToolsListResult()
 const toolsListNames = new Set(toolsList.tools.map((tool) => tool.name))
 for (const name of ["get_my_maff_context", "claim_next_assignment", "claim_next_review", "create_project", "propose_project_goal", "approve_project_goal", "create_workstream", "claim_agent_assignment", "start_agent_run", "submit_workstream_report", "record_review_round", "complete_workstream", "create_claim", "create_proof_route", "create_proof_attempt", "create_gap"]) {
@@ -188,6 +188,31 @@ const createdArtifactResult = contentResult("create_artifact", compactToolResult
 assert.equal((createdArtifactResult.structuredContent as any).verification.ok, true)
 assert.equal((createdArtifactResult.structuredContent as any).download.uri.includes("/api/artifacts/artifact-1/content"), true)
 assert.equal(createdArtifactResult.content[0].type, "resource_link")
+const archiveTextResult = contentResult("read_artifact_archive_file", {
+  artifact_id: "artifact-1",
+  entry_path: "main.tex",
+  name: "main.tex",
+  mime_type: "application/x-tex",
+  byte_size: 12,
+  sha256: "b".repeat(64),
+  embedded_resource: { uri: "maff://artifacts/artifact-1/archive/main.tex", mime_type: "application/x-tex", text: "Exact source" }
+})
+assert.equal((archiveTextResult.structuredContent as any).embedded_resource, undefined)
+assert.equal(archiveTextResult.content[0].type, "resource")
+assert.equal((archiveTextResult.content[0] as any).resource.text, "Exact source")
+assert.equal(archiveTextResult.content[1].type, "text")
+assert.equal((archiveTextResult.content[1] as any).text, "Exact source")
+const archivePdfResult = contentResult("read_artifact_archive_file", {
+  artifact_id: "artifact-1",
+  entry_path: "main.pdf",
+  name: "main.pdf",
+  mime_type: "application/pdf",
+  byte_size: 4,
+  sha256: "c".repeat(64),
+  embedded_resource: { uri: "maff://artifacts/artifact-1/archive/main.pdf", mime_type: "application/pdf", blob: "JVBERg==" }
+})
+assert.equal(archivePdfResult.content[0].type, "resource")
+assert.equal((archivePdfResult.content[0] as any).resource.blob, "JVBERg==")
 const getResearchArtifactTool = toolDefinitions.find((tool) => tool.name === "get_research_artifact")
 assert.ok(getResearchArtifactTool, "missing get_research_artifact")
 assert.deepEqual((getResearchArtifactTool.inputSchema as { required?: string[] }).required, ["workspace_id", "artifact_id"])

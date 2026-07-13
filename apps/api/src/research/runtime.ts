@@ -7,7 +7,7 @@ import { config } from "../config.js"
 import { leanClient } from "../lean/leanClient.js"
 import { requireWorkspaceRole } from "../auth/permissions.js"
 import { computeSubmissionReadiness, workstreamDependenciesSatisfied } from "./readiness.js"
-import { inferMimeType, ingestFile, ingestRemoteFile, listZipEntries, storagePath, verifyStoredFile } from "../artifacts/storage.js"
+import { inferMimeType, ingestFile, ingestRemoteFile, listZipEntries, readZipEntryBytes, storagePath, verifyStoredFile } from "../artifacts/storage.js"
 
 const roleRecipeFiles: Record<AgentRole, string> = {
   ProjectCoordinator: "project_coordinator.md",
@@ -1296,11 +1296,30 @@ export async function listArtifactArchive(workspaceId: string, artifactId: strin
   return { artifact_id: artifact.id, entries: await listZipEntries(artifact.storageKey) }
 }
 
-export async function artifactArchiveEntryReference(workspaceId: string, artifactId: string, entryPath: string) {
+export async function artifactArchiveEntryContent(workspaceId: string, artifactId: string, entryPath: string) {
   const archive = await listArtifactArchive(workspaceId, artifactId)
   const entry = archive.entries.find((candidate) => candidate.path === entryPath && !candidate.directory)
   if (!entry) throw Object.assign(new Error("Archive entry not found."), { status: 404 })
-  return { artifact_id: artifactId, entry_path: entryPath, byte_size: entry.byte_size, uri: `${config.publicBaseUrl}/api/artifacts/${artifactId}/archive-entry?workspaceId=${workspaceId}&path=${encodeURIComponent(entryPath)}` }
+  const artifact = await prisma.artifact.findFirstOrThrow({ where: { workspaceId, id: artifactId, storageKey: { not: null } } })
+  const selected = await readZipEntryBytes(artifact.storageKey!, entryPath)
+  const mimeType = inferMimeType(entryPath)
+  const sha256 = createHash("sha256").update(selected.bytes).digest("hex")
+  const uri = `maff://artifacts/${artifactId}/archive/${encodeURIComponent(entryPath)}?sha256=${sha256}`
+  const downloadUri = `${config.publicBaseUrl}/api/artifacts/${artifactId}/archive-entry?workspaceId=${workspaceId}&path=${encodeURIComponent(entryPath)}`
+  const textMimeTypes = new Set(["application/json", "application/x-bibtex", "application/x-tex", "application/xml", "application/javascript"])
+  const isText = mimeType.startsWith("text/") || textMimeTypes.has(mimeType)
+  return {
+    artifact_id: artifactId,
+    entry_path: entryPath,
+    name: path.basename(entryPath),
+    mime_type: mimeType,
+    byte_size: selected.bytes.length,
+    sha256,
+    download_uri: downloadUri,
+    embedded_resource: isText
+      ? { uri, mime_type: mimeType, text: selected.bytes.toString("utf8") }
+      : { uri, mime_type: mimeType, blob: selected.bytes.toString("base64") }
+  }
 }
 
 export async function attachArtifactToManuscriptVersion(input: { workspaceId: string; artifactId: string; manuscriptVersionId: string; role: string }) {

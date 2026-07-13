@@ -40,6 +40,8 @@ try {
   const pdfChunks: Buffer[] = []
   for await (const chunk of selectedPdf.stream) pdfChunks.push(Buffer.from(chunk))
   assert.deepEqual(Buffer.concat(pdfChunks), pdf)
+  assert.deepEqual((await storage.readZipEntryBytes(ingested.storageKey, "main.tex")).bytes, tex)
+  await assert.rejects(() => storage.readZipEntryBytes(ingested.storageKey, "main.tex", tex.length - 1), /embedded-read limit/)
 
   await writeFile(storage.storagePath(ingested.storageKey), "corrupt")
   assert.equal((await storage.verifyStoredFile(ingested.storageKey, expectedHash, original.length)).ok, false)
