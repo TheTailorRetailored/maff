@@ -1,5 +1,5 @@
 import type { Router } from "express"
-import { requireUser } from "../auth/auth0.js"
+import { requireUser } from "../auth/oidc.js"
 import { requireWorkspaceRole } from "../auth/permissions.js"
 import { createLeanProject, createLeanStub, leanCheck, leanGoal } from "../mcp/tools/leanTools.js"
 import * as runtime from "../research/runtime.js"

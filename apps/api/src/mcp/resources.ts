@@ -1,6 +1,6 @@
 import path from "node:path"
 import { prisma } from "../db/prisma.js"
-import type { AuthClaims } from "../auth/auth0.js"
+import type { AuthClaims } from "../auth/oidc.js"
 import { requireWorkspaceRole } from "../auth/permissions.js"
 import { getPrompt, listPrompts } from "./prompts.js"
 import { loadSkill, listMarkdownFiles } from "../skills/skillLoader.js"

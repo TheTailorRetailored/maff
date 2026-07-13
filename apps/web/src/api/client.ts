@@ -1,4 +1,4 @@
-import { useAuth0 } from "@auth0/auth0-react"
+import { useAuth } from "react-oidc-context"
 
 const baseUrl = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:3001/api"
 
@@ -21,37 +21,14 @@ export type TheoremContract = { id: string; projectId: string; title: string; sl
 export type FrontierSnapshot = { id: string; projectId?: string; title: string; snapshotMarkdown: string; strongestCurrentTheoremMarkdown?: string; strongestConditionalTheoremMarkdown?: string; activeBlockersMarkdown?: string; activeMechanismsMarkdown?: string; spinoutsMarkdown?: string; recommendedNextMovesMarkdown?: string; source?: string; createdAt: string }
 export type ResearchArtifact = { id: string; projectId?: string; title: string; slug: string; kind: string; status: string; descriptionMarkdown?: string; contentMarkdown?: string; filePath?: string; url?: string; updatedAt: string }
 export type ResearchFrontier = { latestSnapshot?: FrontierSnapshot | null; contracts: TheoremContract[]; mechanisms: Mechanism[]; spinouts: SpinoutCandidate[]; assumptionRegimes: AssumptionRegime[]; recentDeltas: ResearchDelta[]; artifacts: ResearchArtifact[] }
-export type ControlRoom = { project: Project; canonical_working_paper?: ManuscriptVersion | null; readiness?: SubmissionReadiness; workstream_dependency_states?: Array<{ workstream_id: string; satisfied: boolean; blocking_prerequisite_ids: string[] }>; goals_by_status: Record<string, ProjectGoal[]>; workstreams_by_status: Record<string, Workstream[]>; needs_review: Workstream[]; blocked_or_escalated: Workstream[]; recent_agent_runs: AgentRun[]; key_claims: Claim[]; open_gaps: Gap[]; recent_reviews: ReviewRound[]; suggested_next_assignment?: Workstream | null; frontier?: ResearchFrontier }
-
-const apiAuthorizationParams = {
-  audience: import.meta.env.VITE_AUTH0_AUDIENCE,
-  scope: "openid profile email maff:access"
-}
-
-function isRefreshTokenError(error: unknown) {
-  const text = error instanceof Error ? error.message : String(error)
-  return text.toLowerCase().includes("missing refresh token")
-}
+export type ProjectHealth = { epoch?: { number: number; substantiveActionCount: number } | null; metrics: { frontier_delta_rate: number; gap_reopen_rate: number; blocked_workstream_fraction: number; review_debt: number }; circuit_breakers: { strategic_review_queued: boolean; downstream_paused: boolean }; branches: Array<{ id: string; title: string; state: string }> }
+export type ControlRoom = { project: Project; canonical_working_paper?: ManuscriptVersion | null; readiness?: SubmissionReadiness; project_health?: ProjectHealth; workstream_dependency_states?: Array<{ workstream_id: string; satisfied: boolean; blocking_prerequisite_ids: string[] }>; goals_by_status: Record<string, ProjectGoal[]>; workstreams_by_status: Record<string, Workstream[]>; needs_review: Workstream[]; blocked_or_escalated: Workstream[]; recent_agent_runs: AgentRun[]; key_claims: Claim[]; open_gaps: Gap[]; recent_reviews: ReviewRound[]; suggested_next_assignment?: Workstream | null; frontier?: ResearchFrontier }
 
 export function useApi() {
-  const { getAccessTokenSilently, loginWithRedirect } = useAuth0()
+  const auth = useAuth()
   async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-    let token: string
-    try {
-      token = await getAccessTokenSilently({ authorizationParams: apiAuthorizationParams })
-    } catch (error) {
-      if (isRefreshTokenError(error)) {
-        await loginWithRedirect({
-          appState: { returnTo: window.location.pathname + window.location.search },
-          authorizationParams: {
-            ...apiAuthorizationParams,
-            scope: "openid profile email offline_access maff:access",
-            prompt: "login"
-          }
-        })
-      }
-      throw error
-    }
+    const token = auth.user?.access_token
+    if (!token) throw new Error("OIDC access token is unavailable; sign in again")
     const res = await fetch(`${baseUrl}${path}`, {
       ...init,
       headers: { "content-type": "application/json", authorization: `Bearer ${token}`, ...(init.headers ?? {}) }

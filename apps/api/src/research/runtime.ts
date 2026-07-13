@@ -184,18 +184,23 @@ function normalizeLines(value: unknown): string[] {
 }
 
 /** Records only graph-changing work and queues/pauses strategic review at configured thresholds. */
-async function recordSubstantiveAction(input: { workspaceId: string; projectId: string; actionType: string; targetType?: string; targetId?: string; meaningfulDelta?: boolean; summary?: string }) {
-  return prisma.$transaction(async (tx) => {
+type SubstantiveActionInput = { workspaceId: string; projectId: string; actionType: string; targetType?: string; targetId?: string; meaningfulDelta?: boolean; summary?: string }
+
+async function recordSubstantiveActionInTransaction(tx: Prisma.TransactionClient, input: SubstantiveActionInput) {
     const project = await tx.project.findFirstOrThrow({ where: { workspaceId: input.workspaceId, id: input.projectId } })
     let epoch = await tx.projectEpoch.findFirst({ where: { workspaceId: input.workspaceId, projectId: input.projectId }, orderBy: { number: "desc" } })
     if (!epoch || epoch.strategicReviewCompletedAt) epoch = await tx.projectEpoch.create({ data: { workspaceId: input.workspaceId, projectId: input.projectId, number: (epoch?.number ?? 0) + 1 } })
-    const actionCount = epoch.substantiveActionCount + 1
+    epoch = await tx.projectEpoch.update({ where: { id: epoch.id }, data: { substantiveActionCount: { increment: 1 } } })
+    const actionCount = epoch.substantiveActionCount
     const queue = !epoch.strategicReviewQueuedAt && actionCount >= project.strategicReviewInterval
     const pause = !epoch.downstreamPausedAt && actionCount >= project.strategicReviewHardLimit && !epoch.strategicReviewCompletedAt
-    epoch = await tx.projectEpoch.update({ where: { id: epoch.id }, data: { substantiveActionCount: actionCount, strategicReviewQueuedAt: queue ? new Date() : undefined, downstreamPausedAt: pause ? new Date() : undefined } })
+    if (queue || pause) epoch = await tx.projectEpoch.update({ where: { id: epoch.id }, data: { strategicReviewQueuedAt: queue ? new Date() : undefined, downstreamPausedAt: pause ? new Date() : undefined } })
     await tx.projectSubstantiveAction.create({ data: { workspaceId: input.workspaceId, projectEpochId: epoch.id, actionType: input.actionType, targetType: input.targetType, targetId: input.targetId, meaningfulDelta: input.meaningfulDelta ?? false, summary: input.summary } })
     return epoch
-  })
+}
+
+async function recordSubstantiveAction(input: SubstantiveActionInput) {
+  return prisma.$transaction((tx) => recordSubstantiveActionInTransaction(tx, input), { isolationLevel: "Serializable" })
 }
 
 async function assertProjectAllowsDownstreamWork(workspaceId: string, projectId: string) {
@@ -1410,23 +1415,30 @@ export async function setManuscriptFreeze(input: { workspaceId: string; manuscri
 export async function importExternalReview(input: { workspaceId: string; projectId: string; manuscriptVersionId?: string; theoremOrArtifactRef: string; originalReviewText: string; originalReviewUri?: string; provenance: string; reviewerIdentity?: string; independenceStatement: string; reviewScope: string; verdict: string; issues?: unknown; requiredChanges?: unknown }) {
   const allowed = ["human", "journal_referee", "fresh_external_ai_chat", "internal_maff_agent", "unknown"]
   if (!allowed.includes(input.provenance)) throw new Error(`Invalid external-review provenance: ${input.provenance}`)
-  if (input.manuscriptVersionId) await prisma.manuscriptVersion.findFirstOrThrow({ where: { workspaceId: input.workspaceId, projectId: input.projectId, id: input.manuscriptVersionId } })
-  const imported = await prisma.externalReviewImport.create({ data: { ...input, provenance: input.provenance as any, verdict: asReviewVerdict(input.verdict), issues: jsonArray(input.issues), requiredChanges: jsonArray(input.requiredChanges) } })
-  await recordSubstantiveAction({ workspaceId: input.workspaceId, projectId: input.projectId, actionType: "external_review_imported", targetType: "ExternalReviewImport", targetId: imported.id, summary: input.reviewScope })
-  return imported
+  return prisma.$transaction(async (tx) => {
+    if (input.manuscriptVersionId) await tx.manuscriptVersion.findFirstOrThrow({ where: { workspaceId: input.workspaceId, projectId: input.projectId, id: input.manuscriptVersionId } })
+    const imported = await tx.externalReviewImport.create({ data: { ...input, provenance: input.provenance as any, verdict: asReviewVerdict(input.verdict), issues: jsonArray(input.issues), requiredChanges: jsonArray(input.requiredChanges) } })
+    await recordSubstantiveActionInTransaction(tx, { workspaceId: input.workspaceId, projectId: input.projectId, actionType: "external_review_imported", targetType: "ExternalReviewImport", targetId: imported.id, summary: input.reviewScope })
+    return imported
+  }, { isolationLevel: "Serializable" })
 }
 
 export async function createStrategicReviewRound(input: { workspaceId: string; projectId: string; verdict: string; reviewerIndependence: string; whatChangedMarkdown: string; loopDiagnosisMarkdown: string; blockerStructureMarkdown: string; alternativesMarkdown: string; branchAllocation?: unknown; nextMoves?: unknown; probabilityEstimates?: unknown; metrics?: unknown }) {
   const valid = ["continue", "continue_with_rebase", "split", "pivot", "pause", "terminate"]
   if (!valid.includes(input.verdict)) throw new Error(`Invalid strategic-review verdict: ${input.verdict}`)
   if (!/independent/i.test(input.reviewerIndependence)) throw new Error("StrategicReviewer must declare independence from the current proof work.")
-  if (!Array.isArray(input.nextMoves) || input.nextMoves.length !== 3) throw new Error("A StrategicReviewRound requires exactly three next moves, each with test, information gain, success/kill conditions, and resulting decision.")
-  if (!Array.isArray(input.probabilityEstimates) || input.probabilityEstimates.length < 5) throw new Error("A StrategicReviewRound requires separate range estimates for truth, provability, methods, publishable fallback, and next-epoch progress.")
-  const epoch = await prisma.projectEpoch.findFirst({ where: { workspaceId: input.workspaceId, projectId: input.projectId }, orderBy: { number: "desc" } })
+  if (!Array.isArray(input.nextMoves) || input.nextMoves.length !== 3 || input.nextMoves.some((move) => !move || typeof move !== "object" || ["test", "information_gain", "success_condition", "kill_condition", "decision"].some((key) => typeof (move as Record<string, unknown>)[key] !== "string"))) throw new Error("A StrategicReviewRound requires exactly three structured next moves with test, information_gain, success_condition, kill_condition, and decision.")
+  const requiredDimensions = new Set(["truth", "provable", "methods", "publishable_fallback", "next_epoch_progress"])
+  const estimates = Array.isArray(input.probabilityEstimates) ? input.probabilityEstimates : []
+  if (estimates.some((estimate) => !estimate || typeof estimate !== "object" || typeof (estimate as Record<string, unknown>).dimension !== "string" || typeof (estimate as Record<string, unknown>).range !== "string") || ![...requiredDimensions].every((dimension) => estimates.some((estimate) => (estimate as Record<string, unknown>).dimension === dimension))) throw new Error("A StrategicReviewRound requires structured range estimates for truth, provable, methods, publishable_fallback, and next_epoch_progress.")
   const computedMetrics = await getProjectHealthMetrics(input.workspaceId, input.projectId)
-  const review = await prisma.strategicReviewRound.create({ data: { ...input, verdict: input.verdict as any, projectEpochId: epoch?.id, branchAllocation: jsonArray(input.branchAllocation), nextMoves: jsonArray(input.nextMoves), probabilityEstimates: jsonArray(input.probabilityEstimates), metrics: jsonObject(input.metrics ?? computedMetrics) } })
-  if (epoch) await prisma.projectEpoch.update({ where: { id: epoch.id }, data: { strategicReviewCompletedAt: new Date(), downstreamPausedAt: null } })
-  return review
+  return prisma.$transaction(async (tx) => {
+    await tx.project.findFirstOrThrow({ where: { workspaceId: input.workspaceId, id: input.projectId } })
+    const epoch = await tx.projectEpoch.findFirst({ where: { workspaceId: input.workspaceId, projectId: input.projectId }, orderBy: { number: "desc" } })
+    const review = await tx.strategicReviewRound.create({ data: { ...input, verdict: input.verdict as any, projectEpochId: epoch?.id, branchAllocation: jsonArray(input.branchAllocation), nextMoves: jsonArray(input.nextMoves), probabilityEstimates: jsonArray(input.probabilityEstimates), metrics: jsonObject(input.metrics ?? computedMetrics) } })
+    if (epoch) await tx.projectEpoch.update({ where: { id: epoch.id }, data: { strategicReviewCompletedAt: new Date(), downstreamPausedAt: null } })
+    return review
+  })
 }
 
 export async function createProjectBranch(input: { workspaceId: string; projectId: string; title: string; state?: string; rationaleMarkdown?: string; targetObjectType?: string; targetObjectId?: string }) {

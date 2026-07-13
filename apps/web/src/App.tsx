@@ -1,4 +1,4 @@
-import { useAuth0 } from "@auth0/auth0-react"
+import { useAuth } from "react-oidc-context"
 import { BookOpen, CheckSquare, ClipboardList, GitBranch, Home, LogOut, Network, Settings, Sigma, TerminalSquare } from "lucide-react"
 import { useEffect, useState } from "react"
 import { Dashboard } from "./pages/Dashboard"
@@ -17,7 +17,8 @@ import { ResearchFrontier } from "./pages/ResearchFrontier"
 type Page = "dashboard" | "projects" | "control" | "frontier" | "workstream" | "report" | "agentRun" | "reviews" | "objectGraph" | "skills" | "lean" | "settings"
 
 export function App() {
-  const { isAuthenticated, isLoading, loginWithRedirect, logout, user } = useAuth0()
+  const auth = useAuth()
+  const { isAuthenticated, isLoading, user } = auth
   const [page, setPage] = useState<Page>("dashboard")
   const [workspaceId, setWorkspaceId] = useState<string>("")
   const [projectId, setProjectId] = useState<string>("")
@@ -44,7 +45,7 @@ export function App() {
         <section>
           <h1>Maff</h1>
           <p>Private mathematical research graph, vault, MCP, Quartz, and Lean workbench.</p>
-          <button onClick={() => loginWithRedirect()}>Log in</button>
+          <button onClick={() => auth.signinRedirect()}>Log in</button>
         </section>
       </main>
     )
@@ -72,9 +73,9 @@ export function App() {
             <span>{label}</span>
           </button>
         ))}
-        <button className="logout" onClick={() => logout({ logoutParams: { returnTo: window.location.origin } })} title="Log out">
+        <button className="logout" onClick={() => auth.signoutRedirect()} title="Log out">
           <LogOut size={18} />
-          <span>{user?.email ?? "Log out"}</span>
+          <span>{String(user?.profile.email ?? "Log out")}</span>
         </button>
       </aside>
       <main>

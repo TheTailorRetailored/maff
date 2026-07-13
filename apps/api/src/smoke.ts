@@ -1,10 +1,15 @@
 import assert from "node:assert/strict"
 import path from "node:path"
+import { readFileSync, readdirSync } from "node:fs"
+import { createLocalJWKSet, exportJWK, generateKeyPair, jwtVerify, SignJWT } from "jose"
 import { assertInsideRoot } from "./vault/paths.js"
 import { dumpMarkdown, parseMarkdown } from "./vault/parser.js"
 import { extractWikilinks } from "./vault/wikilinks.js"
-import { emailMatchesRequiredDomain, userEmailUpdateData } from "./auth/auth0.js"
-import { callTool, compactToolResult, contentResult, formatResearchArtifact, mcpServerVersion, mcpToolsListResult, structuredContentForTool, toolDefinitions } from "./mcp/server.js"
+import { emailMatchesRequiredDomain, jwksUriForIssuer, userEmailUpdateData, verifySignedJwt } from "./auth/oidc.js"
+import { restAuthorizationRequirement } from "./auth/authorizationMatrix.js"
+import { productionOidc } from "./config.js"
+import { advertisedScopes, hasBearerAuthorization, hasPermission, rolesForClient, scopes } from "./auth/scopes.js"
+import { callTool, compactToolResult, contentResult, expectedMcpToolCount, formatResearchArtifact, mcpAuthorizationMatrix, mcpServerVersion, mcpToolsListResult, structuredContentForTool, toolDefinitions } from "./mcp/server.js"
 
 const root = path.resolve("tmp-workspace")
 assert.equal(assertInsideRoot(root, path.join(root, "vault", "A.md")), path.resolve(root, "vault", "A.md"))
@@ -31,6 +36,48 @@ assert.equal(emailMatchesRequiredDomain(undefined, "example.com"), false)
 assert.deepEqual(userEmailUpdateData(undefined), {})
 assert.deepEqual(userEmailUpdateData("lachlanjbridges@gmail.com"), { email: "lachlanjbridges@gmail.com", displayName: "lachlanjbridges@gmail.com" })
 assert.equal(emailMatchesRequiredDomain("researcher@notexample.com", "example.com"), false)
+assert.deepEqual(advertisedScopes, ["maff:read", "maff:write", "maff:review", "maff:admin"])
+assert.deepEqual(productionOidc, { issuer: "https://auth.lachlanbridges.com/realms/bridges", audience: "https://maff.lachlanbridges.com/mcp" })
+assert.equal(hasPermission({ scopeText: "maff:read", required: scopes.maffRead }), true)
+assert.equal(hasPermission({ scopeText: "maff:access", required: scopes.maffRead }), false)
+const maffRoles = (roles: string[]) => ({ maff: { roles } })
+assert.deepEqual(rolesForClient({ unrelated: { roles: ["service-admin"] } }, "maff"), [])
+assert.equal(hasBearerAuthorization({ scopeText: "maff:read", resourceAccess: maffRoles([]), roleClientId: "maff", required: scopes.maffRead }), false, "scope without role must fail")
+assert.equal(hasBearerAuthorization({ scopeText: "", resourceAccess: maffRoles(["reader"]), roleClientId: "maff", required: scopes.maffRead }), false, "role without scope must fail")
+assert.equal(hasBearerAuthorization({ scopeText: "maff:read", resourceAccess: { unrelated: { roles: ["reader", "service-admin"] } }, roleClientId: "maff", required: scopes.maffRead }), false, "unrelated client roles must fail")
+assert.equal(hasBearerAuthorization({ scopeText: "maff:admin", resourceAccess: maffRoles(["reader"]), roleClientId: "maff", required: scopes.maffAdmin }), false, "realm or reader roles must not imply administration")
+assert.equal(hasBearerAuthorization({ scopeText: "maff:write", resourceAccess: maffRoles(["contributor"]), roleClientId: "maff", required: scopes.maffReview }), false, "write credentials must not review")
+assert.equal(hasBearerAuthorization({ scopeText: "maff:review", resourceAccess: maffRoles(["reviewer"]), roleClientId: "maff", required: scopes.maffAdmin }), false, "review credentials must not administer")
+assert.equal(hasBearerAuthorization({ scopeText: "maff:review", resourceAccess: maffRoles(["reviewer"]), roleClientId: "maff", required: scopes.maffReview }), true)
+assert.equal(jwksUriForIssuer("https://auth.lachlanbridges.com/realms/bridges").href, "https://auth.lachlanbridges.com/realms/bridges/protocol/openid-connect/certs")
+assert.throws(() => jwksUriForIssuer("https://auth.lachlanbridges.com/realms/bridges/"), /trailing slash/)
+const { privateKey, publicKey } = await generateKeyPair("RS256")
+const validJwt = await new SignJWT({ scope: "maff:read" }).setProtectedHeader({ alg: "RS256", kid: "smoke" }).setSubject("synthetic-user").setIssuer("https://auth.lachlanbridges.com/realms/bridges").setAudience("https://maff.lachlanbridges.com/mcp").setIssuedAt().setExpirationTime("5m").sign(privateKey)
+await verifySignedJwt(validJwt, publicKey, "https://auth.lachlanbridges.com/realms/bridges", "https://maff.lachlanbridges.com/mcp")
+const auth0Jwt = await new SignJWT({ scope: "maff:read maff:write maff:review" }).setProtectedHeader({ alg: "RS256", kid: "smoke" }).setSubject("synthetic-user").setIssuer("https://synthetic-tenant.auth0.test/").setAudience("https://maff.lachlanbridges.com/mcp").setExpirationTime("5m").sign(privateKey)
+await assert.rejects(() => verifySignedJwt(auth0Jwt, publicKey, productionOidc.issuer, productionOidc.audience), /iss.*claim|issuer/, "an Auth0-issued token must fail after direct cutover")
+await assert.rejects(() => verifySignedJwt(validJwt, publicKey, "https://auth.lachlanbridges.com/realms/bridges", "https://wrong.example/mcp"), /aud.*claim|audience/)
+const hsJwt = await new SignJWT({}).setProtectedHeader({ alg: "HS256" }).setSubject("synthetic-user").setIssuer("https://auth.lachlanbridges.com/realms/bridges").setAudience("https://maff.lachlanbridges.com/mcp").setExpirationTime("5m").sign(new TextEncoder().encode("synthetic-test-secret-that-is-not-a-credential"))
+await assert.rejects(() => verifySignedJwt(hsJwt, publicKey, "https://auth.lachlanbridges.com/realms/bridges", "https://maff.lachlanbridges.com/mcp"), /alg.*not allowed|algorithm/)
+const futureJwt = await new SignJWT({}).setProtectedHeader({ alg: "RS256", kid: "smoke" }).setSubject("synthetic-user").setIssuer("https://auth.lachlanbridges.com/realms/bridges").setAudience("https://maff.lachlanbridges.com/mcp").setNotBefore("10m").setExpirationTime("20m").sign(privateKey)
+await assert.rejects(() => verifySignedJwt(futureJwt, publicKey, "https://auth.lachlanbridges.com/realms/bridges", "https://maff.lachlanbridges.com/mcp"), /nbf.*claim|not active/)
+const publicJwk = { ...(await exportJWK(publicKey)), kid: "smoke", alg: "RS256", use: "sig" }
+const unknownKidJwt = await new SignJWT({}).setProtectedHeader({ alg: "RS256", kid: "unknown" }).setSubject("synthetic-user").setIssuer("https://auth.lachlanbridges.com/realms/bridges").setAudience("https://maff.lachlanbridges.com/mcp").setExpirationTime("5m").sign(privateKey)
+await assert.rejects(() => jwtVerify(unknownKidJwt, createLocalJWKSet({ keys: [publicJwk] }), { algorithms: ["RS256"] }), /no applicable key|JWKS/)
+assert.equal(restAuthorizationRequirement("GET", "/workspaces/w/projects").scope, scopes.maffRead)
+assert.equal(restAuthorizationRequirement("POST", "/workspaces/w/projects").scope, scopes.maffWrite)
+assert.equal(restAuthorizationRequirement("POST", "/workspaces/w/projects/p/external-reviews").scope, scopes.maffReview)
+assert.equal(restAuthorizationRequirement("POST", "/workspaces/w/projects/p/manuscripts").scope, scopes.maffWrite)
+const restRouteEntries = readdirSync("src/rest").filter((name) => name.endsWith(".ts")).flatMap((name) => {
+  const source = readFileSync(path.join("src/rest", name), "utf8")
+  return [...source.matchAll(/router\.(get|post|put|patch|delete)\("([^"]+)"/g)].map((match) => ({ method: match[1], path: match[2] }))
+})
+assert.equal(restRouteEntries.length, 81, "authenticated REST registry changed; review the authorization matrix intentionally")
+for (const route of restRouteEntries) {
+  const requirement = restAuthorizationRequirement(route.method, route.path)
+  assert.ok(advertisedScopes.includes(requirement.scope as typeof advertisedScopes[number]), `unmapped REST scope for ${route.method} ${route.path}`)
+  assert.ok(requirement.clientRoles.length > 0, `missing Maff client roles for ${route.method} ${route.path}`)
+}
 
 for (const name of [
   "create_project",
@@ -57,6 +104,20 @@ for (const name of [
   if (name === "tools/list") continue
   assert.ok(toolDefinitions.some((tool) => tool.name === name), `missing MCP tool ${name}`)
 }
+
+for (const name of ["create_manuscript_version", "create_proof_obligation", "get_integration_coverage", "compute_submission_readiness", "promote_manuscript_version", "set_manuscript_freeze", "import_external_review", "create_strategic_review", "get_project_health", "create_project_branch"]) {
+  assert.ok(toolDefinitions.some((tool) => tool.name === name), `missing modern MCP tool ${name}`)
+}
+assert.equal(toolDefinitions.length, expectedMcpToolCount, "MCP registry count changed; update the reviewed snapshot intentionally")
+assert.equal(mcpAuthorizationMatrix().length, expectedMcpToolCount)
+await assert.rejects(
+  () => callTool("create_project", { workspace_id: "synthetic-workspace", title: "Denied", statement: "Denied" }, { userId: "synthetic-user", claimsScope: scopes.maffRead, resourceAccess: maffRoles(["reader"]) }),
+  /Missing required scope maff:write/
+)
+await assert.rejects(
+  () => callTool("record_review_round", { workspace_id: "synthetic-workspace" }, { userId: "synthetic-user", claimsScope: `${scopes.maffRead} ${scopes.maffWrite}`, resourceAccess: maffRoles(["contributor"]) }),
+  /Missing required scope maff:review/
+)
 
 const createClaim = toolDefinitions.find((tool) => tool.name === "create_claim")
 assert.ok(createClaim, "missing MCP tool create_claim")
@@ -124,11 +185,11 @@ const fullArtifact = formatResearchArtifact({
   updatedAt: new Date("2026-07-11T01:00:00.000Z")
 })
 assert.equal(fullArtifact.content_markdown, fullArtifactContent)
-assert.equal(fullArtifact.content_hash, "f600297af1edcced95844657d28bc98cf4cf972bf73ead8f83f554f4b6cd26c5")
+assert.equal(fullArtifact.content_hash, "f600297af1edcced95844657d28bc98cf4cf972bf73ead8f83f554f4b6cd26c5") // pragma: allowlist secret -- deterministic SHA-256 fixture
 assert.equal("content_preview" in fullArtifact, false)
 await assert.rejects(
-  () => callTool("get_research_artifact", { workspace_id: "workspace-1", artifact_id: "artifact-1" }, { userId: "test-user", claimsScope: "", permissions: [] }),
-  (error: any) => error.status === 403 && error.message === "Missing required scope maff:access"
+  () => callTool("get_research_artifact", { workspace_id: "workspace-1", artifact_id: "artifact-1" }, { userId: "test-user", claimsScope: "" }),
+  (error: any) => error.status === 403 && error.message === "Missing required scope maff:read"
 )
 
 assert.deepEqual(structuredContentForTool("list_research_deltas", [{ id: "delta-1" }]), { deltas: [{ id: "delta-1" }] })

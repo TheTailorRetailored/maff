@@ -102,6 +102,16 @@ export function ProjectControlRoom({ workspaceId, setWorkspaceId, projectId, onO
               {room.recent_reviews.map((review) => <div className="task-card" key={review.id}><span>{review.scoped_status ?? `${review.verdict}: ${review.reviewType}`}</span><small>exact target {review.targetVersion ?? "legacy/unspecified"}</small></div>)}
             </div>
           </section>
+          <section className="panel">
+            <h2>Strategic health</h2>
+            <p>{room.project_health?.circuit_breakers.downstream_paused ? "Downstream specialist work is paused pending strategic review." : room.project_health?.circuit_breakers.strategic_review_queued ? "Strategic review is queued." : "No strategic circuit breaker is active."}</p>
+            <div className="frontier-metrics">
+              <span>{room.project_health?.epoch?.number ?? 0}<small>epoch</small></span>
+              <span>{room.project_health?.epoch?.substantiveActionCount ?? 0}<small>actions</small></span>
+              <span>{room.project_health?.metrics.review_debt ?? 0}<small>review debt</small></span>
+            </div>
+            <div className="stack">{room.project_health?.branches.map((branch) => <div className="task-card" key={branch.id}><strong>{branch.title}</strong><StatusBadge status={branch.state} /></div>)}</div>
+          </section>
           <div className="grid two">
             <section>
               <h2>Goals</h2>
