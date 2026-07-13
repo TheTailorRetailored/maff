@@ -85,7 +85,7 @@ const tool = (name: string, description: string, role: WorkspaceRole, inputSchem
   annotations: { readOnlyHint: readOnlyToolNames.has(name), openWorldHint: false, destructiveHint: false, idempotentHint: idempotentToolNames.has(name) },
   meta
 })
-export const mcpServerVersion = "0.6.3-cache-busted-mcp"
+export const mcpServerVersion = "0.6.2-artifact-upload-return"
 export const expectedMcpToolCount = 99
 
 export const toolDefinitions: ToolDef[] = [

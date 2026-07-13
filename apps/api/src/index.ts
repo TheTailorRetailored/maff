@@ -36,10 +36,8 @@ function checkStartupConfig() {
 app.get("/healthz", (_req, res) => res.json({ ok: true, name: "Maff", mcpServerVersion }))
 app.get("/.well-known/oauth-protected-resource", (_req, res) => res.json(oauthProtectedResource()))
 app.get("/.well-known/oauth-protected-resource/mcp", (_req, res) => res.json(oauthProtectedResource()))
-app.get("/.well-known/oauth-protected-resource/mcp-0-6-3", (_req, res) => res.json(oauthProtectedResource()))
 app.use("/api", apiRouter())
 app.post("/mcp", requireAuth(), mcpHandler)
-app.post("/mcp-0-6-3", requireAuth(), mcpHandler)
 app.get("/sites/:workspaceSlug/*", requireAuth(), asyncHandler(serveQuartzSite))
 
 app.use((err: Error & { status?: number }, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
