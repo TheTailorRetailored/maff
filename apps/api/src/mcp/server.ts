@@ -19,6 +19,12 @@ const s = { type: "string" } as const
 const n = { type: "number" } as const
 const anyObj = { type: "object", additionalProperties: true } as const
 const strArray = { type: "array", items: s } as const
+const connectorFileSchema = objectSchema({
+  download_url: { type: "string", format: "uri" },
+  file_id: s,
+  mime_type: s,
+  file_name: s
+}, ["download_url", "file_id"])
 const objectOutputSchema: JsonSchema = { type: "object", additionalProperties: true }
 const searchKeys = ["claims", "routes", "gaps", "papers", "known_results", "research_deltas", "research_artifacts", "mechanisms", "spinout_candidates", "assumption_regimes", "theorem_contracts", "frontier_snapshots"]
 const searchOutputSchema: JsonSchema = objectSchema(Object.fromEntries(searchKeys.map((key) => [key, { type: "array", items: objectOutputSchema }])), searchKeys)
@@ -68,17 +74,18 @@ const reviewVerdict = {
   ]
 } as const
 
-type ToolDef = { name: string; description: string; scope: string; role: WorkspaceRole; inputSchema: JsonSchema; outputSchema: JsonSchema; annotations: JsonSchema }
-const tool = (name: string, description: string, role: WorkspaceRole, inputSchema: JsonSchema, scope: string = role === "viewer" ? scopes.maffRead : role === "admin" ? scopes.maffAdmin : scopes.maffWrite): ToolDef => ({
+type ToolDef = { name: string; description: string; scope: string; role: WorkspaceRole; inputSchema: JsonSchema; outputSchema: JsonSchema; annotations: JsonSchema; meta?: JsonSchema }
+const tool = (name: string, description: string, role: WorkspaceRole, inputSchema: JsonSchema, scope: string = role === "viewer" ? scopes.maffRead : role === "admin" ? scopes.maffAdmin : scopes.maffWrite, meta?: JsonSchema): ToolDef => ({
   name,
   description,
   scope,
   role,
   inputSchema,
   outputSchema: outputSchemaFor(name),
-  annotations: { readOnlyHint: readOnlyToolNames.has(name), openWorldHint: false, destructiveHint: false, idempotentHint: idempotentToolNames.has(name) }
+  annotations: { readOnlyHint: readOnlyToolNames.has(name), openWorldHint: false, destructiveHint: false, idempotentHint: idempotentToolNames.has(name) },
+  meta
 })
-export const mcpServerVersion = "0.6.0-durable-artifacts"
+export const mcpServerVersion = "0.6.1-artifact-upload"
 export const expectedMcpToolCount = 99
 
 export const toolDefinitions: ToolDef[] = [
@@ -135,8 +142,8 @@ export const toolDefinitions: ToolDef[] = [
   tool("link_objects", "Create a typed GraphEdge between mathematical or coordination objects.", "editor", objectSchema({ workspace_id: s, project_id: s, source_type: s, source_id: s, target_type: s, target_id: s, edge_type: s, metadata: anyObj }, ["workspace_id", "source_type", "source_id", "target_type", "target_id", "edge_type"])),
   tool("get_object_graph", "Read the typed mathematical object graph.", "viewer", objectSchema({ workspace_id: s, project_id: s, source_type: s, source_id: s }, ["workspace_id"])),
   tool("search_research_objects", "Search typed Maff research objects.", "viewer", objectSchema({ workspace_id: s, project_id: s, query: s, type: s }, ["workspace_id"])),
-  tool("create_artifact", "Register an external durable URI, or ingest path bytes into immutable Maff storage. Caller-supplied hashes never establish durability.", "editor", objectSchema({ workspace_id: s, project_id: s, workstream_id: s, research_artifact_id: s, kind: s, title: s, uri: s, path: s, mime_type: s, metadata: anyObj, created_by_agent_run_id: s }, ["workspace_id", "project_id", "title"])),
-  tool("create_artifact_from_path", "Ingest a local file into immutable Maff-controlled storage. The path is provenance only; Maff computes SHA-256 and byte size from copied bytes.", "editor", objectSchema({ workspace_id: s, project_id: s, workstream_id: s, research_artifact_id: s, path: s, title: s, kind: s, mime_type: s, metadata: anyObj, created_by_agent_run_id: s }, ["workspace_id", "project_id", "path", "title"])),
+  tool("create_artifact", "Upload a connector file into immutable Maff storage, or register an external durable URI. For ChatGPT-generated /mnt/data outputs, pass the file parameter; Maff downloads the bytes, recomputes SHA-256, compares expected_sha256 when supplied, and returns a durable Artifact ID.", "editor", objectSchema({ workspace_id: s, project_id: s, workstream_id: s, research_artifact_id: s, kind: s, title: s, uri: s, file: connectorFileSchema, expected_sha256: s, mime_type: s, metadata: anyObj, created_by_agent_run_id: s }, ["workspace_id", "project_id", "title"]), undefined, { "openai/fileParams": ["file"] }),
+  tool("create_artifact_from_path", "Trusted server-side ingestion only: ingest a file that already exists on the Maff server under configured ingestion roots. ChatGPT clients must use create_artifact with file instead of passing /mnt/data paths.", "editor", objectSchema({ workspace_id: s, project_id: s, workstream_id: s, research_artifact_id: s, server_path: s, path: s, title: s, kind: s, expected_sha256: s, mime_type: s, metadata: anyObj, created_by_agent_run_id: s }, ["workspace_id", "project_id", "server_path", "title"])),
   tool("get_artifact", "Fetch immutable physical Artifact metadata and direct ResearchArtifact/ManuscriptVersion links.", "viewer", objectSchema({ workspace_id: s, artifact_id: s }, ["workspace_id", "artifact_id"])),
   tool("download_artifact", "Return an authorised connector-style file reference for streaming exact Artifact bytes; bytes are never embedded as JSON/base64.", "viewer", objectSchema({ workspace_id: s, artifact_id: s }, ["workspace_id", "artifact_id"])),
   tool("list_artifacts", "List physical Artifacts by project, workstream, ResearchArtifact, or ManuscriptVersion.", "viewer", objectSchema({ workspace_id: s, project_id: s, workstream_id: s, research_artifact_id: s, manuscript_version_id: s }, ["workspace_id"])),
@@ -269,8 +276,12 @@ export async function callTool(toolName: string, args: any, ctx: ToolContext) {
     case "link_objects": return runtime.linkObjects({ workspaceId, projectId: args.project_id, sourceType: args.source_type, sourceId: args.source_id, targetType: args.target_type, targetId: args.target_id, edgeType: args.edge_type, metadata: args.metadata })
     case "get_object_graph": return runtime.getObjectGraph({ workspaceId, projectId: args.project_id, sourceType: args.source_type, sourceId: args.source_id })
     case "search_research_objects": return runtime.searchResearchObjects({ workspaceId, projectId: args.project_id, query: args.query, type: args.type })
-    case "create_artifact": return runtime.createArtifact({ workspaceId, projectId: args.project_id, workstreamId: args.workstream_id, researchArtifactId: args.research_artifact_id, kind: args.kind, title: args.title, uri: args.uri, path: args.path, mimeType: args.mime_type, metadata: args.metadata, createdByAgentRunId: args.created_by_agent_run_id })
-    case "create_artifact_from_path": return runtime.createArtifactFromPath({ workspaceId, projectId: args.project_id, workstreamId: args.workstream_id, researchArtifactId: args.research_artifact_id, path: args.path, title: args.title, kind: args.kind, mimeType: args.mime_type, metadata: args.metadata, createdByAgentRunId: args.created_by_agent_run_id })
+    case "create_artifact": return runtime.createArtifact({ workspaceId, projectId: args.project_id, workstreamId: args.workstream_id, researchArtifactId: args.research_artifact_id, kind: args.kind, title: args.title, uri: args.uri, file: args.file, expectedSha256: args.expected_sha256, mimeType: args.mime_type, metadata: args.metadata, createdByAgentRunId: args.created_by_agent_run_id })
+    case "create_artifact_from_path": {
+      const serverPath = args.server_path ?? args.path
+      if (!serverPath) throw Object.assign(new Error("create_artifact_from_path requires server_path. ChatGPT-generated files must be uploaded with create_artifact file, not passed as /mnt/data path strings."), { status: 400 })
+      return runtime.createArtifactFromPath({ workspaceId, projectId: args.project_id, workstreamId: args.workstream_id, researchArtifactId: args.research_artifact_id, path: serverPath, title: args.title, kind: args.kind, expectedSha256: args.expected_sha256, mimeType: args.mime_type, metadata: args.metadata, createdByAgentRunId: args.created_by_agent_run_id })
+    }
     case "get_artifact": return runtime.getArtifact(workspaceId, args.artifact_id)
     case "download_artifact": return runtime.downloadArtifactReference(workspaceId, args.artifact_id)
     case "list_artifacts": return runtime.listArtifacts({ workspaceId, projectId: args.project_id, workstreamId: args.workstream_id, researchArtifactId: args.research_artifact_id, manuscriptVersionId: args.manuscript_version_id })
@@ -830,6 +841,7 @@ function resourceResult(uri: string, value: unknown) {
 
 function toolForList(definition: ToolDef) {
   const securitySchemes = [{ type: "oauth2", scopes: [definition.scope] }]
+  const meta = { securitySchemes, ...(definition.meta ?? {}) }
   return {
     name: definition.name,
     description: definition.description,
@@ -838,7 +850,7 @@ function toolForList(definition: ToolDef) {
     outputSchema: definition.outputSchema,
     annotations: definition.annotations,
     securitySchemes,
-    _meta: { securitySchemes }
+    _meta: meta
   }
 }
 

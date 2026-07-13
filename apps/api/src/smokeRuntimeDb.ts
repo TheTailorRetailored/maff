@@ -179,7 +179,34 @@ zip.end()
 await pipeline(zip.outputStream, createWriteStream(zipPath))
 const originalBytes = await readFile(zipPath)
 const originalHash = createHash("sha256").update(originalBytes).digest("hex")
-const durableArtifact = await runtime.createArtifactFromPath({ workspaceId: workspace.id, projectId: project.id, workstreamId: physicalWorkstream.id, researchArtifactId: physicalReport.id, path: zipPath, title: "Exact manuscript bundle", kind: "other", mimeType: "application/zip", metadata: { required_files: ["main.tex", "main.pdf", "references.bib"] } })
+const oldFetch = globalThis.fetch
+let durableArtifact: any
+try {
+  globalThis.fetch = async () => new Response(originalBytes, { status: 200, headers: { "content-type": "application/zip" } })
+  durableArtifact = await callTool("create_artifact", {
+    workspace_id: workspace.id,
+    project_id: project.id,
+    workstream_id: physicalWorkstream.id,
+    research_artifact_id: physicalReport.id,
+    title: "Exact manuscript bundle",
+    kind: "other",
+    file: { download_url: "https://files.example.test/mmrw/exact-bundle.zip", file_id: `exact-bundle-${suffix}`, mime_type: "application/zip", file_name: "exact-bundle.zip" },
+    expected_sha256: originalHash,
+    metadata: { required_files: ["main.tex", "main.pdf", "references.bib"] }
+  }, { userId: user.id, claimsScope: "maff:write", resourceAccess: { maff: { roles: ["editor"] } }, sub: `upload-agent-${suffix}` }) as any
+  const beforeMismatchCount = await prisma.artifact.count({ where: { workspaceId: workspace.id } })
+  await assert.rejects(() => callTool("create_artifact", {
+    workspace_id: workspace.id,
+    project_id: project.id,
+    workstream_id: physicalWorkstream.id,
+    title: "Bad expected hash bundle",
+    file: { download_url: "https://files.example.test/mmrw/exact-bundle.zip", file_id: `bad-hash-${suffix}`, mime_type: "application/zip", file_name: "exact-bundle.zip" },
+    expected_sha256: "0".repeat(64)
+  }, { userId: user.id, claimsScope: "maff:write", resourceAccess: { maff: { roles: ["editor"] } }, sub: `upload-agent-${suffix}` }), /hash mismatch/i)
+  assert.equal(await prisma.artifact.count({ where: { workspaceId: workspace.id } }), beforeMismatchCount)
+} finally {
+  globalThis.fetch = oldFetch
+}
 assert.equal(durableArtifact.sha256, originalHash)
 assert.equal(durableArtifact.byteSize, originalBytes.length)
 await runtime.attachArtifactToManuscriptVersion({ workspaceId: workspace.id, artifactId: durableArtifact.id, manuscriptVersionId: manuscriptVersion.id, role: "source_bundle" })

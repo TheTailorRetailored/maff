@@ -3,7 +3,7 @@ import { createReadStream, createWriteStream } from "node:fs"
 import { mkdir, rename, rm, stat } from "node:fs/promises"
 import path from "node:path"
 import { pipeline } from "node:stream/promises"
-import { Transform, type Readable } from "node:stream"
+import { Readable, Transform } from "node:stream"
 import yauzl, { type Entry, type ZipFile } from "yauzl"
 import { config } from "../config.js"
 
@@ -26,12 +26,7 @@ export function storagePath(storageKey: string) {
   return resolved
 }
 
-export async function ingestFile(sourcePath: string, workspaceId: string) {
-  const source = path.resolve(sourcePath)
-  const allowed = config.artifactIngestRoots.some((allowedRoot) => source === allowedRoot || source.startsWith(`${allowedRoot}${path.sep}`))
-  if (!allowed) throw Object.assign(new Error(`Artifact source path is outside configured ingestion roots: ${sourcePath}`), { status: 400 })
-  const sourceStat = await stat(source).catch(() => null)
-  if (!sourceStat?.isFile()) throw Object.assign(new Error(`Artifact source file does not exist or is not a regular file: ${sourcePath}`), { status: 400 })
+async function ingestStream(source: Readable, workspaceId: string, originalFilename: string) {
   const temporaryDir = path.join(root(), ".incoming")
   await mkdir(temporaryDir, { recursive: true })
   const temporaryPath = path.join(temporaryDir, randomUUID())
@@ -45,7 +40,7 @@ export async function ingestFile(sourcePath: string, workspaceId: string) {
     }
   })
   try {
-    await pipeline(createReadStream(source), meter, createWriteStream(temporaryPath, { flags: "wx", mode: 0o600 }))
+    await pipeline(source, meter, createWriteStream(temporaryPath, { flags: "wx", mode: 0o600 }))
     const sha256 = hash.digest("hex")
     const storageKey = path.posix.join(workspaceId, sha256.slice(0, 2), sha256)
     const destination = storagePath(storageKey)
@@ -56,11 +51,33 @@ export async function ingestFile(sourcePath: string, workspaceId: string) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error
       await rm(temporaryPath, { force: true })
     }
-    return { storageKey, sha256, byteSize, originalFilename: path.basename(source) }
+    return { storageKey, sha256, byteSize, originalFilename }
   } catch (error) {
     await rm(temporaryPath, { force: true }).catch(() => undefined)
     throw error
   }
+}
+
+export async function ingestFile(sourcePath: string, workspaceId: string) {
+  const source = path.resolve(sourcePath)
+  const allowed = config.artifactIngestRoots.some((allowedRoot) => source === allowedRoot || source.startsWith(`${allowedRoot}${path.sep}`))
+  if (!allowed) throw Object.assign(new Error(`Artifact source path is outside configured ingestion roots: ${sourcePath}`), { status: 400 })
+  const sourceStat = await stat(source).catch(() => null)
+  if (!sourceStat?.isFile()) {
+    const guidance = sourcePath.startsWith("/mnt/data/") ? " This is usually a ChatGPT container path; upload it with create_artifact file instead of create_artifact_from_path server_path." : ""
+    throw Object.assign(new Error(`Artifact source file does not exist or is not a regular file: ${sourcePath}.${guidance}`), { status: 400 })
+  }
+  return ingestStream(createReadStream(source), workspaceId, path.basename(source))
+}
+
+export async function ingestRemoteFile(input: { downloadUrl: string; filename: string; workspaceId: string; fetchImpl?: typeof fetch }) {
+  const parsed = new URL(input.downloadUrl)
+  if (parsed.protocol !== "https:") throw Object.assign(new Error("Connector artifact file download_url must use https."), { status: 400 })
+  const fetchImpl = input.fetchImpl ?? fetch
+  const response = await fetchImpl(parsed)
+  if (!response.ok || !response.body) throw Object.assign(new Error(`Failed to download connector artifact file (${response.status}).`), { status: 400 })
+  const body = Readable.fromWeb(response.body as any)
+  return ingestStream(body, input.workspaceId, path.basename(input.filename))
 }
 
 export async function verifyStoredFile(storageKey: string, expectedSha256: string, expectedSize: bigint | number | null) {

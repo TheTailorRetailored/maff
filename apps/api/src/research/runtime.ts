@@ -7,7 +7,7 @@ import { config } from "../config.js"
 import { leanClient } from "../lean/leanClient.js"
 import { requireWorkspaceRole } from "../auth/permissions.js"
 import { computeSubmissionReadiness, workstreamDependenciesSatisfied } from "./readiness.js"
-import { inferMimeType, ingestFile, listZipEntries, storagePath, verifyStoredFile } from "../artifacts/storage.js"
+import { inferMimeType, ingestFile, ingestRemoteFile, listZipEntries, storagePath, verifyStoredFile } from "../artifacts/storage.js"
 
 const roleRecipeFiles: Record<AgentRole, string> = {
   ProjectCoordinator: "project_coordinator.md",
@@ -1150,30 +1150,57 @@ export async function searchResearchObjects(input: { workspaceId: string; projec
   return { claims, routes, gaps, papers, known_results: knownResults, research_deltas: researchDeltas, research_artifacts: researchArtifacts, mechanisms, spinout_candidates: spinoutCandidates, assumption_regimes: assumptionRegimes, theorem_contracts: theoremContracts, frontier_snapshots: frontierSnapshots }
 }
 
-export async function createArtifact(input: { workspaceId: string; projectId: string; workstreamId?: string; kind?: string; title: string; uri?: string; path?: string; contentHash?: string; metadata?: unknown; createdByAgentRunId?: string; researchArtifactId?: string; mimeType?: string }) {
-  if (input.path) return createArtifactFromPath({ ...input, path: input.path })
-  if (!input.uri) throw new Error("create_artifact requires path ingestion for physical files. URI-only records are allowed only for external durable references.")
-  await prisma.project.findFirstOrThrow({ where: { workspaceId: input.workspaceId, id: input.projectId } })
-  if (input.workstreamId) await prisma.workstream.findFirstOrThrow({ where: { workspaceId: input.workspaceId, projectId: input.projectId, id: input.workstreamId } })
-  if (input.researchArtifactId) await prisma.researchArtifact.findFirstOrThrow({ where: { workspaceId: input.workspaceId, projectId: input.projectId, id: input.researchArtifactId } })
-  return artifactView(await prisma.artifact.create({ data: { workspaceId: input.workspaceId, projectId: input.projectId, workstreamId: input.workstreamId, kind: input.kind as any ?? "external_reference", title: input.title, uri: input.uri, path: null, contentHash: input.contentHash, metadata: jsonObject(input.metadata), researchArtifactId: input.researchArtifactId, createdByAgentRunId: input.createdByAgentRunId } }))
+type ConnectorArtifactFile = {
+  download_url?: string
+  downloadUrl?: string
+  file_id?: string
+  fileId?: string
+  mime_type?: string
+  mimeType?: string
+  file_name?: string
+  fileName?: string
 }
 
-export async function createArtifactFromPath(input: { workspaceId: string; projectId: string; workstreamId?: string; kind?: string; title: string; path: string; metadata?: unknown; createdByAgentRunId?: string; researchArtifactId?: string; mimeType?: string }) {
+function expectedHash(input: { expectedSha256?: string; contentHash?: string }) {
+  const value = (input.expectedSha256 ?? input.contentHash)?.trim().toLowerCase()
+  if (!value) return undefined
+  if (!/^[a-f0-9]{64}$/.test(value)) throw Object.assign(new Error("expected_sha256 must be a lowercase or uppercase SHA-256 hex digest."), { status: 400 })
+  return value
+}
+
+function assertExpectedHash(expectedSha256: string | undefined, actualSha256: string) {
+  if (expectedSha256 && expectedSha256 !== actualSha256) {
+    throw Object.assign(new Error(`Artifact hash mismatch: expected ${expectedSha256}, got ${actualSha256}. No available Artifact record was created.`), { status: 400, code: "artifact_hash_mismatch" })
+  }
+}
+
+function connectorFileDetails(file: ConnectorArtifactFile) {
+  const downloadUrl = file.download_url ?? file.downloadUrl
+  const fileId = file.file_id ?? file.fileId
+  if (!downloadUrl || !fileId) throw Object.assign(new Error("create_artifact file upload requires a connector file with download_url and file_id."), { status: 400 })
+  const suppliedMimeType = file.mime_type ?? file.mimeType
+  const filename = path.basename(file.file_name ?? file.fileName ?? fileId)
+  return { downloadUrl, fileId, suppliedMimeType, filename }
+}
+
+async function assertArtifactScope(input: { workspaceId: string; projectId: string; workstreamId?: string; createdByAgentRunId?: string; researchArtifactId?: string }) {
   await prisma.project.findFirstOrThrow({ where: { workspaceId: input.workspaceId, id: input.projectId } })
   if (input.workstreamId) await prisma.workstream.findFirstOrThrow({ where: { workspaceId: input.workspaceId, projectId: input.projectId, id: input.workstreamId } })
   if (input.createdByAgentRunId) await prisma.agentRun.findFirstOrThrow({ where: { workspaceId: input.workspaceId, projectId: input.projectId, id: input.createdByAgentRunId, workstreamId: input.workstreamId } })
   if (input.researchArtifactId) await prisma.researchArtifact.findFirstOrThrow({ where: { workspaceId: input.workspaceId, projectId: input.projectId, id: input.researchArtifactId } })
-  const ingested = await ingestFile(input.path, input.workspaceId)
-  const mimeType = inferMimeType(ingested.originalFilename, input.mimeType)
+}
+
+async function createArtifactRecord(input: { workspaceId: string; projectId: string; workstreamId?: string; researchArtifactId?: string; createdByAgentRunId?: string; kind?: string; title: string; mimeType?: string; metadata?: unknown; sourcePath?: string | null; sourceType: string; sourceFileId?: string; expectedSha256?: string; ingested: Awaited<ReturnType<typeof ingestFile>> }) {
+  const mimeType = inferMimeType(input.ingested.originalFilename, input.mimeType)
+  const metadata = { ...(jsonObject(input.metadata) as Prisma.InputJsonObject), source_type: input.sourceType, client_expected_sha256: input.expectedSha256 ?? null, connector_file_id: input.sourceFileId ?? null }
   const artifact = await prisma.$transaction(async (tx) => {
     const created = await tx.artifact.create({
       data: {
         workspaceId: input.workspaceId, projectId: input.projectId, workstreamId: input.workstreamId,
         kind: input.kind as any ?? (mimeType === "application/pdf" ? "pdf" : "other"), title: input.title,
-        originalFilename: ingested.originalFilename, mimeType, byteSize: BigInt(ingested.byteSize), sha256: ingested.sha256,
-        storageKey: ingested.storageKey, storageStatus: "available", uri: `maff-artifact://${input.workspaceId}/${ingested.sha256}`,
-        path: input.path, contentHash: ingested.sha256, metadata: jsonObject(input.metadata), researchArtifactId: input.researchArtifactId,
+        originalFilename: input.ingested.originalFilename, mimeType, byteSize: BigInt(input.ingested.byteSize), sha256: input.ingested.sha256,
+        storageKey: input.ingested.storageKey, storageStatus: "available", uri: `maff-artifact://${input.workspaceId}/${input.ingested.sha256}`,
+        path: input.sourcePath, contentHash: input.ingested.sha256, metadata, researchArtifactId: input.researchArtifactId,
         createdByAgentRunId: input.createdByAgentRunId
       }
     })
@@ -1181,6 +1208,31 @@ export async function createArtifactFromPath(input: { workspaceId: string; proje
     return created
   })
   return artifactView(artifact)
+}
+
+export async function createArtifact(input: { workspaceId: string; projectId: string; workstreamId?: string; kind?: string; title: string; uri?: string; path?: string; file?: ConnectorArtifactFile; contentHash?: string; expectedSha256?: string; metadata?: unknown; createdByAgentRunId?: string; researchArtifactId?: string; mimeType?: string }) {
+  if (input.file) return createArtifactFromFile({ ...input, file: input.file })
+  if (input.path) return createArtifactFromPath({ ...input, path: input.path })
+  if (!input.uri) throw new Error("create_artifact requires path ingestion for physical files. URI-only records are allowed only for external durable references.")
+  await assertArtifactScope(input)
+  return artifactView(await prisma.artifact.create({ data: { workspaceId: input.workspaceId, projectId: input.projectId, workstreamId: input.workstreamId, kind: input.kind as any ?? "external_reference", title: input.title, uri: input.uri, path: null, contentHash: input.contentHash, metadata: jsonObject(input.metadata), researchArtifactId: input.researchArtifactId, createdByAgentRunId: input.createdByAgentRunId } }))
+}
+
+export async function createArtifactFromPath(input: { workspaceId: string; projectId: string; workstreamId?: string; kind?: string; title: string; path: string; metadata?: unknown; createdByAgentRunId?: string; researchArtifactId?: string; mimeType?: string; expectedSha256?: string; contentHash?: string }) {
+  await assertArtifactScope(input)
+  const expectedSha256 = expectedHash(input)
+  const ingested = await ingestFile(input.path, input.workspaceId)
+  assertExpectedHash(expectedSha256, ingested.sha256)
+  return createArtifactRecord({ ...input, sourcePath: input.path, sourceType: "server_path", expectedSha256, ingested })
+}
+
+export async function createArtifactFromFile(input: { workspaceId: string; projectId: string; workstreamId?: string; kind?: string; title: string; file: ConnectorArtifactFile; metadata?: unknown; createdByAgentRunId?: string; researchArtifactId?: string; mimeType?: string; expectedSha256?: string; contentHash?: string }) {
+  await assertArtifactScope(input)
+  const expectedSha256 = expectedHash(input)
+  const file = connectorFileDetails(input.file)
+  const ingested = await ingestRemoteFile({ downloadUrl: file.downloadUrl, filename: file.filename, workspaceId: input.workspaceId })
+  assertExpectedHash(expectedSha256, ingested.sha256)
+  return createArtifactRecord({ ...input, sourcePath: null, sourceType: "connector_file", sourceFileId: file.fileId, mimeType: input.mimeType ?? file.suppliedMimeType, expectedSha256, ingested })
 }
 
 export async function getArtifact(workspaceId: string, artifactId: string) {
@@ -1527,7 +1579,7 @@ export async function getResearchArtifactBundle(workspaceId: string, ids: unknow
 
 export async function createResearchArtifact(input: FrontierWriteInput) {
   const hasFilePath = Boolean(input.filePath)
-  return prisma.researchArtifact.create({ data: { workspaceId: input.workspaceId, projectId: input.projectId, title: input.title, slug: input.slug ? slugify(input.slug) : uniqueSlug(input.title), kind: input.kind ?? "other", status: input.status ?? "draft", descriptionMarkdown: input.descriptionMarkdown, contentMarkdown: input.contentMarkdown, filePath: input.filePath, fileStatus: hasFilePath ? "provenance_only" : "not_applicable", fileDiagnostic: hasFilePath ? "Local file paths are provenance only. Use create_artifact_from_path to ingest bytes before claiming a physical artifact is registered." : undefined, url: input.url, createdByUserId: input.createdByUserId } })
+  return prisma.researchArtifact.create({ data: { workspaceId: input.workspaceId, projectId: input.projectId, title: input.title, slug: input.slug ? slugify(input.slug) : uniqueSlug(input.title), kind: input.kind ?? "other", status: input.status ?? "draft", descriptionMarkdown: input.descriptionMarkdown, contentMarkdown: input.contentMarkdown, filePath: input.filePath, fileStatus: hasFilePath ? "provenance_only" : "not_applicable", fileDiagnostic: hasFilePath ? "Local file paths are provenance only. ChatGPT clients must use create_artifact with file; trusted server jobs may use create_artifact_from_path server_path. Ingest bytes before claiming a physical artifact is registered." : undefined, url: input.url, createdByUserId: input.createdByUserId } })
 }
 
 function fingerprint(value: string) { return createHash("sha256").update(value).digest("hex") }
@@ -1691,7 +1743,7 @@ export async function updateResearchArtifact(input: { workspaceId: string; id: s
   const data = cleanPatch(input.patch, ["title", "kind", "status", "descriptionMarkdown", "contentMarkdown", "filePath", "url"]) as Record<string, unknown>
   if (input.patch.filePath !== undefined && input.patch.filePath !== before.filePath) {
     data.fileStatus = input.patch.filePath ? "provenance_only" : "not_applicable"
-    data.fileDiagnostic = input.patch.filePath ? "Local file paths are provenance only. Ingest bytes as a durable Artifact before making a physical-output claim." : null
+    data.fileDiagnostic = input.patch.filePath ? "Local file paths are provenance only. ChatGPT clients must use create_artifact with file; trusted server jobs may use create_artifact_from_path server_path. Ingest bytes as a durable Artifact before making a physical-output claim." : null
   }
   const artifact = await prisma.researchArtifact.update({ where: { id: input.id, workspaceId: input.workspaceId }, data: data as any })
   if (input.patch.contentMarkdown !== undefined && artifact.contentMarkdown !== before.contentMarkdown && artifact.projectId) {

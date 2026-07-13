@@ -4,7 +4,7 @@
 
 `ResearchArtifact` is research content and report metadata. Its optional `filePath` is non-authoritative provenance and may describe where a producer created a file. It never makes those bytes durable.
 
-`Artifact` is the immutable physical-output record. Path ingestion copies bytes into Maff's persistent `DATA_DIR/artifacts` content-addressed store, computes SHA-256 and byte size while streaming, and records the original filename, MIME type, workspace/project/workstream, creator AgentRun, storage key, and timestamps. The source path is not read again after ingestion. There is no byte-replacement operation: changed bytes create a new Artifact.
+`Artifact` is the immutable physical-output record. Connector-file upload and trusted server-path ingestion both copy bytes into Maff's persistent `DATA_DIR/artifacts` content-addressed store, compute SHA-256 and byte size while streaming, and record the original filename, MIME type, workspace/project/workstream, creator AgentRun, storage key, and timestamps. The source path or connector URL is not read again after ingestion. There is no byte-replacement operation: changed bytes create a new Artifact.
 
 Artifacts may link directly to a workstream, a ResearchArtifact, and one or more exact `ManuscriptVersion` records with named roles. `get_manuscript_version` returns those physical links; reviewers do not infer them from prose.
 
@@ -12,11 +12,12 @@ Artifacts may link directly to a workstream, a ResearchArtifact, and one or more
 
 ## API lifecycle
 
-1. Ingest with `create_artifact_from_path` (or `create_artifact` with `path`). Maff ignores caller-supplied identity claims and computes the stored identity.
-2. Link report metadata with `research_artifact_id`, and exact manuscript output with `attach_artifact_to_manuscript_version`.
-3. Inspect metadata with `get_artifact` or `list_artifacts`.
-4. Run `verify_artifact`; inspect ZIP entries with `list_artifact_archive`.
-5. Retrieve bytes through `download_artifact`, `read_artifact_archive_file`, or `export_physical_artifacts`. These return authenticated streaming references, not JSON/base64 payloads.
+1. ChatGPT agents ingest generated `/mnt/data` files with `create_artifact` and its `file` parameter. The tool descriptor advertises `_meta["openai/fileParams"] = ["file"]`, so the client transfers a connector file object instead of a server-local path string. Supply `expected_sha256` when available; Maff recomputes the stored SHA-256 and rejects mismatches before creating an available `Artifact`.
+2. Trusted server jobs may ingest files already present on the Maff server with `create_artifact_from_path` and `server_path`. Do not pass ChatGPT container paths here.
+3. Link report metadata with `research_artifact_id`, and exact manuscript output with `attach_artifact_to_manuscript_version`.
+4. Inspect metadata with `get_artifact` or `list_artifacts`.
+5. Run `verify_artifact`; inspect ZIP entries with `list_artifact_archive`.
+6. Retrieve bytes through `download_artifact`, `read_artifact_archive_file`, or `export_physical_artifacts`. These return authenticated streaming references, not JSON/base64 payloads.
 
 Submission, approval, and completion run a durability preflight whenever the workstream policy requires physical artifacts, the report claims generated physical output, or a referenced ResearchArtifact contains a path. The preflight verifies managed bytes, required archive members from `metadata.required_files`, direct links, and rejects metadata-only paths.
 

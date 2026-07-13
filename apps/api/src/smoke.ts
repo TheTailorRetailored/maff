@@ -142,7 +142,7 @@ for (const prop of ["report_id", "workstream_id"]) {
   assert.ok(submitReportProps[prop], `submit_report_for_review schema must advertise ${prop}`)
 }
 
-assert.equal(mcpServerVersion, "0.6.0-durable-artifacts")
+assert.equal(mcpServerVersion, "0.6.1-artifact-upload")
 const toolsList = mcpToolsListResult()
 const toolsListNames = new Set(toolsList.tools.map((tool) => tool.name))
 for (const name of ["get_my_maff_context", "claim_next_assignment", "claim_next_review", "create_project", "propose_project_goal", "approve_project_goal", "create_workstream", "claim_agent_assignment", "start_agent_run", "submit_workstream_report", "record_review_round", "complete_workstream", "create_claim", "create_proof_route", "create_proof_attempt", "create_gap"]) {
@@ -163,6 +163,14 @@ for (const name of ["get_research_artifact", "export_research_artifact_bundle", 
 for (const name of ["create_artifact_from_path", "get_artifact", "download_artifact", "list_artifacts", "list_artifact_archive", "read_artifact_archive_file", "verify_artifact", "attach_artifact_to_manuscript_version", "export_physical_artifacts", "get_manuscript_version"]) {
   assert.ok(toolDefinitions.some((tool) => tool.name === name), `missing durable artifact tool ${name}`)
 }
+const createArtifactTool = toolsList.tools.find((tool) => tool.name === "create_artifact") as any
+assert.deepEqual(createArtifactTool?._meta?.["openai/fileParams"], ["file"])
+const createArtifactProps = createArtifactTool.inputSchema.properties as Record<string, unknown>
+assert.ok(createArtifactProps.file, "create_artifact schema must advertise connector file upload")
+assert.ok(createArtifactProps.expected_sha256, "create_artifact schema must advertise expected_sha256")
+const pathArtifactTool = toolDefinitions.find((tool) => tool.name === "create_artifact_from_path")
+assert.ok(pathArtifactTool, "missing create_artifact_from_path")
+assert.deepEqual((pathArtifactTool.inputSchema as { required?: string[] }).required, ["workspace_id", "project_id", "server_path", "title"])
 const getResearchArtifactTool = toolDefinitions.find((tool) => tool.name === "get_research_artifact")
 assert.ok(getResearchArtifactTool, "missing get_research_artifact")
 assert.deepEqual((getResearchArtifactTool.inputSchema as { required?: string[] }).required, ["workspace_id", "artifact_id"])
