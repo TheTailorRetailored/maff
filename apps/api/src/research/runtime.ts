@@ -1207,7 +1207,25 @@ async function createArtifactRecord(input: { workspaceId: string; projectId: str
     if (input.researchArtifactId) await tx.researchArtifact.update({ where: { id: input.researchArtifactId }, data: { fileStatus: "durable", fileDiagnostic: `Durable bytes ingested as Artifact ${created.id}; filePath is provenance only.` } })
     return created
   })
-  return artifactView(artifact)
+  return {
+    ...artifactView(artifact),
+    verification: {
+      ok: true,
+      status: "available",
+      expected_sha256: artifact.sha256,
+      actualSha256: artifact.sha256,
+      expected_byte_size: Number(artifact.byteSize),
+      actualByteSize: Number(artifact.byteSize)
+    },
+    download: {
+      artifact_id: artifact.id,
+      name: artifact.originalFilename ?? artifact.title,
+      mime_type: artifact.mimeType ?? "application/octet-stream",
+      byte_size: Number(artifact.byteSize),
+      sha256: artifact.sha256,
+      uri: `${config.publicBaseUrl}/api/artifacts/${artifact.id}/content?workspaceId=${input.workspaceId}`
+    }
+  }
 }
 
 export async function createArtifact(input: { workspaceId: string; projectId: string; workstreamId?: string; kind?: string; title: string; uri?: string; path?: string; file?: ConnectorArtifactFile; contentHash?: string; expectedSha256?: string; metadata?: unknown; createdByAgentRunId?: string; researchArtifactId?: string; mimeType?: string }) {

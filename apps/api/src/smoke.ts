@@ -142,7 +142,7 @@ for (const prop of ["report_id", "workstream_id"]) {
   assert.ok(submitReportProps[prop], `submit_report_for_review schema must advertise ${prop}`)
 }
 
-assert.equal(mcpServerVersion, "0.6.1-artifact-upload")
+assert.equal(mcpServerVersion, "0.6.2-artifact-upload-return")
 const toolsList = mcpToolsListResult()
 const toolsListNames = new Set(toolsList.tools.map((tool) => tool.name))
 for (const name of ["get_my_maff_context", "claim_next_assignment", "claim_next_review", "create_project", "propose_project_goal", "approve_project_goal", "create_workstream", "claim_agent_assignment", "start_agent_run", "submit_workstream_report", "record_review_round", "complete_workstream", "create_claim", "create_proof_route", "create_proof_attempt", "create_gap"]) {
@@ -171,6 +171,23 @@ assert.ok(createArtifactProps.expected_sha256, "create_artifact schema must adve
 const pathArtifactTool = toolDefinitions.find((tool) => tool.name === "create_artifact_from_path")
 assert.ok(pathArtifactTool, "missing create_artifact_from_path")
 assert.deepEqual((pathArtifactTool.inputSchema as { required?: string[] }).required, ["workspace_id", "project_id", "server_path", "title"])
+const createdArtifactResult = contentResult("create_artifact", compactToolResult("create_artifact", {
+  id: "artifact-1",
+  kind: "archive",
+  title: "Bundle",
+  uri: "maff-artifact://workspace/hash",
+  originalFilename: "bundle.zip",
+  mimeType: "application/zip",
+  byteSize: 42,
+  sha256: "a".repeat(64),
+  storageStatus: "available",
+  verification: { ok: true, status: "available", actualSha256: "a".repeat(64), actualByteSize: 42 },
+  download: { uri: "https://maff.example/api/artifacts/artifact-1/content?workspaceId=workspace-1", name: "bundle.zip", mime_type: "application/zip", byte_size: 42, sha256: "a".repeat(64) },
+  createdAt: new Date("2026-07-13T00:00:00.000Z")
+}))
+assert.equal((createdArtifactResult.structuredContent as any).verification.ok, true)
+assert.equal((createdArtifactResult.structuredContent as any).download.uri.includes("/api/artifacts/artifact-1/content"), true)
+assert.equal(createdArtifactResult.content[0].type, "resource_link")
 const getResearchArtifactTool = toolDefinitions.find((tool) => tool.name === "get_research_artifact")
 assert.ok(getResearchArtifactTool, "missing get_research_artifact")
 assert.deepEqual((getResearchArtifactTool.inputSchema as { required?: string[] }).required, ["workspace_id", "artifact_id"])

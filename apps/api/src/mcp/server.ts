@@ -85,7 +85,7 @@ const tool = (name: string, description: string, role: WorkspaceRole, inputSchem
   annotations: { readOnlyHint: readOnlyToolNames.has(name), openWorldHint: false, destructiveHint: false, idempotentHint: idempotentToolNames.has(name) },
   meta
 })
-export const mcpServerVersion = "0.6.1-artifact-upload"
+export const mcpServerVersion = "0.6.2-artifact-upload-return"
 export const expectedMcpToolCount = 99
 
 export const toolDefinitions: ToolDef[] = [
@@ -347,11 +347,22 @@ export function structuredContentForTool(toolName: string, value: unknown): Json
 
 export function contentResult(toolName: string, value: unknown) {
   const structuredContent = structuredContentForTool(toolName, value)
-  if ((toolName === "download_artifact" || toolName === "read_artifact_archive_file") && typeof (structuredContent as any).uri === "string") {
+  const directUri = (structuredContent as any).uri
+  const downloadUri = (structuredContent as any).download?.uri
+  if ((toolName === "download_artifact" || toolName === "read_artifact_archive_file") && typeof directUri === "string") {
     return {
       structuredContent,
       content: [
-        { type: "resource_link", uri: (structuredContent as any).uri, name: (structuredContent as any).name ?? (structuredContent as any).entry_path ?? "artifact", mimeType: (structuredContent as any).mime_type ?? "application/octet-stream" },
+        { type: "resource_link", uri: directUri, name: (structuredContent as any).name ?? (structuredContent as any).entry_path ?? "artifact", mimeType: (structuredContent as any).mime_type ?? "application/octet-stream" },
+        { type: "text", text: JSON.stringify(structuredContent, null, 2) }
+      ]
+    }
+  }
+  if (toolName === "create_artifact" && typeof downloadUri === "string") {
+    return {
+      structuredContent,
+      content: [
+        { type: "resource_link", uri: downloadUri, name: (structuredContent as any).download?.name ?? (structuredContent as any).original_filename ?? "artifact", mimeType: (structuredContent as any).download?.mime_type ?? (structuredContent as any).mime_type ?? "application/octet-stream" },
         { type: "text", text: JSON.stringify(structuredContent, null, 2) }
       ]
     }
@@ -569,6 +580,8 @@ function compactArtifact(artifact: any) {
     byte_size: artifact.byteSize === null || artifact.byteSize === undefined ? null : Number(artifact.byteSize),
     sha256: artifact.sha256,
     storage_status: artifact.storageStatus,
+    verification: artifact.verification,
+    download: artifact.download,
     workstream_id: artifact.workstreamId,
     research_artifact_id: artifact.researchArtifactId,
     source_path_provenance: artifact.path,
