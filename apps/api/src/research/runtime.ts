@@ -7,6 +7,7 @@ import { config } from "../config.js"
 import { leanClient } from "../lean/leanClient.js"
 import { requireWorkspaceRole } from "../auth/permissions.js"
 import { computeSubmissionReadiness, workstreamDependenciesSatisfied } from "./readiness.js"
+import { inferMimeType, ingestFile, listZipEntries, storagePath, verifyStoredFile } from "../artifacts/storage.js"
 
 const roleRecipeFiles: Record<AgentRole, string> = {
   ProjectCoordinator: "project_coordinator.md",
@@ -227,6 +228,7 @@ async function roleRecipe(role: AgentRole) {
 
 function forbiddenActions(role: AgentRole) {
   const common = [
+    "Do not describe a physical result as registered when only a container-local path or caller-supplied hash exists; ingest and verify the bytes as an Artifact first.",
     "Do not complete Workstream directly; submit a report, block, or escalate.",
     "Do not delete or overwrite failed attempts.",
     "Do not write outside allowed_writes."
@@ -414,6 +416,55 @@ export async function getWorkstream(workspaceId: string, workstreamId: string) {
   })
 }
 
+function artifactView<T extends { byteSize?: bigint | null }>(artifact: T) {
+  return { ...artifact, byteSize: artifact.byteSize === null || artifact.byteSize === undefined ? null : Number(artifact.byteSize) }
+}
+
+const physicalClaimPattern = /\b(physical (?:file|artifact|output)|generated (?:file|archive|zip|pdf|manuscript)|registered (?:the )?(?:exact )?(?:physical )?artifact|compiled (?:pdf|manuscript))\b/i
+
+async function assertDurablePhysicalOutputs(workspaceId: string, workstreamId: string, reportId?: string) {
+  const workstream = await prisma.workstream.findFirstOrThrow({ where: { workspaceId, id: workstreamId } })
+  const report = reportId
+    ? await prisma.workstreamReport.findFirstOrThrow({ where: { workspaceId, workstreamId, id: reportId } })
+    : await prisma.workstreamReport.findFirst({ where: { workspaceId, workstreamId }, orderBy: { updatedAt: "desc" } })
+  const artifactRefs = normalizeLines(report?.artifactRefs)
+  const referencedIds = artifactRefs.map((reference) => reference.includes(":") ? reference.slice(reference.lastIndexOf(":") + 1) : reference).filter((reference) => /^[0-9a-f]{8}-[0-9a-f-]{27,}$/i.test(reference))
+  const researchArtifacts = referencedIds.length ? await prisma.researchArtifact.findMany({ where: { workspaceId, id: { in: referencedIds } } }) : []
+  const policy = workstream.reviewPolicy as Record<string, unknown>
+  const claimsPhysical = policy.requires_physical_artifacts === true
+    || physicalClaimPattern.test(`${workstream.instructions}\n${JSON.stringify(workstream.successCriteria)}\n${report?.bodyMarkdown ?? ""}`)
+    || researchArtifacts.some((artifact) => Boolean(artifact.filePath))
+  if (!claimsPhysical) return []
+  const durable = await prisma.artifact.findMany({ where: { workspaceId, workstreamId, storageKey: { not: null }, sha256: { not: null }, byteSize: { not: null } }, include: { manuscriptLinks: true } })
+  if (!durable.length) throw new Error("Physical-output durability preflight failed: no ingested durable Artifact is linked to this workstream. A container-local path is provenance only.")
+  for (const artifact of durable) {
+    const verification = await verifyStoredFile(artifact.storageKey!, artifact.sha256!, artifact.byteSize)
+    if (!verification.ok) {
+      await prisma.artifact.update({ where: { id: artifact.id }, data: { storageStatus: verification.status === "missing" ? "missing" : "corrupt" } })
+      throw new Error(`Physical-output durability preflight failed for Artifact ${artifact.id}: stored bytes are ${verification.status === "missing" ? "missing" : "corrupt"}.`)
+    }
+    const metadata = artifact.metadata as Record<string, unknown>
+    const requiredFiles = Array.isArray(metadata.required_files) ? metadata.required_files.filter((value): value is string => typeof value === "string") : []
+    if (requiredFiles.length) {
+      const entries = new Set((await listZipEntries(artifact.storageKey!)).map((entry) => entry.path))
+      const missing = requiredFiles.filter((required) => !entries.has(required))
+      if (missing.length) throw new Error(`Physical-output durability preflight failed for Artifact ${artifact.id}: archive is missing required files: ${missing.join(", ")}.`)
+    }
+  }
+  for (const researchArtifact of researchArtifacts.filter((artifact) => artifact.filePath)) {
+    if (researchArtifact.fileStatus !== "durable" || !durable.some((artifact) => artifact.researchArtifactId === researchArtifact.id)) {
+      throw new Error(`ResearchArtifact ${researchArtifact.id} cites a local file path without a linked durable Artifact; it cannot satisfy a physical-output claim.`)
+    }
+  }
+  const manuscriptIds = referencedIds.length ? await prisma.manuscriptVersion.findMany({ where: { workspaceId, id: { in: referencedIds } }, select: { id: true } }) : []
+  for (const manuscript of manuscriptIds) {
+    if (!durable.some((artifact) => artifact.manuscriptLinks.some((link) => link.manuscriptVersionId === manuscript.id))) {
+      throw new Error(`Physical-output durability preflight failed: ManuscriptVersion ${manuscript.id} has no directly linked durable Artifact.`)
+    }
+  }
+  return durable.map(artifactView)
+}
+
 async function targetObjects(workstream: { targetObjectType: string | null; targetObjectId: string | null; workspaceId: string; projectId: string }) {
   if (!workstream.targetObjectType || !workstream.targetObjectId) return []
   const type = workstream.targetObjectType
@@ -449,6 +500,7 @@ export async function getAgentBriefing(workspaceId: string, workstreamId: string
     forbidden_actions: normalizeLines(workstream.forbiddenActions),
     success_criteria: normalizeLines(workstream.successCriteria),
     output_contract: outputContract(role),
+    durable_artifact_policy: "A container-local path is ephemeral. A physical result is not registered until its bytes have been ingested into durable Maff storage and successfully retrieved in a fresh-session preflight.",
     completion_options: ["submit_workstream_report", "mark_workstream_blocked", "escalate_workstream"]
   }
 }
@@ -611,6 +663,7 @@ export async function claimNextReview(input: { userId: string; workspaceRef?: st
     forbidden_actions: [
       "Do not edit the report or reviewed mathematical objects.",
       "Do not approve your own work from the same AgentRun.",
+      "Do not approve a physical-output claim until get_artifact/verify_artifact and download_artifact or archive retrieval resolve the exact bytes.",
       "Do not complete the Workstream directly."
     ],
     output_contract: {
@@ -708,6 +761,7 @@ export async function submitReportForReview(input: { workspaceId: string; report
   const report = input.reportId
     ? await prisma.workstreamReport.findFirstOrThrow({ where: { workspaceId: input.workspaceId, id: input.reportId } })
     : await prisma.workstreamReport.findFirstOrThrow({ where: { workspaceId: input.workspaceId, workstreamId: input.workstreamId }, orderBy: { updatedAt: "desc" } })
+  await assertDurablePhysicalOutputs(input.workspaceId, report.workstreamId, report.id)
   const submitted = await prisma.workstreamReport.update({ where: { id: report.id, workspaceId: input.workspaceId }, data: { status: "submitted", submittedAt: new Date() } })
   const workstream = await prisma.workstream.update({ where: { id: submitted.workstreamId, workspaceId: input.workspaceId }, data: { status: "needs_review", reportId: submitted.id } })
   return {
@@ -774,6 +828,7 @@ export async function recordReviewRound(input: {
     const artifactCount = await prisma.artifact.count({ where: { workspaceId: input.workspaceId, workstreamId: input.workstreamId } })
     if (!artifactRefs.length && artifactCount === 0) throw new Error("Computational workstreams require recorded verification artifacts before approval.")
   }
+  if (verdict === "approved") await assertDurablePhysicalOutputs(input.workspaceId, input.workstreamId, input.reportId ?? workstream.reportId ?? undefined)
   const obligationChecks = input.obligationChecks ?? []
   if (!Array.isArray(obligationChecks)) throw new Error("obligationChecks must be an array when provided.")
   const obligationIds = obligationChecks.map((check, index) => {
@@ -840,6 +895,7 @@ export async function completeWorkstream(input: { workspaceId: string; workstrea
   const minApprovals = typeof policy.min_approved_rounds === "number" ? policy.min_approved_rounds : 1
   const approvedReviews = await prisma.reviewRound.count({ where: { workspaceId: input.workspaceId, workstreamId: input.workstreamId, verdict: "approved" } })
   if (approvedReviews < minApprovals) throw new Error(`Workstream cannot complete until ${minApprovals} approved ReviewRound(s) exist.`)
+  await assertDurablePhysicalOutputs(input.workspaceId, input.workstreamId, workstream.reportId ?? undefined)
   return prisma.workstream.update({ where: { id: input.workstreamId, workspaceId: input.workspaceId }, data: { status: "completed", completedAt: new Date() } })
 }
 
@@ -870,6 +926,8 @@ export async function requestWorkstreamRevision(input: { workspaceId: string; wo
 export async function approveWorkstream(input: { workspaceId: string; workstreamId: string }) {
   const approvals = await prisma.reviewRound.count({ where: { workspaceId: input.workspaceId, workstreamId: input.workstreamId, verdict: "approved" } })
   if (!approvals) throw new Error("Cannot approve Workstream without an approved ReviewRound.")
+  const workstream = await prisma.workstream.findFirstOrThrow({ where: { workspaceId: input.workspaceId, id: input.workstreamId } })
+  await assertDurablePhysicalOutputs(input.workspaceId, input.workstreamId, workstream.reportId ?? undefined)
   return prisma.workstream.update({ where: { id: input.workstreamId, workspaceId: input.workspaceId }, data: { status: "approved" } })
 }
 
@@ -1092,8 +1150,114 @@ export async function searchResearchObjects(input: { workspaceId: string; projec
   return { claims, routes, gaps, papers, known_results: knownResults, research_deltas: researchDeltas, research_artifacts: researchArtifacts, mechanisms, spinout_candidates: spinoutCandidates, assumption_regimes: assumptionRegimes, theorem_contracts: theoremContracts, frontier_snapshots: frontierSnapshots }
 }
 
-export async function createArtifact(input: { workspaceId: string; projectId: string; workstreamId?: string; kind?: string; title: string; uri?: string; path?: string; contentHash?: string; metadata?: unknown; createdByAgentRunId?: string }) {
-  return prisma.artifact.create({ data: { workspaceId: input.workspaceId, projectId: input.projectId, workstreamId: input.workstreamId, kind: input.kind as any ?? "other", title: input.title, uri: input.uri, path: input.path, contentHash: input.contentHash, metadata: jsonObject(input.metadata), createdByAgentRunId: input.createdByAgentRunId } })
+export async function createArtifact(input: { workspaceId: string; projectId: string; workstreamId?: string; kind?: string; title: string; uri?: string; path?: string; contentHash?: string; metadata?: unknown; createdByAgentRunId?: string; researchArtifactId?: string; mimeType?: string }) {
+  if (input.path) return createArtifactFromPath({ ...input, path: input.path })
+  if (!input.uri) throw new Error("create_artifact requires path ingestion for physical files. URI-only records are allowed only for external durable references.")
+  await prisma.project.findFirstOrThrow({ where: { workspaceId: input.workspaceId, id: input.projectId } })
+  if (input.workstreamId) await prisma.workstream.findFirstOrThrow({ where: { workspaceId: input.workspaceId, projectId: input.projectId, id: input.workstreamId } })
+  if (input.researchArtifactId) await prisma.researchArtifact.findFirstOrThrow({ where: { workspaceId: input.workspaceId, projectId: input.projectId, id: input.researchArtifactId } })
+  return artifactView(await prisma.artifact.create({ data: { workspaceId: input.workspaceId, projectId: input.projectId, workstreamId: input.workstreamId, kind: input.kind as any ?? "external_reference", title: input.title, uri: input.uri, path: null, contentHash: input.contentHash, metadata: jsonObject(input.metadata), researchArtifactId: input.researchArtifactId, createdByAgentRunId: input.createdByAgentRunId } }))
+}
+
+export async function createArtifactFromPath(input: { workspaceId: string; projectId: string; workstreamId?: string; kind?: string; title: string; path: string; metadata?: unknown; createdByAgentRunId?: string; researchArtifactId?: string; mimeType?: string }) {
+  await prisma.project.findFirstOrThrow({ where: { workspaceId: input.workspaceId, id: input.projectId } })
+  if (input.workstreamId) await prisma.workstream.findFirstOrThrow({ where: { workspaceId: input.workspaceId, projectId: input.projectId, id: input.workstreamId } })
+  if (input.createdByAgentRunId) await prisma.agentRun.findFirstOrThrow({ where: { workspaceId: input.workspaceId, projectId: input.projectId, id: input.createdByAgentRunId, workstreamId: input.workstreamId } })
+  if (input.researchArtifactId) await prisma.researchArtifact.findFirstOrThrow({ where: { workspaceId: input.workspaceId, projectId: input.projectId, id: input.researchArtifactId } })
+  const ingested = await ingestFile(input.path, input.workspaceId)
+  const mimeType = inferMimeType(ingested.originalFilename, input.mimeType)
+  const artifact = await prisma.$transaction(async (tx) => {
+    const created = await tx.artifact.create({
+      data: {
+        workspaceId: input.workspaceId, projectId: input.projectId, workstreamId: input.workstreamId,
+        kind: input.kind as any ?? (mimeType === "application/pdf" ? "pdf" : "other"), title: input.title,
+        originalFilename: ingested.originalFilename, mimeType, byteSize: BigInt(ingested.byteSize), sha256: ingested.sha256,
+        storageKey: ingested.storageKey, storageStatus: "available", uri: `maff-artifact://${input.workspaceId}/${ingested.sha256}`,
+        path: input.path, contentHash: ingested.sha256, metadata: jsonObject(input.metadata), researchArtifactId: input.researchArtifactId,
+        createdByAgentRunId: input.createdByAgentRunId
+      }
+    })
+    if (input.researchArtifactId) await tx.researchArtifact.update({ where: { id: input.researchArtifactId }, data: { fileStatus: "durable", fileDiagnostic: `Durable bytes ingested as Artifact ${created.id}; filePath is provenance only.` } })
+    return created
+  })
+  return artifactView(artifact)
+}
+
+export async function getArtifact(workspaceId: string, artifactId: string) {
+  const artifact = await prisma.artifact.findFirst({ where: { workspaceId, id: artifactId }, include: { manuscriptLinks: true, researchArtifact: true } })
+  if (!artifact) throw Object.assign(new Error("Artifact not found"), { status: 404 })
+  return artifactView(artifact)
+}
+
+export async function listArtifacts(input: { workspaceId: string; projectId?: string; workstreamId?: string; manuscriptVersionId?: string; researchArtifactId?: string }) {
+  const artifacts = await prisma.artifact.findMany({
+    where: {
+      workspaceId: input.workspaceId, projectId: input.projectId, workstreamId: input.workstreamId, researchArtifactId: input.researchArtifactId,
+      manuscriptLinks: input.manuscriptVersionId ? { some: { manuscriptVersionId: input.manuscriptVersionId } } : undefined
+    },
+    include: { manuscriptLinks: true }, orderBy: { createdAt: "desc" }
+  })
+  return artifacts.map(artifactView)
+}
+
+export async function verifyArtifact(workspaceId: string, artifactId: string) {
+  const artifact = await prisma.artifact.findFirst({ where: { workspaceId, id: artifactId } })
+  if (!artifact?.storageKey || !artifact.sha256 || artifact.byteSize === null) throw new Error("Artifact has no Maff-managed bytes to verify.")
+  const verification = await verifyStoredFile(artifact.storageKey, artifact.sha256, artifact.byteSize)
+  const storageStatus = verification.ok ? "available" : verification.status === "missing" ? "missing" : "corrupt"
+  await prisma.artifact.update({ where: { id: artifact.id }, data: { storageStatus } })
+  return { artifact_id: artifact.id, expected_sha256: artifact.sha256, expected_byte_size: Number(artifact.byteSize), ...verification }
+}
+
+export async function downloadArtifactReference(workspaceId: string, artifactId: string) {
+  const artifact = await getArtifact(workspaceId, artifactId)
+  if (!artifact.storageKey || !artifact.sha256) throw new Error("Artifact is metadata-only and has no downloadable Maff-managed bytes.")
+  const verification = await verifyArtifact(workspaceId, artifactId)
+  if (!verification.ok) throw Object.assign(new Error(`Artifact bytes are ${verification.status}.`), { status: 409 })
+  return { artifact_id: artifact.id, name: artifact.originalFilename ?? artifact.title, mime_type: artifact.mimeType ?? "application/octet-stream", byte_size: artifact.byteSize, sha256: artifact.sha256, uri: `${config.publicBaseUrl}/api/artifacts/${artifact.id}/content?workspaceId=${workspaceId}` }
+}
+
+export async function listArtifactArchive(workspaceId: string, artifactId: string) {
+  const artifact = await prisma.artifact.findFirst({ where: { workspaceId, id: artifactId } })
+  if (!artifact?.storageKey) throw new Error("Artifact has no Maff-managed bytes.")
+  if (artifact.mimeType !== "application/zip" && !artifact.originalFilename?.toLowerCase().endsWith(".zip")) throw new Error("Artifact is not a ZIP archive.")
+  const verification = await verifyArtifact(workspaceId, artifactId)
+  if (!verification.ok) throw Object.assign(new Error(`Artifact bytes are ${verification.status}.`), { status: 409 })
+  return { artifact_id: artifact.id, entries: await listZipEntries(artifact.storageKey) }
+}
+
+export async function artifactArchiveEntryReference(workspaceId: string, artifactId: string, entryPath: string) {
+  const archive = await listArtifactArchive(workspaceId, artifactId)
+  const entry = archive.entries.find((candidate) => candidate.path === entryPath && !candidate.directory)
+  if (!entry) throw Object.assign(new Error("Archive entry not found."), { status: 404 })
+  return { artifact_id: artifactId, entry_path: entryPath, byte_size: entry.byte_size, uri: `${config.publicBaseUrl}/api/artifacts/${artifactId}/archive-entry?workspaceId=${workspaceId}&path=${encodeURIComponent(entryPath)}` }
+}
+
+export async function attachArtifactToManuscriptVersion(input: { workspaceId: string; artifactId: string; manuscriptVersionId: string; role: string }) {
+  const [artifact, manuscript] = await Promise.all([
+    prisma.artifact.findFirstOrThrow({ where: { workspaceId: input.workspaceId, id: input.artifactId, storageKey: { not: null } } }),
+    prisma.manuscriptVersion.findFirstOrThrow({ where: { workspaceId: input.workspaceId, id: input.manuscriptVersionId } })
+  ])
+  if (artifact.projectId !== manuscript.projectId) throw new Error("Artifact and ManuscriptVersion must belong to the same project.")
+  const verification = await verifyArtifact(input.workspaceId, artifact.id)
+  if (!verification.ok) throw Object.assign(new Error(`Artifact bytes are ${verification.status}.`), { status: 409 })
+  return prisma.artifactManuscriptVersion.create({ data: input })
+}
+
+export async function exportPhysicalArtifacts(input: { workspaceId: string; workstreamId?: string; manuscriptVersionId?: string }) {
+  if (!input.workstreamId && !input.manuscriptVersionId) throw new Error("Export requires workstreamId or manuscriptVersionId.")
+  const artifacts = await listArtifacts(input)
+  const downloadable = []
+  for (const artifact of artifacts.filter((candidate) => Boolean(candidate.storageKey))) downloadable.push(await downloadArtifactReference(input.workspaceId, artifact.id))
+  return { scope: { workstream_id: input.workstreamId ?? null, manuscript_version_id: input.manuscriptVersionId ?? null }, physical_artifacts: downloadable }
+}
+
+export async function getArtifactStorageFile(workspaceId: string, artifactId: string) {
+  const artifact = await prisma.artifact.findFirst({ where: { workspaceId, id: artifactId } })
+  if (!artifact?.storageKey) throw Object.assign(new Error("Artifact bytes not found."), { status: 404 })
+  const verification = await verifyArtifact(workspaceId, artifactId)
+  if (!verification.ok) throw Object.assign(new Error(`Artifact bytes are ${verification.status}.`), { status: 409 })
+  return { artifact: artifactView(artifact), file: storagePath(artifact.storageKey) }
 }
 
 export async function getReport(workspaceId: string, reportId: string) {
@@ -1340,7 +1504,7 @@ export async function listResearchArtifacts(input: FrontierListInput) {
 }
 
 export async function getResearchArtifact(workspaceId: string, id: string) {
-  const artifact = await prisma.researchArtifact.findFirst({ where: { workspaceId, id } })
+  const artifact = await prisma.researchArtifact.findFirst({ where: { workspaceId, id }, include: { physicalArtifacts: { include: { manuscriptLinks: true } } } })
   if (!artifact) throw researchArtifactNotFound()
   return artifact
 }
@@ -1356,13 +1520,14 @@ export async function getResearchArtifactBundle(workspaceId: string, ids: unknow
   if (new Set(ids).size !== ids.length) {
     throw Object.assign(new Error("artifact_ids must not contain duplicates"), { status: 400 })
   }
-  const artifacts = await prisma.researchArtifact.findMany({ where: { workspaceId, id: { in: ids } } })
+  const artifacts = await prisma.researchArtifact.findMany({ where: { workspaceId, id: { in: ids } }, include: { physicalArtifacts: { include: { manuscriptLinks: true } } } })
   if (artifacts.length !== ids.length) throw researchArtifactNotFound()
   return artifacts.sort((a, b) => a.id.localeCompare(b.id))
 }
 
 export async function createResearchArtifact(input: FrontierWriteInput) {
-  return prisma.researchArtifact.create({ data: { workspaceId: input.workspaceId, projectId: input.projectId, title: input.title, slug: input.slug ? slugify(input.slug) : uniqueSlug(input.title), kind: input.kind ?? "other", status: input.status ?? "draft", descriptionMarkdown: input.descriptionMarkdown, contentMarkdown: input.contentMarkdown, filePath: input.filePath, url: input.url, createdByUserId: input.createdByUserId } })
+  const hasFilePath = Boolean(input.filePath)
+  return prisma.researchArtifact.create({ data: { workspaceId: input.workspaceId, projectId: input.projectId, title: input.title, slug: input.slug ? slugify(input.slug) : uniqueSlug(input.title), kind: input.kind ?? "other", status: input.status ?? "draft", descriptionMarkdown: input.descriptionMarkdown, contentMarkdown: input.contentMarkdown, filePath: input.filePath, fileStatus: hasFilePath ? "provenance_only" : "not_applicable", fileDiagnostic: hasFilePath ? "Local file paths are provenance only. Use create_artifact_from_path to ingest bytes before claiming a physical artifact is registered." : undefined, url: input.url, createdByUserId: input.createdByUserId } })
 }
 
 function fingerprint(value: string) { return createHash("sha256").update(value).digest("hex") }
@@ -1380,6 +1545,18 @@ export async function createManuscriptVersion(input: { workspaceId: string; proj
     if (input.claimIds?.length) await tx.researchLink.createMany({ data: [...new Set(input.claimIds)].map((targetId) => ({ workspaceId: input.workspaceId, projectId: input.projectId, sourceType: "ManuscriptVersion", sourceId: version.id, relationType: "contribution_claim", targetType: "Claim", targetId })) })
     return version
   })
+}
+
+export async function getManuscriptVersion(workspaceId: string, manuscriptVersionId: string) {
+  const version = await prisma.manuscriptVersion.findFirst({
+    where: { workspaceId, id: manuscriptVersionId },
+    include: { artifact: true, physicalArtifacts: { include: { artifact: true } }, obligations: true }
+  })
+  if (!version) throw Object.assign(new Error("ManuscriptVersion not found"), { status: 404 })
+  return {
+    ...version,
+    physicalArtifacts: version.physicalArtifacts.map((link) => ({ ...link, artifact: artifactView(link.artifact) }))
+  }
 }
 
 /** Promotion is the ledger circuit breaker: a nontrivial canonical manuscript may not have zero obligations. */
@@ -1511,7 +1688,12 @@ export async function computeProjectSubmissionReadiness(workspaceId: string, pro
 
 export async function updateResearchArtifact(input: { workspaceId: string; id: string; patch: Record<string, unknown> }) {
   const before = await prisma.researchArtifact.findFirstOrThrow({ where: { id: input.id, workspaceId: input.workspaceId } })
-  const artifact = await prisma.researchArtifact.update({ where: { id: input.id, workspaceId: input.workspaceId }, data: cleanPatch(input.patch, ["title", "kind", "status", "descriptionMarkdown", "contentMarkdown", "filePath", "url"]) as any })
+  const data = cleanPatch(input.patch, ["title", "kind", "status", "descriptionMarkdown", "contentMarkdown", "filePath", "url"]) as Record<string, unknown>
+  if (input.patch.filePath !== undefined && input.patch.filePath !== before.filePath) {
+    data.fileStatus = input.patch.filePath ? "provenance_only" : "not_applicable"
+    data.fileDiagnostic = input.patch.filePath ? "Local file paths are provenance only. Ingest bytes as a durable Artifact before making a physical-output claim." : null
+  }
+  const artifact = await prisma.researchArtifact.update({ where: { id: input.id, workspaceId: input.workspaceId }, data: data as any })
   if (input.patch.contentMarkdown !== undefined && artifact.contentMarkdown !== before.contentMarkdown && artifact.projectId) {
     const canonical = await prisma.manuscriptVersion.findFirst({ where: { workspaceId: input.workspaceId, projectId: artifact.projectId, artifactId: artifact.id, isCanonical: true } })
     if (canonical) {

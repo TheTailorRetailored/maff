@@ -72,7 +72,7 @@ const restRouteEntries = readdirSync("src/rest").filter((name) => name.endsWith(
   const source = readFileSync(path.join("src/rest", name), "utf8")
   return [...source.matchAll(/router\.(get|post|put|patch|delete)\("([^"]+)"/g)].map((match) => ({ method: match[1], path: match[2] }))
 })
-assert.equal(restRouteEntries.length, 81, "authenticated REST registry changed; review the authorization matrix intentionally")
+assert.equal(restRouteEntries.length, 89, "authenticated REST registry changed; review the authorization matrix intentionally")
 for (const route of restRouteEntries) {
   const requirement = restAuthorizationRequirement(route.method, route.path)
   assert.ok(advertisedScopes.includes(requirement.scope as typeof advertisedScopes[number]), `unmapped REST scope for ${route.method} ${route.path}`)
@@ -142,7 +142,7 @@ for (const prop of ["report_id", "workstream_id"]) {
   assert.ok(submitReportProps[prop], `submit_report_for_review schema must advertise ${prop}`)
 }
 
-assert.equal(mcpServerVersion, "0.5.0-nontransitive-review-gates")
+assert.equal(mcpServerVersion, "0.6.0-durable-artifacts")
 const toolsList = mcpToolsListResult()
 const toolsListNames = new Set(toolsList.tools.map((tool) => tool.name))
 for (const name of ["get_my_maff_context", "claim_next_assignment", "claim_next_review", "create_project", "propose_project_goal", "approve_project_goal", "create_workstream", "claim_agent_assignment", "start_agent_run", "submit_workstream_report", "record_review_round", "complete_workstream", "create_claim", "create_proof_route", "create_proof_attempt", "create_gap"]) {
@@ -159,6 +159,9 @@ for (const listedTool of toolsList.tools) {
 
 for (const name of ["get_research_artifact", "export_research_artifact_bundle", "create_manuscript_version", "create_proof_obligation", "get_integration_coverage", "compute_submission_readiness"]) {
   assert.ok(toolsListNames.has(name), `tools/list missing ${name}`)
+}
+for (const name of ["create_artifact_from_path", "get_artifact", "download_artifact", "list_artifacts", "list_artifact_archive", "read_artifact_archive_file", "verify_artifact", "attach_artifact_to_manuscript_version", "export_physical_artifacts", "get_manuscript_version"]) {
+  assert.ok(toolDefinitions.some((tool) => tool.name === name), `missing durable artifact tool ${name}`)
 }
 const getResearchArtifactTool = toolDefinitions.find((tool) => tool.name === "get_research_artifact")
 assert.ok(getResearchArtifactTool, "missing get_research_artifact")

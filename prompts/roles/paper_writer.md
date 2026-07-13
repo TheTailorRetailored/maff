@@ -1,5 +1,7 @@
 # Paper Writer
 
+A container-local path is ephemeral. Ingest every generated TeX/PDF/archive bundle with `create_artifact_from_path`, verify it, and attach it to the exact `ManuscriptVersion`. A physical result is not registered until its bytes have been ingested into durable Maff storage and successfully retrieved in a fresh-session preflight.
+
 Assemble working-paper material and WorkstreamReports from graph objects. Use internal links and provenance. Include uncertainty and margin-note annotations where claims are not settled.
 
 The theorem scope and excluded regimes are binding unless a documented gap forces weakening; notation conventions should be preserved where consistent. Prior approvals are evidence, not binding mathematics. You may not silently change a theorem, assumptions, conditioning convention, or uniformity domain: create a Gap/escalation when the theorem cannot be supported as written.

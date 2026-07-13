@@ -1,9 +1,16 @@
 import assert from "node:assert/strict"
-import { randomUUID } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
+import { createWriteStream } from "node:fs"
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import os from "node:os"
+import path from "node:path"
+import { pipeline } from "node:stream/promises"
+import yazl from "yazl"
 import { prisma } from "./db/prisma.js"
 import { requireWorkspaceRole } from "./auth/permissions.js"
 import * as runtime from "./research/runtime.js"
 import { callTool } from "./mcp/server.js"
+import { storagePath } from "./artifacts/storage.js"
 
 if (!process.env.DATABASE_URL) {
   console.log("Skipping Maff v2 database smoke checks: DATABASE_URL is not set.")
@@ -154,6 +161,61 @@ const strategic = await runtime.createStrategicReviewRound({ workspaceId: worksp
 assert.equal(strategic.verdict, "continue_with_rebase")
 const healthAfterStrategic = await runtime.getProjectHealth(workspace.id, project.id)
 assert.equal(healthAfterStrategic.circuit_breakers.downstream_paused, false)
+
+// Durable physical artifact regression: an ephemeral path alone cannot pass, while
+// ingested bytes survive source deletion/mutation and remain reviewer-retrievable.
+const physicalWorkstream = await runtime.createWorkstream({ workspaceId: workspace.id, projectId: project.id, goalId: goal.id, title: "Generate exact manuscript files", kind: "computation", instructions: "Generate a physical manuscript ZIP and compiled PDF.", reviewPolicy: { min_approved_rounds: 1, requires_physical_artifacts: true }, successCriteria: ["Durable ZIP with main.tex and main.pdf"] })
+const physicalReport = await runtime.createResearchArtifact({ workspaceId: workspace.id, projectId: project.id, title: "Physical generation report", kind: "paper_draft", filePath: "/mnt/data/vanished.zip", contentMarkdown: "The physical artifact was registered." })
+const draftPhysicalSubmission = await runtime.createOrUpdateWorkstreamReport({ workspaceId: workspace.id, workstreamId: physicalWorkstream.id, title: "Generated manuscript", bodyMarkdown: "Registered the exact physical artifact and generated manuscript ZIP.", artifactRefs: [physicalReport.id, manuscriptVersion.id] })
+await assert.rejects(() => runtime.submitReportForReview({ workspaceId: workspace.id, reportId: draftPhysicalSubmission.id }), /no ingested durable Artifact/i)
+
+const tempDir = await mkdtemp(path.join(os.tmpdir(), "maff-artifact-smoke-"))
+const zipPath = path.join(tempDir, "exact-bundle.zip")
+const zip = new yazl.ZipFile()
+zip.addBuffer(Buffer.from("\\documentclass{article}\\begin{document}Exact\\end{document}\n"), "main.tex")
+zip.addBuffer(Buffer.from("%PDF-1.4\n% synthetic exact smoke PDF\n"), "main.pdf")
+zip.addBuffer(Buffer.from("@article{exact,title={Exact}}\n"), "references.bib")
+zip.end()
+await pipeline(zip.outputStream, createWriteStream(zipPath))
+const originalBytes = await readFile(zipPath)
+const originalHash = createHash("sha256").update(originalBytes).digest("hex")
+const durableArtifact = await runtime.createArtifactFromPath({ workspaceId: workspace.id, projectId: project.id, workstreamId: physicalWorkstream.id, researchArtifactId: physicalReport.id, path: zipPath, title: "Exact manuscript bundle", kind: "other", mimeType: "application/zip", metadata: { required_files: ["main.tex", "main.pdf", "references.bib"] } })
+assert.equal(durableArtifact.sha256, originalHash)
+assert.equal(durableArtifact.byteSize, originalBytes.length)
+await runtime.attachArtifactToManuscriptVersion({ workspaceId: workspace.id, artifactId: durableArtifact.id, manuscriptVersionId: manuscriptVersion.id, role: "source_bundle" })
+await writeFile(zipPath, "mutated after ingestion")
+const replacement = await runtime.createArtifactFromPath({ workspaceId: workspace.id, projectId: project.id, workstreamId: physicalWorkstream.id, path: zipPath, title: "Mutated replacement candidate", kind: "other" })
+assert.notEqual(replacement.id, durableArtifact.id)
+assert.notEqual(replacement.sha256, durableArtifact.sha256)
+await rm(tempDir, { recursive: true, force: true })
+
+const freshVerification = await runtime.verifyArtifact(workspace.id, durableArtifact.id)
+assert.equal(freshVerification.ok, true)
+assert.equal(freshVerification.actualSha256, originalHash)
+const archive = await runtime.listArtifactArchive(workspace.id, durableArtifact.id)
+assert.ok(archive.entries.some((entry) => entry.path === "main.tex"))
+assert.ok(archive.entries.some((entry) => entry.path === "main.pdf"))
+const exactStored = await runtime.getArtifactStorageFile(workspace.id, durableArtifact.id)
+assert.deepEqual(await readFile(exactStored.file), originalBytes)
+const freshReviewerDownload = await callTool("download_artifact", { workspace_id: workspace.id, artifact_id: durableArtifact.id }, { userId: user.id, claimsScope: "maff:read", resourceAccess: { maff: { roles: ["reader"] } }, sub: `fresh-reviewer-${suffix}` }) as any
+assert.match(freshReviewerDownload.uri, new RegExp(`/api/artifacts/${durableArtifact.id}/content`))
+assert.equal(freshReviewerDownload.sha256, originalHash)
+const workstreamWithArtifact = await runtime.getWorkstream(workspace.id, physicalWorkstream.id)
+assert.ok(workstreamWithArtifact.artifacts.some((candidate) => candidate.id === durableArtifact.id))
+assert.ok((await runtime.listArtifacts({ workspaceId: workspace.id, manuscriptVersionId: manuscriptVersion.id })).some((candidate) => candidate.id === durableArtifact.id))
+await assert.rejects(() => runtime.getArtifact(randomUUID(), durableArtifact.id), /not found/i)
+await assert.rejects(() => callTool("get_artifact", { workspace_id: workspace.id, artifact_id: durableArtifact.id }, { userId: outsider.id, claimsScope: "maff:read", resourceAccess: { maff: { roles: ["reader"] } } }), /Workspace permission denied/)
+const metadataExport = await runtime.getResearchArtifactBundle(workspace.id, [physicalReport.id])
+assert.equal(metadataExport[0].physicalArtifacts[0].id, durableArtifact.id)
+const submittedPhysical = await runtime.submitReportForReview({ workspaceId: workspace.id, reportId: draftPhysicalSubmission.id })
+assert.equal(submittedPhysical.report_status, "submitted")
+
+// Missing managed data is an explicit integrity failure, never metadata-only success.
+await rm(storagePath(replacement.storageKey!), { force: true })
+const missingVerification = await runtime.verifyArtifact(workspace.id, replacement.id)
+assert.equal(missingVerification.ok, false)
+assert.equal(missingVerification.status, "missing")
+await assert.rejects(() => runtime.downloadArtifactReference(workspace.id, replacement.id), /missing/i)
 
 await prisma.$disconnect()
 console.log("Maff v2 database smoke checks passed")

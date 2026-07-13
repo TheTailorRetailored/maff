@@ -17,12 +17,14 @@
     "test:smoke": "node dist/smoke.js",
     "test:smoke:src": "tsx src/smoke.ts",
     "test:smoke:db": "tsx src/smokeRuntimeDb.ts",
+    "test:artifact-storage": "tsx src/artifacts/storageSmoke.ts",
     "test:migration:fixture": "tsx src/migrationFixture.ts",
     "admin:reset-legacy": "node dist/admin/resetLegacyResearch.js",
     "admin:reset-legacy:src": "tsx src/admin/resetLegacyResearch.ts",
     "admin:reset-research": "node dist/admin/resetResearchWorkspace.js",
     "admin:reset-research:src": "tsx src/admin/resetResearchWorkspace.ts",
-    "admin:link-oidc-identity:src": "tsx src/admin/linkOidcIdentity.ts"
+    "admin:link-oidc-identity:src": "tsx src/admin/linkOidcIdentity.ts",
+    "admin:diagnose-ephemeral-artifacts:src": "tsx src/admin/diagnoseEphemeralArtifacts.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.13.0",
@@ -31,14 +33,18 @@
     "express": "^4.19.2",
     "jose": "^5.9.6",
     "yaml": "^2.9.0",
+    "yauzl": "^3.2.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {
     "@types/cors": "^2.8.17",
     "@types/express": "^4.17.21",
     "@types/node": "^20.17.6",
+    "@types/yauzl": "^2.10.3",
+    "@types/yazl": "^2.4.5",
     "prisma": "^5.22.0",
     "tsx": "^4.22.4",
-    "typescript": "^5.6.3"
+    "typescript": "^5.6.3",
+    "yazl": "^3.3.1"
   }
 }

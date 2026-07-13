@@ -36,9 +36,10 @@ const listResultKeys: Record<string, string> = {
   list_spinout_candidates: "spinouts",
   list_assumption_regimes: "assumptions",
   list_theorem_contracts: "contracts",
-  list_frontier_snapshots: "snapshots"
+  list_frontier_snapshots: "snapshots",
+  list_artifacts: "physical_artifacts"
 }
-const readOnlyToolNames = new Set(["get_my_maff_context", "list_workspaces", "get_project", "list_projects", "get_project_control_room", "compute_submission_readiness", "get_integration_coverage", "list_project_goals", "list_workstreams", "get_workstream", "get_agent_briefing", "list_review_rounds", "get_report", "get_object_graph", "search_research_objects", "list_research_deltas", "list_mechanisms", "list_spinout_candidates", "list_assumption_regimes", "list_theorem_contracts", "list_frontier_snapshots", "get_latest_frontier_snapshot", "list_research_artifacts", "get_research_artifact", "export_research_artifact_bundle", "list_research_links", "get_quartz_site_status"])
+const readOnlyToolNames = new Set(["get_my_maff_context", "list_workspaces", "get_project", "list_projects", "get_project_control_room", "compute_submission_readiness", "get_integration_coverage", "list_project_goals", "list_workstreams", "get_workstream", "get_agent_briefing", "list_review_rounds", "get_report", "get_object_graph", "search_research_objects", "list_research_deltas", "list_mechanisms", "list_spinout_candidates", "list_assumption_regimes", "list_theorem_contracts", "list_frontier_snapshots", "get_latest_frontier_snapshot", "list_research_artifacts", "get_research_artifact", "export_research_artifact_bundle", "list_research_links", "get_quartz_site_status", "get_artifact", "download_artifact", "list_artifacts", "list_artifact_archive", "read_artifact_archive_file", "verify_artifact", "export_physical_artifacts", "get_manuscript_version"])
 const idempotentToolNames = new Set(["rebuild_quartz_site"])
 const outputSchemaFor = (name: string): JsonSchema => {
   const listKey = listResultKeys[name]
@@ -77,8 +78,8 @@ const tool = (name: string, description: string, role: WorkspaceRole, inputSchem
   outputSchema: outputSchemaFor(name),
   annotations: { readOnlyHint: readOnlyToolNames.has(name), openWorldHint: false, destructiveHint: false, idempotentHint: idempotentToolNames.has(name) }
 })
-export const mcpServerVersion = "0.5.0-nontransitive-review-gates"
-export const expectedMcpToolCount = 89
+export const mcpServerVersion = "0.6.0-durable-artifacts"
+export const expectedMcpToolCount = 99
 
 export const toolDefinitions: ToolDef[] = [
   tool("get_my_maff_context", "Recover where the user is up to. Infers the user's workspace, summarizes active projects, ready assignments, reports needing review, and suggested simple chat prompts.", "viewer", objectSchema({ workspace: s, project: s })),
@@ -134,7 +135,17 @@ export const toolDefinitions: ToolDef[] = [
   tool("link_objects", "Create a typed GraphEdge between mathematical or coordination objects.", "editor", objectSchema({ workspace_id: s, project_id: s, source_type: s, source_id: s, target_type: s, target_id: s, edge_type: s, metadata: anyObj }, ["workspace_id", "source_type", "source_id", "target_type", "target_id", "edge_type"])),
   tool("get_object_graph", "Read the typed mathematical object graph.", "viewer", objectSchema({ workspace_id: s, project_id: s, source_type: s, source_id: s }, ["workspace_id"])),
   tool("search_research_objects", "Search typed Maff research objects.", "viewer", objectSchema({ workspace_id: s, project_id: s, query: s, type: s }, ["workspace_id"])),
-  tool("create_artifact", "Register a durable artifact without arbitrary file writes.", "editor", objectSchema({ workspace_id: s, project_id: s, workstream_id: s, kind: s, title: s, uri: s, path: s, content_hash: s, metadata: anyObj, created_by_agent_run_id: s }, ["workspace_id", "project_id", "title"])),
+  tool("create_artifact", "Register an external durable URI, or ingest path bytes into immutable Maff storage. Caller-supplied hashes never establish durability.", "editor", objectSchema({ workspace_id: s, project_id: s, workstream_id: s, research_artifact_id: s, kind: s, title: s, uri: s, path: s, mime_type: s, metadata: anyObj, created_by_agent_run_id: s }, ["workspace_id", "project_id", "title"])),
+  tool("create_artifact_from_path", "Ingest a local file into immutable Maff-controlled storage. The path is provenance only; Maff computes SHA-256 and byte size from copied bytes.", "editor", objectSchema({ workspace_id: s, project_id: s, workstream_id: s, research_artifact_id: s, path: s, title: s, kind: s, mime_type: s, metadata: anyObj, created_by_agent_run_id: s }, ["workspace_id", "project_id", "path", "title"])),
+  tool("get_artifact", "Fetch immutable physical Artifact metadata and direct ResearchArtifact/ManuscriptVersion links.", "viewer", objectSchema({ workspace_id: s, artifact_id: s }, ["workspace_id", "artifact_id"])),
+  tool("download_artifact", "Return an authorised connector-style file reference for streaming exact Artifact bytes; bytes are never embedded as JSON/base64.", "viewer", objectSchema({ workspace_id: s, artifact_id: s }, ["workspace_id", "artifact_id"])),
+  tool("list_artifacts", "List physical Artifacts by project, workstream, ResearchArtifact, or ManuscriptVersion.", "viewer", objectSchema({ workspace_id: s, project_id: s, workstream_id: s, research_artifact_id: s, manuscript_version_id: s }, ["workspace_id"])),
+  tool("list_artifact_archive", "List entries in an ingested ZIP Artifact after integrity verification.", "viewer", objectSchema({ workspace_id: s, artifact_id: s }, ["workspace_id", "artifact_id"])),
+  tool("read_artifact_archive_file", "Return an authorised streaming file reference for one selected file in an ingested ZIP Artifact.", "viewer", objectSchema({ workspace_id: s, artifact_id: s, path: s }, ["workspace_id", "artifact_id", "path"])),
+  tool("verify_artifact", "Recompute stored Artifact SHA-256 and byte size, failing explicitly for missing or corrupt managed data.", "viewer", objectSchema({ workspace_id: s, artifact_id: s }, ["workspace_id", "artifact_id"])),
+  tool("attach_artifact_to_manuscript_version", "Immutably link an ingested physical Artifact to an exact ManuscriptVersion with a role such as source_bundle or compiled_pdf.", "editor", objectSchema({ workspace_id: s, artifact_id: s, manuscript_version_id: s, role: s }, ["workspace_id", "artifact_id", "manuscript_version_id", "role"])),
+  tool("export_physical_artifacts", "Export authorised streaming references for all physical Artifacts linked to a workstream or exact ManuscriptVersion.", "viewer", objectSchema({ workspace_id: s, workstream_id: s, manuscript_version_id: s }, ["workspace_id"])),
+  tool("get_manuscript_version", "Read an exact ManuscriptVersion with its directly linked immutable physical Artifacts and proof obligations.", "viewer", objectSchema({ workspace_id: s, manuscript_version_id: s }, ["workspace_id", "manuscript_version_id"])),
 
   tool("create_research_delta", "Capture a compact research delta: what changed, portable value, blockers, and next move. Low-friction by design.", "editor", objectSchema({ workspace_id: s, project_id: s, source_type: s, source_id: s, title: s, summary_markdown: s, what_changed_markdown: s, mainline_effect_markdown: s, reusable_ideas_markdown: s, blockers_markdown: s, next_move_markdown: s, confidence: s }, ["workspace_id", "title"])),
   tool("list_research_deltas", "List compact research deltas by workspace/project/source.", "viewer", objectSchema({ workspace_id: s, project_id: s, source_type: s, source_id: s, limit: n }, ["workspace_id"])),
@@ -258,7 +269,17 @@ export async function callTool(toolName: string, args: any, ctx: ToolContext) {
     case "link_objects": return runtime.linkObjects({ workspaceId, projectId: args.project_id, sourceType: args.source_type, sourceId: args.source_id, targetType: args.target_type, targetId: args.target_id, edgeType: args.edge_type, metadata: args.metadata })
     case "get_object_graph": return runtime.getObjectGraph({ workspaceId, projectId: args.project_id, sourceType: args.source_type, sourceId: args.source_id })
     case "search_research_objects": return runtime.searchResearchObjects({ workspaceId, projectId: args.project_id, query: args.query, type: args.type })
-    case "create_artifact": return runtime.createArtifact({ workspaceId, projectId: args.project_id, workstreamId: args.workstream_id, kind: args.kind, title: args.title, uri: args.uri, path: args.path, contentHash: args.content_hash, metadata: args.metadata, createdByAgentRunId: args.created_by_agent_run_id })
+    case "create_artifact": return runtime.createArtifact({ workspaceId, projectId: args.project_id, workstreamId: args.workstream_id, researchArtifactId: args.research_artifact_id, kind: args.kind, title: args.title, uri: args.uri, path: args.path, mimeType: args.mime_type, metadata: args.metadata, createdByAgentRunId: args.created_by_agent_run_id })
+    case "create_artifact_from_path": return runtime.createArtifactFromPath({ workspaceId, projectId: args.project_id, workstreamId: args.workstream_id, researchArtifactId: args.research_artifact_id, path: args.path, title: args.title, kind: args.kind, mimeType: args.mime_type, metadata: args.metadata, createdByAgentRunId: args.created_by_agent_run_id })
+    case "get_artifact": return runtime.getArtifact(workspaceId, args.artifact_id)
+    case "download_artifact": return runtime.downloadArtifactReference(workspaceId, args.artifact_id)
+    case "list_artifacts": return runtime.listArtifacts({ workspaceId, projectId: args.project_id, workstreamId: args.workstream_id, researchArtifactId: args.research_artifact_id, manuscriptVersionId: args.manuscript_version_id })
+    case "list_artifact_archive": return runtime.listArtifactArchive(workspaceId, args.artifact_id)
+    case "read_artifact_archive_file": return runtime.artifactArchiveEntryReference(workspaceId, args.artifact_id, args.path)
+    case "verify_artifact": return runtime.verifyArtifact(workspaceId, args.artifact_id)
+    case "attach_artifact_to_manuscript_version": return runtime.attachArtifactToManuscriptVersion({ workspaceId, artifactId: args.artifact_id, manuscriptVersionId: args.manuscript_version_id, role: args.role })
+    case "export_physical_artifacts": return runtime.exportPhysicalArtifacts({ workspaceId, workstreamId: args.workstream_id, manuscriptVersionId: args.manuscript_version_id })
+    case "get_manuscript_version": return runtime.getManuscriptVersion(workspaceId, args.manuscript_version_id)
     case "create_research_delta": return runtime.createResearchDelta({ workspaceId, projectId: args.project_id, sourceType: args.source_type, sourceId: args.source_id, title: args.title, summaryMarkdown: args.summary_markdown, whatChangedMarkdown: args.what_changed_markdown, mainlineEffectMarkdown: args.mainline_effect_markdown, reusableIdeasMarkdown: args.reusable_ideas_markdown, blockersMarkdown: args.blockers_markdown, nextMoveMarkdown: args.next_move_markdown, confidence: args.confidence, createdByUserId: userId })
     case "list_research_deltas": return runtime.listResearchDeltas({ workspaceId, projectId: args.project_id, sourceType: args.source_type, sourceId: args.source_id, limit: args.limit })
     case "create_mechanism": return runtime.createMechanism({ workspaceId, projectId: args.project_id, title: args.title, slug: args.slug, status: args.status, maturity: args.maturity, descriptionMarkdown: args.description_markdown, coreIdeaMarkdown: args.core_idea_markdown, whereItWorkedMarkdown: args.where_it_worked_markdown, whereItFailedMarkdown: args.where_it_failed_markdown, possibleTransfersMarkdown: args.possible_transfers_markdown, killConditionsMarkdown: args.kill_conditions_markdown, centralityScore: args.centrality_score, portabilityScore: args.portability_score, tractabilityScore: args.tractability_score, noveltyScore: args.novelty_score, loadBearingScore: args.load_bearing_score, createdByUserId: userId })
@@ -315,6 +336,15 @@ export function structuredContentForTool(toolName: string, value: unknown): Json
 
 export function contentResult(toolName: string, value: unknown) {
   const structuredContent = structuredContentForTool(toolName, value)
+  if ((toolName === "download_artifact" || toolName === "read_artifact_archive_file") && typeof (structuredContent as any).uri === "string") {
+    return {
+      structuredContent,
+      content: [
+        { type: "resource_link", uri: (structuredContent as any).uri, name: (structuredContent as any).name ?? (structuredContent as any).entry_path ?? "artifact", mimeType: (structuredContent as any).mime_type ?? "application/octet-stream" },
+        { type: "text", text: JSON.stringify(structuredContent, null, 2) }
+      ]
+    }
+  }
   return {
     structuredContent,
     content: [{ type: "text", text: JSON.stringify(structuredContent, null, 2) }]
@@ -342,6 +372,9 @@ export function formatResearchArtifact(artifact: any) {
     description_markdown: artifact.descriptionMarkdown ?? null,
     content_markdown: contentMarkdown,
     file_path: artifact.filePath ?? null,
+    file_status: artifact.fileStatus ?? (artifact.filePath ? "provenance_only" : "not_applicable"),
+    file_diagnostic: artifact.fileDiagnostic ?? null,
+    physical_artifacts: Array.isArray(artifact.physicalArtifacts) ? artifact.physicalArtifacts.map((physical: any) => ({ id: physical.id, original_filename: physical.originalFilename, mime_type: physical.mimeType, byte_size: physical.byteSize === null ? null : Number(physical.byteSize), sha256: physical.sha256, storage_status: physical.storageStatus, workstream_id: physical.workstreamId, manuscript_version_ids: (physical.manuscriptLinks ?? []).map((link: any) => link.manuscriptVersionId) })) : [],
     url: artifact.url ?? null,
     created_at: isoTimestamp(artifact.createdAt),
     updated_at: isoTimestamp(artifact.updatedAt),
@@ -352,7 +385,7 @@ export function formatResearchArtifact(artifact: any) {
 function formatResearchArtifactBundle(artifacts: any[]) {
   const orderedArtifacts = artifacts.map(formatResearchArtifact).sort((a, b) => a.id.localeCompare(b.id))
   const manifest = orderedArtifacts.map(({ id, content_hash }) => ({ id, content_hash }))
-  return { artifacts: orderedArtifacts, manifest_hash: sha256(JSON.stringify(manifest)) }
+  return { export_type: "research_metadata_with_linked_physical_artifact_references", note: "ResearchArtifact content is metadata/report content. Physical bytes must be retrieved through download_artifact or export_physical_artifacts.", artifacts: orderedArtifacts, manifest_hash: sha256(JSON.stringify(manifest)) }
 }
 
 function clip(text: unknown, max = 280) {
@@ -520,7 +553,14 @@ function compactArtifact(artifact: any) {
     kind: artifact.kind,
     title: artifact.title,
     uri: artifact.uri,
-    path: artifact.path,
+    original_filename: artifact.originalFilename,
+    mime_type: artifact.mimeType,
+    byte_size: artifact.byteSize === null || artifact.byteSize === undefined ? null : Number(artifact.byteSize),
+    sha256: artifact.sha256,
+    storage_status: artifact.storageStatus,
+    workstream_id: artifact.workstreamId,
+    research_artifact_id: artifact.researchArtifactId,
+    source_path_provenance: artifact.path,
     created_at: artifact.createdAt
   }
 }

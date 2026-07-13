@@ -209,6 +209,19 @@ enum ArtifactKind {
   other
 }
 
+enum ArtifactStorageStatus {
+  available
+  missing
+  corrupt
+}
+
+enum ResearchArtifactFileStatus {
+  not_applicable
+  provenance_only
+  requires_regeneration
+  durable
+}
+
 enum MathObjectType {
   definition
   object
@@ -422,15 +435,15 @@ model User {
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  memberships WorkspaceMember[]
-  jobs        Job[]             @relation("JobCreator")
-  auditLogs   AuditLog[]
-  tasks       TaskIndex[]       @relation("AssignedTasks")
-  ownedWorkspaces Workspace[]   @relation("WorkspaceOwner")
-  createdProjects Project[]      @relation("ProjectCreator")
-  approvedGoals ProjectGoal[]    @relation("GoalApprover")
-  assignedWorkstreams Workstream[] @relation("AssignedWorkstreams")
-  identities UserIdentity[]
+  memberships         WorkspaceMember[]
+  jobs                Job[]             @relation("JobCreator")
+  auditLogs           AuditLog[]
+  tasks               TaskIndex[]       @relation("AssignedTasks")
+  ownedWorkspaces     Workspace[]       @relation("WorkspaceOwner")
+  createdProjects     Project[]         @relation("ProjectCreator")
+  approvedGoals       ProjectGoal[]     @relation("GoalApprover")
+  assignedWorkstreams Workstream[]      @relation("AssignedWorkstreams")
+  identities          UserIdentity[]
 }
 
 model UserIdentity {
@@ -455,52 +468,53 @@ model Workspace {
   createdAt   DateTime      @default(now())
   updatedAt   DateTime      @updatedAt
 
-  owner       User?              @relation("WorkspaceOwner", fields: [ownerUserId], references: [id])
-  members     WorkspaceMember[]
-  nodes       NodeIndex[]
-  edges       EdgeIndex[]
-  tasks       TaskIndex[]
-  jobs        Job[]
-  auditLogs   AuditLog[]
-  localTheorems LocalTheorem[]
-  projects    Project[]
-  projectGoals ProjectGoal[]
-  workstreams Workstream[]
-  agentRuns   AgentRun[]
-  agentMessages AgentMessage[]
-  workstreamReports WorkstreamReport[]
-  reviewRounds ReviewRound[]
-  artifacts Artifact[]
-  mathObjects MathObject[]
-  claims Claim[]
-  proofRoutes ProofRoute[]
-  proofAttempts ProofAttempt[]
-  gaps Gap[]
-  counterexamples Counterexample[]
-  experiments Experiment[]
-  papers Paper[]
-  knownResults KnownResult[]
-  assumptions Assumption[]
-  formalizationTargets FormalizationTarget[]
-  leanTheorems LeanTheorem[]
-  graphEdges GraphEdge[]
-  researchDeltas ResearchDelta[]
-  mechanisms Mechanism[]
-  spinoutCandidates SpinoutCandidate[]
-  assumptionRegimes AssumptionRegime[]
-  theoremContracts TheoremContract[]
-  frontierSnapshots ResearchFrontierSnapshot[]
-  researchArtifacts ResearchArtifact[]
-  manuscriptVersions ManuscriptVersion[]
-  proofObligations ProofObligation[]
-  reviewObligationChecks ReviewObligationCheck[]
-  workstreamDependencies WorkstreamDependency[]
-  externalReviewImports ExternalReviewImport[]
-  projectEpochs ProjectEpoch[]
-  projectSubstantiveActions ProjectSubstantiveAction[]
-  strategicReviews StrategicReviewRound[]
-  projectBranches ProjectBranch[]
-  researchLinks ResearchLink[]
+  owner                      User?                       @relation("WorkspaceOwner", fields: [ownerUserId], references: [id])
+  members                    WorkspaceMember[]
+  nodes                      NodeIndex[]
+  edges                      EdgeIndex[]
+  tasks                      TaskIndex[]
+  jobs                       Job[]
+  auditLogs                  AuditLog[]
+  localTheorems              LocalTheorem[]
+  projects                   Project[]
+  projectGoals               ProjectGoal[]
+  workstreams                Workstream[]
+  agentRuns                  AgentRun[]
+  agentMessages              AgentMessage[]
+  workstreamReports          WorkstreamReport[]
+  reviewRounds               ReviewRound[]
+  artifacts                  Artifact[]
+  artifactManuscriptVersions ArtifactManuscriptVersion[]
+  mathObjects                MathObject[]
+  claims                     Claim[]
+  proofRoutes                ProofRoute[]
+  proofAttempts              ProofAttempt[]
+  gaps                       Gap[]
+  counterexamples            Counterexample[]
+  experiments                Experiment[]
+  papers                     Paper[]
+  knownResults               KnownResult[]
+  assumptions                Assumption[]
+  formalizationTargets       FormalizationTarget[]
+  leanTheorems               LeanTheorem[]
+  graphEdges                 GraphEdge[]
+  researchDeltas             ResearchDelta[]
+  mechanisms                 Mechanism[]
+  spinoutCandidates          SpinoutCandidate[]
+  assumptionRegimes          AssumptionRegime[]
+  theoremContracts           TheoremContract[]
+  frontierSnapshots          ResearchFrontierSnapshot[]
+  researchArtifacts          ResearchArtifact[]
+  manuscriptVersions         ManuscriptVersion[]
+  proofObligations           ProofObligation[]
+  reviewObligationChecks     ReviewObligationCheck[]
+  workstreamDependencies     WorkstreamDependency[]
+  externalReviewImports      ExternalReviewImport[]
+  projectEpochs              ProjectEpoch[]
+  projectSubstantiveActions  ProjectSubstantiveAction[]
+  strategicReviews           StrategicReviewRound[]
+  projectBranches            ProjectBranch[]
+  researchLinks              ResearchLink[]
 }
 
 model WorkspaceMember {
@@ -517,21 +531,21 @@ model WorkspaceMember {
 }
 
 model NodeIndex {
-  id          String   @id @default(uuid()) @db.Uuid
-  workspaceId String   @db.Uuid
-  nodeId      String
-  slug        String
-  title       String
-  type        String
-  status      String
-  area        String?
-  path        String
-  metadata    Json
-  bodyPreview String
+  id                       String    @id @default(uuid()) @db.Uuid
+  workspaceId              String    @db.Uuid
+  nodeId                   String
+  slug                     String
+  title                    String
+  type                     String
+  status                   String
+  area                     String?
+  path                     String
+  metadata                 Json
+  bodyPreview              String
   createdAtFromFrontmatter DateTime?
   updatedAtFromFrontmatter DateTime?
-  indexedAt   DateTime @default(now())
-  stale       Boolean  @default(false)
+  indexedAt                DateTime  @default(now())
+  stale                    Boolean   @default(false)
 
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
@@ -540,9 +554,9 @@ model NodeIndex {
 }
 
 model EdgeIndex {
-  id          String   @id @default(uuid()) @db.Uuid
-  workspaceId String   @db.Uuid
-  sourceNodeId String
+  id            String   @id @default(uuid()) @db.Uuid
+  workspaceId   String   @db.Uuid
+  sourceNodeId  String
   targetNodeRef String
   targetNodeId  String?
   edgeType      String
@@ -556,25 +570,25 @@ model EdgeIndex {
 }
 
 model TaskIndex {
-  id          String   @id @default(uuid()) @db.Uuid
-  workspaceId String   @db.Uuid
-  nodeId      String
-  targetNodeId String?
-  targetSection String?
-  workflow    String
-  title       String   @default("")
-  instructions String  @default("")
-  priority    Int      @default(0)
-  status      String   @default("open")
-  assignedToUserId String? @db.Uuid
+  id               String    @id @default(uuid()) @db.Uuid
+  workspaceId      String    @db.Uuid
+  nodeId           String
+  targetNodeId     String?
+  targetSection    String?
+  workflow         String
+  title            String    @default("")
+  instructions     String    @default("")
+  priority         Int       @default(0)
+  status           String    @default("open")
+  assignedToUserId String?   @db.Uuid
   claimedSessionId String?
-  leaseExpiresAt DateTime?
-  snoozedUntil DateTime?
-  completedAt DateTime?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  leaseExpiresAt   DateTime?
+  snoozedUntil     DateTime?
+  completedAt      DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
 
-  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspace  Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   assignedTo User?     @relation("AssignedTasks", fields: [assignedToUserId], references: [id])
 
   @@unique([workspaceId, nodeId])
@@ -582,18 +596,18 @@ model TaskIndex {
 }
 
 model Job {
-  id          String    @id @default(uuid()) @db.Uuid
-  workspaceId String    @db.Uuid
-  type        JobType
-  status      JobStatus @default(queued)
-  input       Json
-  output      Json?
-  error       String?
-  createdByUserId String @db.Uuid
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
-  startedAt   DateTime?
-  finishedAt  DateTime?
+  id              String    @id @default(uuid()) @db.Uuid
+  workspaceId     String    @db.Uuid
+  type            JobType
+  status          JobStatus @default(queued)
+  input           Json
+  output          Json?
+  error           String?
+  createdByUserId String    @db.Uuid
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  startedAt       DateTime?
+  finishedAt      DateTime?
 
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   createdBy User      @relation("JobCreator", fields: [createdByUserId], references: [id])
@@ -628,55 +642,55 @@ model LocalTheorem {
 }
 
 model Project {
-  id                    String        @id @default(uuid()) @db.Uuid
-  workspaceId           String        @db.Uuid
-  slug                  String
-  title                 String
-  area                  String?
-  statement             String
-  status                ProjectStatus @default(seed)
-  coordinatorSummary    String?
-  currentWorkingPaperId String?       @db.Uuid
-  strategicReviewInterval Int          @default(10)
-  strategicReviewHardLimit Int         @default(15)
-  createdByUserId       String?       @db.Uuid
-  createdAt             DateTime      @default(now())
-  updatedAt             DateTime      @updatedAt
+  id                       String        @id @default(uuid()) @db.Uuid
+  workspaceId              String        @db.Uuid
+  slug                     String
+  title                    String
+  area                     String?
+  statement                String
+  status                   ProjectStatus @default(seed)
+  coordinatorSummary       String?
+  currentWorkingPaperId    String?       @db.Uuid
+  strategicReviewInterval  Int           @default(10)
+  strategicReviewHardLimit Int           @default(15)
+  createdByUserId          String?       @db.Uuid
+  createdAt                DateTime      @default(now())
+  updatedAt                DateTime      @updatedAt
 
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   createdBy User?     @relation("ProjectCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
 
-  goals ProjectGoal[]
-  workstreams Workstream[]
-  agentRuns AgentRun[]
-  agentMessages AgentMessage[]
-  reports WorkstreamReport[]
-  reviews ReviewRound[]
-  artifacts Artifact[]
-  mathObjects MathObject[]
-  claims Claim[]
-  proofRoutes ProofRoute[]
-  proofAttempts ProofAttempt[]
-  gaps Gap[]
-  counterexamples Counterexample[]
-  experiments Experiment[]
-  formalizationTargets FormalizationTarget[]
-  leanTheorems LeanTheorem[]
-  graphEdges GraphEdge[]
-  researchDeltas ResearchDelta[]
-  mechanisms Mechanism[]
-  originSpinouts SpinoutCandidate[] @relation("SpinoutOriginProject")
-  promotedSpinouts SpinoutCandidate[] @relation("SpinoutPromotedProject")
-  assumptionRegimes AssumptionRegime[]
-  theoremContracts TheoremContract[]
-  frontierSnapshots ResearchFrontierSnapshot[]
-  researchArtifacts ResearchArtifact[]
-  manuscriptVersions ManuscriptVersion[]
-  proofObligations ProofObligation[]
-  projectEpochs ProjectEpoch[]
-  strategicReviews StrategicReviewRound[]
+  goals                 ProjectGoal[]
+  workstreams           Workstream[]
+  agentRuns             AgentRun[]
+  agentMessages         AgentMessage[]
+  reports               WorkstreamReport[]
+  reviews               ReviewRound[]
+  artifacts             Artifact[]
+  mathObjects           MathObject[]
+  claims                Claim[]
+  proofRoutes           ProofRoute[]
+  proofAttempts         ProofAttempt[]
+  gaps                  Gap[]
+  counterexamples       Counterexample[]
+  experiments           Experiment[]
+  formalizationTargets  FormalizationTarget[]
+  leanTheorems          LeanTheorem[]
+  graphEdges            GraphEdge[]
+  researchDeltas        ResearchDelta[]
+  mechanisms            Mechanism[]
+  originSpinouts        SpinoutCandidate[]         @relation("SpinoutOriginProject")
+  promotedSpinouts      SpinoutCandidate[]         @relation("SpinoutPromotedProject")
+  assumptionRegimes     AssumptionRegime[]
+  theoremContracts      TheoremContract[]
+  frontierSnapshots     ResearchFrontierSnapshot[]
+  researchArtifacts     ResearchArtifact[]
+  manuscriptVersions    ManuscriptVersion[]
+  proofObligations      ProofObligation[]
+  projectEpochs         ProjectEpoch[]
+  strategicReviews      StrategicReviewRound[]
   externalReviewImports ExternalReviewImport[]
-  branches ProjectBranch[]
+  branches              ProjectBranch[]
 
   @@unique([workspaceId, slug])
   @@index([workspaceId, status])
@@ -697,9 +711,9 @@ model ProjectGoal {
   createdAt        DateTime          @default(now())
   updatedAt        DateTime          @updatedAt
 
-  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  project   Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  approvedBy User?    @relation("GoalApprover", fields: [approvedByUserId], references: [id], onDelete: SetNull)
+  workspace   Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project     Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  approvedBy  User?        @relation("GoalApprover", fields: [approvedByUserId], references: [id], onDelete: SetNull)
   workstreams Workstream[]
 
   @@index([workspaceId, projectId, status])
@@ -732,22 +746,22 @@ model Workstream {
   updatedAt          DateTime         @updatedAt
   completedAt        DateTime?
 
-  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  project   Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  goal      ProjectGoal? @relation(fields: [goalId], references: [id], onDelete: SetNull)
-  parent    Workstream? @relation("WorkstreamChildren", fields: [parentWorkstreamId], references: [id], onDelete: SetNull)
-  children  Workstream[] @relation("WorkstreamChildren")
-  assignedTo User? @relation("AssignedWorkstreams", fields: [assignedToUserId], references: [id], onDelete: SetNull)
-  agentRuns AgentRun[]
-  messages AgentMessage[]
-  reports WorkstreamReport[]
-  reviews ReviewRound[]
-  artifacts Artifact[]
-  proofRoutes ProofRoute[]
+  workspace     Workspace              @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project       Project                @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  goal          ProjectGoal?           @relation(fields: [goalId], references: [id], onDelete: SetNull)
+  parent        Workstream?            @relation("WorkstreamChildren", fields: [parentWorkstreamId], references: [id], onDelete: SetNull)
+  children      Workstream[]           @relation("WorkstreamChildren")
+  assignedTo    User?                  @relation("AssignedWorkstreams", fields: [assignedToUserId], references: [id], onDelete: SetNull)
+  agentRuns     AgentRun[]
+  messages      AgentMessage[]
+  reports       WorkstreamReport[]
+  reviews       ReviewRound[]
+  artifacts     Artifact[]
+  proofRoutes   ProofRoute[]
   proofAttempts ProofAttempt[]
-  experiments Experiment[]
-  dependencies WorkstreamDependency[] @relation("DependentWorkstream")
-  dependents WorkstreamDependency[] @relation("PrerequisiteWorkstream")
+  experiments   Experiment[]
+  dependencies  WorkstreamDependency[] @relation("DependentWorkstream")
+  dependents    WorkstreamDependency[] @relation("PrerequisiteWorkstream")
 
   @@index([workspaceId, projectId, status, priority])
   @@index([workspaceId, goalId])
@@ -770,11 +784,11 @@ model AgentRun {
   startedAt         DateTime       @default(now())
   finishedAt        DateTime?
 
-  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  project   Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  workstream Workstream @relation(fields: [workstreamId], references: [id], onDelete: Cascade)
+  workspace    Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project      Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  workstream   Workstream    @relation(fields: [workstreamId], references: [id], onDelete: Cascade)
   reviewRounds ReviewRound[]
-  artifacts Artifact[]
+  artifacts    Artifact[]
 
   @@index([workspaceId, workstreamId, status])
   @@index([workspaceId, projectId, startedAt])
@@ -792,8 +806,8 @@ model AgentMessage {
   artifactRefs Json
   createdAt    DateTime         @default(now())
 
-  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  project   Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  workspace  Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project    Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
   workstream Workstream? @relation(fields: [workstreamId], references: [id], onDelete: SetNull)
 
   @@index([workspaceId, projectId, createdAt])
@@ -814,73 +828,74 @@ model WorkstreamReport {
   updatedAt        DateTime               @updatedAt
   submittedAt      DateTime?
 
-  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  project   Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  workstream Workstream @relation(fields: [workstreamId], references: [id], onDelete: Cascade)
-  reviews ReviewRound[]
+  workspace  Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project    Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  workstream Workstream    @relation(fields: [workstreamId], references: [id], onDelete: Cascade)
+  reviews    ReviewRound[]
 
   @@index([workspaceId, workstreamId, status])
 }
 
 model ReviewRound {
-  id                  String        @id @default(uuid()) @db.Uuid
-  workspaceId         String        @db.Uuid
-  projectId           String        @db.Uuid
-  workstreamId        String        @db.Uuid
-  reportId            String?       @db.Uuid
-  targetObjectType    String
-  targetObjectId      String
-  reviewerRole        AgentRole
-  verdict             ReviewVerdict
-  issues              Json
-  requiredChanges     Json
-  checkedRefs         Json
-  bodyMarkdown        String
-  createdByAgentRunId String?       @db.Uuid
-  reviewType          ReviewType    @default(legacy_unspecified)
-  targetVersion       String?
-  scope               Json          @default("{}")
-  inspectedArtifactIds Json         @default("[]")
-  checkedObligationIds Json         @default("[]")
-  parentMathReopenable Boolean      @default(true)
-  priorApprovalsEvidenceOnly Boolean @default(true)
-  independence        ReviewIndependence @default(same_workstream_reviewer)
-  createdAt           DateTime      @default(now())
+  id                         String             @id @default(uuid()) @db.Uuid
+  workspaceId                String             @db.Uuid
+  projectId                  String             @db.Uuid
+  workstreamId               String             @db.Uuid
+  reportId                   String?            @db.Uuid
+  targetObjectType           String
+  targetObjectId             String
+  reviewerRole               AgentRole
+  verdict                    ReviewVerdict
+  issues                     Json
+  requiredChanges            Json
+  checkedRefs                Json
+  bodyMarkdown               String
+  createdByAgentRunId        String?            @db.Uuid
+  reviewType                 ReviewType         @default(legacy_unspecified)
+  targetVersion              String?
+  scope                      Json               @default("{}")
+  inspectedArtifactIds       Json               @default("[]")
+  checkedObligationIds       Json               @default("[]")
+  parentMathReopenable       Boolean            @default(true)
+  priorApprovalsEvidenceOnly Boolean            @default(true)
+  independence               ReviewIndependence @default(same_workstream_reviewer)
+  createdAt                  DateTime           @default(now())
 
-  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  workstream Workstream @relation(fields: [workstreamId], references: [id], onDelete: Cascade)
-  report WorkstreamReport? @relation(fields: [reportId], references: [id], onDelete: SetNull)
-  createdByAgentRun AgentRun? @relation(fields: [createdByAgentRunId], references: [id], onDelete: SetNull)
-  obligationChecks ReviewObligationCheck[]
+  workspace         Workspace               @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project           Project                 @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  workstream        Workstream              @relation(fields: [workstreamId], references: [id], onDelete: Cascade)
+  report            WorkstreamReport?       @relation(fields: [reportId], references: [id], onDelete: SetNull)
+  createdByAgentRun AgentRun?               @relation(fields: [createdByAgentRunId], references: [id], onDelete: SetNull)
+  obligationChecks  ReviewObligationCheck[]
 
   @@index([workspaceId, workstreamId, verdict])
   @@index([workspaceId, projectId, reviewType, targetVersion, verdict])
 }
 
 model ManuscriptVersion {
-  id                  String   @id @default(uuid()) @db.Uuid
-  workspaceId         String   @db.Uuid
-  projectId           String   @db.Uuid
-  artifactId          String   @db.Uuid
-  version             Int
-  contentHash         String
-  theoremFingerprint  String
-  citationFingerprint String
-  isCanonical         Boolean  @default(false)
-  verificationState   ManuscriptVerificationState @default(unverified_candidate)
-  freezeLevel         ManuscriptFreezeLevel @default(none)
-  lexicalFrozenAt     DateTime?
-  interfaceFrozenAt   DateTime?
+  id                   String                      @id @default(uuid()) @db.Uuid
+  workspaceId          String                      @db.Uuid
+  projectId            String                      @db.Uuid
+  artifactId           String                      @db.Uuid
+  version              Int
+  contentHash          String
+  theoremFingerprint   String
+  citationFingerprint  String
+  isCanonical          Boolean                     @default(false)
+  verificationState    ManuscriptVerificationState @default(unverified_candidate)
+  freezeLevel          ManuscriptFreezeLevel       @default(none)
+  lexicalFrozenAt      DateTime?
+  interfaceFrozenAt    DateTime?
   mathematicalFrozenAt DateTime?
-  supersededAt        DateTime?
-  createdAt           DateTime @default(now())
+  supersededAt         DateTime?
+  createdAt            DateTime                    @default(now())
 
-  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  artifact ResearchArtifact @relation(fields: [artifactId], references: [id], onDelete: Cascade)
-  obligations ProofObligation[]
+  workspace             Workspace                   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project               Project                     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  artifact              ResearchArtifact            @relation(fields: [artifactId], references: [id], onDelete: Cascade)
+  obligations           ProofObligation[]
   externalReviewImports ExternalReviewImport[]
+  physicalArtifacts     ArtifactManuscriptVersion[]
 
   @@unique([projectId, version])
   @@unique([projectId, contentHash])
@@ -888,30 +903,30 @@ model ManuscriptVersion {
 }
 
 model ProofObligation {
-  id                  String   @id @default(uuid()) @db.Uuid
-  workspaceId         String   @db.Uuid
-  projectId           String   @db.Uuid
-  manuscriptVersionId String   @db.Uuid
-  claimId             String?  @db.Uuid
-  title               String
-  statementMarkdown   String
-  dependencies        Json     @default("[]")
-  sourceArtifactId    String?  @db.Uuid
-  proofLocation       String?
-  manuscriptLocation  String?
-  externalTheorems    Json     @default("[]")
-  externalAssumptionsMatched Boolean?
+  id                          String   @id @default(uuid()) @db.Uuid
+  workspaceId                 String   @db.Uuid
+  projectId                   String   @db.Uuid
+  manuscriptVersionId         String   @db.Uuid
+  claimId                     String?  @db.Uuid
+  title                       String
+  statementMarkdown           String
+  dependencies                Json     @default("[]")
+  sourceArtifactId            String?  @db.Uuid
+  proofLocation               String?
+  manuscriptLocation          String?
+  externalTheorems            Json     @default("[]")
+  externalAssumptionsMatched  Boolean?
   exactManuscriptProofPresent Boolean?
-  required            Boolean  @default(true)
-  createdAt           DateTime @default(now())
-  updatedAt           DateTime @updatedAt
+  required                    Boolean  @default(true)
+  createdAt                   DateTime @default(now())
+  updatedAt                   DateTime @updatedAt
 
-  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  manuscriptVersion ManuscriptVersion @relation(fields: [manuscriptVersionId], references: [id], onDelete: Cascade)
-  claim Claim? @relation(fields: [claimId], references: [id], onDelete: SetNull)
-  sourceArtifact ResearchArtifact? @relation("ObligationSourceArtifact", fields: [sourceArtifactId], references: [id], onDelete: SetNull)
-  checks ReviewObligationCheck[]
+  workspace         Workspace               @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project           Project                 @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  manuscriptVersion ManuscriptVersion       @relation(fields: [manuscriptVersionId], references: [id], onDelete: Cascade)
+  claim             Claim?                  @relation(fields: [claimId], references: [id], onDelete: SetNull)
+  sourceArtifact    ResearchArtifact?       @relation("ObligationSourceArtifact", fields: [sourceArtifactId], references: [id], onDelete: SetNull)
+  checks            ReviewObligationCheck[]
 
   @@index([workspaceId, manuscriptVersionId])
   @@index([workspaceId, claimId])
@@ -926,23 +941,25 @@ model ReviewObligationCheck {
   evidenceMarkdown  String?
   createdAt         DateTime @default(now())
 
-  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  reviewRound ReviewRound @relation(fields: [reviewRoundId], references: [id], onDelete: Cascade)
+  workspace       Workspace       @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  reviewRound     ReviewRound     @relation(fields: [reviewRoundId], references: [id], onDelete: Cascade)
   proofObligation ProofObligation @relation(fields: [proofObligationId], references: [id], onDelete: Cascade)
+
   @@unique([reviewRoundId, proofObligationId])
   @@index([workspaceId, proofObligationId, status])
 }
 
 model WorkstreamDependency {
-  id                     String   @id @default(uuid()) @db.Uuid
-  workspaceId            String   @db.Uuid
-  dependentWorkstreamId  String   @db.Uuid
-  prerequisiteWorkstreamId String @db.Uuid
-  createdAt              DateTime @default(now())
+  id                       String   @id @default(uuid()) @db.Uuid
+  workspaceId              String   @db.Uuid
+  dependentWorkstreamId    String   @db.Uuid
+  prerequisiteWorkstreamId String   @db.Uuid
+  createdAt                DateTime @default(now())
 
-  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  dependent Workstream @relation("DependentWorkstream", fields: [dependentWorkstreamId], references: [id], onDelete: Cascade)
+  workspace    Workspace  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  dependent    Workstream @relation("DependentWorkstream", fields: [dependentWorkstreamId], references: [id], onDelete: Cascade)
   prerequisite Workstream @relation("PrerequisiteWorkstream", fields: [prerequisiteWorkstreamId], references: [id], onDelete: Cascade)
+
   @@unique([dependentWorkstreamId, prerequisiteWorkstreamId])
   @@index([workspaceId, prerequisiteWorkstreamId])
 }
@@ -965,8 +982,8 @@ model ExternalReviewImport {
   requiredChanges       Json                     @default("[]")
   createdAt             DateTime                 @default(now())
 
-  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  workspace         Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project           Project            @relation(fields: [projectId], references: [id], onDelete: Cascade)
   manuscriptVersion ManuscriptVersion? @relation(fields: [manuscriptVersionId], references: [id], onDelete: SetNull)
 
   @@index([workspaceId, projectId, createdAt])
@@ -975,20 +992,20 @@ model ExternalReviewImport {
 
 /// A numbered epoch measures material graph changes only; reads and unchanged summaries do not enter it.
 model ProjectEpoch {
-  id                        String   @id @default(uuid()) @db.Uuid
-  workspaceId               String   @db.Uuid
-  projectId                 String   @db.Uuid
-  number                    Int
-  substantiveActionCount    Int      @default(0)
-  strategicReviewQueuedAt   DateTime?
+  id                         String    @id @default(uuid()) @db.Uuid
+  workspaceId                String    @db.Uuid
+  projectId                  String    @db.Uuid
+  number                     Int
+  substantiveActionCount     Int       @default(0)
+  strategicReviewQueuedAt    DateTime?
   strategicReviewCompletedAt DateTime?
-  downstreamPausedAt        DateTime?
-  createdAt                 DateTime @default(now())
-  updatedAt                 DateTime @updatedAt
+  downstreamPausedAt         DateTime?
+  createdAt                  DateTime  @default(now())
+  updatedAt                  DateTime  @updatedAt
 
-  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  actions ProjectSubstantiveAction[]
+  workspace        Workspace                  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project          Project                    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  actions          ProjectSubstantiveAction[]
   strategicReviews StrategicReviewRound[]
 
   @@unique([projectId, number])
@@ -996,18 +1013,18 @@ model ProjectEpoch {
 }
 
 model ProjectSubstantiveAction {
-  id             String   @id @default(uuid()) @db.Uuid
-  workspaceId    String   @db.Uuid
-  projectEpochId String   @db.Uuid
-  actionType     String
-  targetType     String?
-  targetId       String?
-  meaningfulDelta Boolean @default(false)
-  summary        String?
-  createdAt      DateTime @default(now())
+  id              String   @id @default(uuid()) @db.Uuid
+  workspaceId     String   @db.Uuid
+  projectEpochId  String   @db.Uuid
+  actionType      String
+  targetType      String?
+  targetId        String?
+  meaningfulDelta Boolean  @default(false)
+  summary         String?
+  createdAt       DateTime @default(now())
 
-  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  epoch ProjectEpoch @relation(fields: [projectEpochId], references: [id], onDelete: Cascade)
+  workspace Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  epoch     ProjectEpoch @relation(fields: [projectEpochId], references: [id], onDelete: Cascade)
 
   @@index([workspaceId, projectEpochId, createdAt])
 }
@@ -1029,51 +1046,79 @@ model StrategicReviewRound {
   metrics                  Json                   @default("{}")
   createdAt                DateTime               @default(now())
 
-  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  epoch ProjectEpoch? @relation(fields: [projectEpochId], references: [id], onDelete: SetNull)
+  workspace Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project   Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  epoch     ProjectEpoch? @relation(fields: [projectEpochId], references: [id], onDelete: SetNull)
 
   @@index([workspaceId, projectId, createdAt])
 }
 
 model ProjectBranch {
-  id                    String      @id @default(uuid()) @db.Uuid
-  workspaceId           String      @db.Uuid
-  projectId             String      @db.Uuid
-  title                 String
-  state                 BranchState @default(exploratory)
-  rationaleMarkdown     String?
-  targetObjectType      String?
-  targetObjectId        String?
-  createdAt             DateTime    @default(now())
-  updatedAt             DateTime    @updatedAt
+  id                String      @id @default(uuid()) @db.Uuid
+  workspaceId       String      @db.Uuid
+  projectId         String      @db.Uuid
+  title             String
+  state             BranchState @default(exploratory)
+  rationaleMarkdown String?
+  targetObjectType  String?
+  targetObjectId    String?
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
 
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  project   Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
   @@index([workspaceId, projectId, state])
 }
 
 model Artifact {
-  id                  String       @id @default(uuid()) @db.Uuid
-  workspaceId         String       @db.Uuid
-  projectId           String       @db.Uuid
-  workstreamId        String?      @db.Uuid
+  id                  String                @id @default(uuid()) @db.Uuid
+  workspaceId         String                @db.Uuid
+  projectId           String                @db.Uuid
+  workstreamId        String?               @db.Uuid
   kind                ArtifactKind
   title               String
+  originalFilename    String?
+  mimeType            String?
+  byteSize            BigInt?
+  sha256              String?
+  storageKey          String?
+  storageStatus       ArtifactStorageStatus @default(available)
   uri                 String?
   path                String?
   contentHash         String?
   metadata            Json
-  createdByAgentRunId String?      @db.Uuid
-  createdAt           DateTime     @default(now())
+  researchArtifactId  String?               @db.Uuid
+  createdByAgentRunId String?               @db.Uuid
+  createdAt           DateTime              @default(now())
 
-  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  workstream Workstream? @relation(fields: [workstreamId], references: [id], onDelete: SetNull)
-  createdByAgentRun AgentRun? @relation(fields: [createdByAgentRunId], references: [id], onDelete: SetNull)
+  workspace         Workspace                   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project           Project                     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  workstream        Workstream?                 @relation(fields: [workstreamId], references: [id], onDelete: SetNull)
+  researchArtifact  ResearchArtifact?           @relation(fields: [researchArtifactId], references: [id], onDelete: SetNull)
+  createdByAgentRun AgentRun?                   @relation(fields: [createdByAgentRunId], references: [id], onDelete: SetNull)
+  manuscriptLinks   ArtifactManuscriptVersion[]
 
   @@index([workspaceId, projectId, kind])
+  @@index([workspaceId, workstreamId])
+  @@index([workspaceId, researchArtifactId])
+  @@index([workspaceId, sha256])
+}
+
+model ArtifactManuscriptVersion {
+  id                  String   @id @default(uuid()) @db.Uuid
+  workspaceId         String   @db.Uuid
+  artifactId          String   @db.Uuid
+  manuscriptVersionId String   @db.Uuid
+  role                String
+  createdAt           DateTime @default(now())
+
+  workspace         Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  artifact          Artifact          @relation(fields: [artifactId], references: [id], onDelete: Cascade)
+  manuscriptVersion ManuscriptVersion @relation(fields: [manuscriptVersionId], references: [id], onDelete: Cascade)
+
+  @@unique([artifactId, manuscriptVersionId, role])
+  @@index([workspaceId, manuscriptVersionId])
 }
 
 model MathObject {
@@ -1089,7 +1134,7 @@ model MathObject {
   updatedAt         DateTime       @updatedAt
 
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  project   Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
   @@index([workspaceId, projectId, type])
 }
@@ -1107,14 +1152,14 @@ model Claim {
   createdAt         DateTime    @default(now())
   updatedAt         DateTime    @updatedAt
 
-  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  routes ProofRoute[]
-  attempts ProofAttempt[]
-  gaps Gap[]
-  counterexamples Counterexample[]
+  workspace            Workspace             @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project              Project               @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  routes               ProofRoute[]
+  attempts             ProofAttempt[]
+  gaps                 Gap[]
+  counterexamples      Counterexample[]
   formalizationTargets FormalizationTarget[]
-  proofObligations ProofObligation[]
+  proofObligations     ProofObligation[]
 
   @@index([workspaceId, projectId, status])
 }
@@ -1134,35 +1179,35 @@ model ProofRoute {
   createdAt             DateTime         @default(now())
   updatedAt             DateTime         @updatedAt
 
-  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  claim Claim @relation(fields: [claimId], references: [id], onDelete: Cascade)
-  createdByWorkstream Workstream? @relation(fields: [createdByWorkstreamId], references: [id], onDelete: SetNull)
-  attempts ProofAttempt[]
-  gaps Gap[]
+  workspace           Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project             Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  claim               Claim          @relation(fields: [claimId], references: [id], onDelete: Cascade)
+  createdByWorkstream Workstream?    @relation(fields: [createdByWorkstreamId], references: [id], onDelete: SetNull)
+  attempts            ProofAttempt[]
+  gaps                Gap[]
 
   @@index([workspaceId, claimId, status])
 }
 
 model ProofAttempt {
-  id            String             @id @default(uuid()) @db.Uuid
-  workspaceId   String             @db.Uuid
-  projectId     String             @db.Uuid
-  claimId       String             @db.Uuid
-  routeId       String?            @db.Uuid
-  workstreamId  String?            @db.Uuid
-  bodyMarkdown  String
-  status        ProofAttemptStatus @default(draft)
-  gapSummary    String?
-  createdAt     DateTime           @default(now())
-  updatedAt     DateTime           @updatedAt
+  id           String             @id @default(uuid()) @db.Uuid
+  workspaceId  String             @db.Uuid
+  projectId    String             @db.Uuid
+  claimId      String             @db.Uuid
+  routeId      String?            @db.Uuid
+  workstreamId String?            @db.Uuid
+  bodyMarkdown String
+  status       ProofAttemptStatus @default(draft)
+  gapSummary   String?
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
 
-  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  claim Claim @relation(fields: [claimId], references: [id], onDelete: Cascade)
-  route ProofRoute? @relation(fields: [routeId], references: [id], onDelete: SetNull)
-  workstream Workstream? @relation(fields: [workstreamId], references: [id], onDelete: SetNull)
-  gaps Gap[]
+  workspace            Workspace             @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project              Project               @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  claim                Claim                 @relation(fields: [claimId], references: [id], onDelete: Cascade)
+  route                ProofRoute?           @relation(fields: [routeId], references: [id], onDelete: SetNull)
+  workstream           Workstream?           @relation(fields: [workstreamId], references: [id], onDelete: SetNull)
+  gaps                 Gap[]
   formalizationTargets FormalizationTarget[]
 
   @@index([workspaceId, claimId, status])
@@ -1183,11 +1228,11 @@ model Gap {
   createdAt           DateTime    @default(now())
   updatedAt           DateTime    @updatedAt
 
-  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  claim Claim? @relation(fields: [claimId], references: [id], onDelete: SetNull)
+  workspace    Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project      Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  claim        Claim?        @relation(fields: [claimId], references: [id], onDelete: SetNull)
   proofAttempt ProofAttempt? @relation(fields: [proofAttemptId], references: [id], onDelete: SetNull)
-  route ProofRoute? @relation(fields: [routeId], references: [id], onDelete: SetNull)
+  route        ProofRoute?   @relation(fields: [routeId], references: [id], onDelete: SetNull)
 
   @@index([workspaceId, projectId, status])
 }
@@ -1205,8 +1250,8 @@ model Counterexample {
   updatedAt              DateTime             @updatedAt
 
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  claim Claim @relation(fields: [claimId], references: [id], onDelete: Cascade)
+  project   Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  claim     Claim     @relation(fields: [claimId], references: [id], onDelete: Cascade)
 
   @@index([workspaceId, claimId, status])
 }
@@ -1225,8 +1270,8 @@ model Experiment {
   createdAt          DateTime         @default(now())
   updatedAt          DateTime         @updatedAt
 
-  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  workspace  Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project    Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
   workstream Workstream? @relation(fields: [workstreamId], references: [id], onDelete: SetNull)
 
   @@index([workspaceId, projectId, status])
@@ -1247,7 +1292,7 @@ model Paper {
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
 
-  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspace    Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   knownResults KnownResult[]
 
   @@index([workspaceId, projectId])
@@ -1266,7 +1311,7 @@ model KnownResult {
   updatedAt             DateTime          @updatedAt
 
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  paper Paper? @relation(fields: [paperId], references: [id], onDelete: SetNull)
+  paper     Paper?    @relation(fields: [paperId], references: [id], onDelete: SetNull)
 
   @@index([workspaceId, projectId, status])
 }
@@ -1302,9 +1347,9 @@ model FormalizationTarget {
   createdAt           DateTime                  @default(now())
   updatedAt           DateTime                  @updatedAt
 
-  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  claim Claim? @relation(fields: [claimId], references: [id], onDelete: SetNull)
+  workspace    Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project      Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  claim        Claim?        @relation(fields: [claimId], references: [id], onDelete: SetNull)
   proofAttempt ProofAttempt? @relation(fields: [proofAttemptId], references: [id], onDelete: SetNull)
   leanTheorems LeanTheorem[]
 
@@ -1326,8 +1371,8 @@ model LeanTheorem {
   createdAt             DateTime          @default(now())
   updatedAt             DateTime          @updatedAt
 
-  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  workspace           Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project             Project              @relation(fields: [projectId], references: [id], onDelete: Cascade)
   formalizationTarget FormalizationTarget? @relation(fields: [formalizationTargetId], references: [id], onDelete: SetNull)
 
   @@index([workspaceId, projectId, status])
@@ -1346,7 +1391,7 @@ model GraphEdge {
   createdAt   DateTime      @default(now())
 
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  project Project? @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  project   Project?  @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
   @@index([workspaceId, projectId, edgeType])
   @@index([workspaceId, sourceType, sourceId])
@@ -1354,22 +1399,22 @@ model GraphEdge {
 }
 
 model ResearchDelta {
-  id                         String              @id @default(uuid()) @db.Uuid
-  workspaceId                String              @db.Uuid
-  projectId                  String?             @db.Uuid
-  sourceType                 String?
-  sourceId                   String?
-  title                      String
-  summaryMarkdown            String
-  whatChangedMarkdown        String
-  mainlineEffectMarkdown     String?
-  reusableIdeasMarkdown      String?
-  blockersMarkdown           String?
-  nextMoveMarkdown           String?
-  confidence                 ResearchConfidence?
-  createdByUserId            String?             @db.Uuid
-  createdAt                  DateTime            @default(now())
-  updatedAt                  DateTime            @updatedAt
+  id                     String              @id @default(uuid()) @db.Uuid
+  workspaceId            String              @db.Uuid
+  projectId              String?             @db.Uuid
+  sourceType             String?
+  sourceId               String?
+  title                  String
+  summaryMarkdown        String
+  whatChangedMarkdown    String
+  mainlineEffectMarkdown String?
+  reusableIdeasMarkdown  String?
+  blockersMarkdown       String?
+  nextMoveMarkdown       String?
+  confidence             ResearchConfidence?
+  createdByUserId        String?             @db.Uuid
+  createdAt              DateTime            @default(now())
+  updatedAt              DateTime            @updatedAt
 
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   project   Project?  @relation(fields: [projectId], references: [id], onDelete: SetNull)
@@ -1414,22 +1459,22 @@ model Mechanism {
 }
 
 model SpinoutCandidate {
-  id                       String         @id @default(uuid()) @db.Uuid
-  workspaceId              String         @db.Uuid
-  originProjectId          String?        @db.Uuid
-  promotedProjectId        String?        @db.Uuid
+  id                       String        @id @default(uuid()) @db.Uuid
+  workspaceId              String        @db.Uuid
+  originProjectId          String?       @db.Uuid
+  promotedProjectId        String?       @db.Uuid
   title                    String
   slug                     String
-  status                   SpinoutStatus  @default(seed)
+  status                   SpinoutStatus @default(seed)
   statementSketchMarkdown  String
   whyInterestingMarkdown   String?
   relationToOriginMarkdown String?
   cheapestNextTestMarkdown String?
   possiblePayoffMarkdown   String?
   riskMarkdown             String?
-  createdByUserId          String?        @db.Uuid
-  createdAt                DateTime       @default(now())
-  updatedAt                DateTime       @updatedAt
+  createdByUserId          String?       @db.Uuid
+  createdAt                DateTime      @default(now())
+  updatedAt                DateTime      @updatedAt
 
   workspace       Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   originProject   Project?  @relation("SpinoutOriginProject", fields: [originProjectId], references: [id], onDelete: SetNull)
@@ -1521,25 +1566,28 @@ model ResearchFrontierSnapshot {
 }
 
 model ResearchArtifact {
-  id                  String                 @id @default(uuid()) @db.Uuid
-  workspaceId         String                 @db.Uuid
-  projectId           String?                @db.Uuid
+  id                  String                     @id @default(uuid()) @db.Uuid
+  workspaceId         String                     @db.Uuid
+  projectId           String?                    @db.Uuid
   title               String
   slug                String
-  kind                ResearchArtifactKind   @default(other)
-  status              ResearchArtifactStatus @default(draft)
+  kind                ResearchArtifactKind       @default(other)
+  status              ResearchArtifactStatus     @default(draft)
   descriptionMarkdown String?
   contentMarkdown     String?
   filePath            String?
+  fileStatus          ResearchArtifactFileStatus @default(not_applicable)
+  fileDiagnostic      String?
   url                 String?
-  createdByUserId     String?                @db.Uuid
-  createdAt           DateTime               @default(now())
-  updatedAt           DateTime               @updatedAt
+  createdByUserId     String?                    @db.Uuid
+  createdAt           DateTime                   @default(now())
+  updatedAt           DateTime                   @updatedAt
 
-  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  project   Project?  @relation(fields: [projectId], references: [id], onDelete: SetNull)
-  manuscriptVersions ManuscriptVersion[]
-  sourceForObligations ProofObligation[] @relation("ObligationSourceArtifact")
+  workspace            Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project              Project?            @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  manuscriptVersions   ManuscriptVersion[]
+  sourceForObligations ProofObligation[]   @relation("ObligationSourceArtifact")
+  physicalArtifacts    Artifact[]
 
   @@unique([workspaceId, slug])
   @@index([workspaceId])
@@ -1549,18 +1597,18 @@ model ResearchArtifact {
 }
 
 model ResearchLink {
-  id            String              @id @default(uuid()) @db.Uuid
-  workspaceId   String              @db.Uuid
-  projectId     String?             @db.Uuid
-  sourceType    String
-  sourceId      String
-  relationType  String
-  targetType    String
-  targetId      String
-  noteMarkdown  String?
-  confidence    ResearchConfidence?
-  createdByUserId String?           @db.Uuid
-  createdAt     DateTime            @default(now())
+  id              String              @id @default(uuid()) @db.Uuid
+  workspaceId     String              @db.Uuid
+  projectId       String?             @db.Uuid
+  sourceType      String
+  sourceId        String
+  relationType    String
+  targetType      String
+  targetId        String
+  noteMarkdown    String?
+  confidence      ResearchConfidence?
+  createdByUserId String?             @db.Uuid
+  createdAt       DateTime            @default(now())
 
   workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
