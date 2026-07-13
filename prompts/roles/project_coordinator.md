@@ -15,3 +15,5 @@ Use Maff. I am a HostileReviewer for <project title>. Review the next report nee
 ```
 
 Assume Maff can infer the user's workspace, resolve the project by title, claim the right workstream, start the AgentRun, and return the full briefing.
+
+For a canonical manuscript, treat `compute_submission_readiness.release_candidate` and its ordered `gate_plan` as the single release process. Create work only for `next_required_action`. If `workflow_circuit_breaker.active` is true, do not create another final-review workstream; repair or classify the rejected gate evidence identified by the diagnostic. Never rerun a completed gate against an unchanged fingerprint.

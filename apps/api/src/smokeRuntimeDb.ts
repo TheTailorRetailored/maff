@@ -123,7 +123,14 @@ const preservationGap = await runtime.createGap({ workspaceId: workspace.id, pro
 readiness = await runtime.computeProjectSubmissionReadiness(workspace.id, project.id)
 assert.ok(readiness.reasons.some((reason) => reason.includes(preservationGap.id)))
 await runtime.resolveGap({ workspaceId: workspace.id, gapId: preservationGap.id, suggestedResolution: "Restore the argument." })
-await runtime.recordReviewRound({ workspaceId: workspace.id, workstreamId: workstream.id, verdict: "approved", reviewType: "proof_integration", targetVersion: manuscriptVersion.id, bodyMarkdown: "Obligation restored and checked.", issues: [], requiredChanges: [], checkedRefs: [sourceA.id, manuscript.id], obligationChecks: [{ proofObligationId: obligation.id, status: "preserved", evidenceMarkdown: "Lemma 4.1 gives the required bound." }] })
+await assert.rejects(
+  () => runtime.recordReviewRound({ workspaceId: workspace.id, workstreamId: workstream.id, verdict: "approved", reviewType: "proof_integration", targetVersion: manuscriptVersion.id, bodyMarkdown: "Incomplete integration approval.", issues: [], requiredChanges: [], checkedRefs: [sourceA.id, manuscript.id] }),
+  /must preserve every required exact-version obligation/i
+)
+const integrationReview = await runtime.recordReviewRound({ workspaceId: workspace.id, workstreamId: workstream.id, verdict: "approved", reviewType: "proof_integration", targetVersion: String(manuscriptVersion.version), bodyMarkdown: "Obligation restored and checked.", issues: [], requiredChanges: [], checkedRefs: [sourceA.id, manuscript.id], checkedObligationIds: [obligation.id] })
+assert.equal(integrationReview.targetVersion, manuscriptVersion.id)
+const materializedCheck = await prisma.reviewObligationCheck.findUniqueOrThrow({ where: { reviewRoundId_proofObligationId: { reviewRoundId: integrationReview.id, proofObligationId: obligation.id } } })
+assert.equal(materializedCheck.status, "preserved")
 await runtime.recordReviewRound({ workspaceId: workspace.id, workstreamId: workstream.id, verdict: "approved", reviewType: "novelty", targetVersion: manuscriptVersion.id, scope: { claim_ids: [claim.id] }, bodyMarkdown: "No exact counterpart found; terminology limitations recorded.", issues: [], requiredChanges: [], checkedRefs: [] })
 await runtime.recordReviewRound({ workspaceId: workspace.id, workstreamId: workstream.id, verdict: "approved", reviewType: "bibliography", targetVersion: manuscriptVersion.id, bodyMarkdown: "References audited.", issues: [], requiredChanges: [], checkedRefs: [] })
 readiness = await runtime.computeProjectSubmissionReadiness(workspace.id, project.id)

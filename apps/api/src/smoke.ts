@@ -10,6 +10,7 @@ import { restAuthorizationRequirement } from "./auth/authorizationMatrix.js"
 import { productionOidc } from "./config.js"
 import { advertisedScopes, hasBearerAuthorization, hasPermission, rolesForClient, scopes } from "./auth/scopes.js"
 import { callTool, compactToolResult, contentResult, expectedMcpToolCount, formatResearchArtifact, mcpAuthorizationMatrix, mcpServerVersion, mcpToolsListResult, structuredContentForTool, toolDefinitions } from "./mcp/server.js"
+import { normalizedObligationCheckStatus, reviewEvidenceMatch } from "./research/readiness.js"
 
 const root = path.resolve("tmp-workspace")
 assert.equal(assertInsideRoot(root, path.join(root, "vault", "A.md")), path.resolve(root, "vault", "A.md"))
@@ -142,7 +143,15 @@ for (const prop of ["report_id", "workstream_id"]) {
   assert.ok(submitReportProps[prop], `submit_report_for_review schema must advertise ${prop}`)
 }
 
-assert.equal(mcpServerVersion, "0.6.3-embedded-artifact-content")
+assert.equal(mcpServerVersion, "0.7.0-release-gate-plan")
+assert.equal(normalizedObligationCheckStatus("passed"), "preserved")
+assert.equal(normalizedObligationCheckStatus("preserved"), "preserved")
+assert.equal(normalizedObligationCheckStatus("failed"), "failed")
+const releaseCandidate = { id: "version-4", version: 4, contentHash: "content-4", theoremFingerprint: "theorem-4", citationFingerprint: "citations-shared" }
+const priorCandidate = { id: "version-3", version: 3, contentHash: "content-3", theoremFingerprint: "theorem-3", citationFingerprint: "citations-shared" }
+assert.deepEqual(reviewEvidenceMatch({ targetVersion: "4" }, releaseCandidate, [priorCandidate, releaseCandidate], "compile"), { accepted: true, basis: "exact_version", reason: null })
+assert.deepEqual(reviewEvidenceMatch({ targetVersion: "version-3" }, releaseCandidate, [priorCandidate, releaseCandidate], "bibliography"), { accepted: true, basis: "citation_fingerprint", reason: null })
+assert.equal(reviewEvidenceMatch({ targetVersion: "version-3" }, releaseCandidate, [priorCandidate, releaseCandidate], "proof_integration").accepted, false)
 const toolsList = mcpToolsListResult()
 const toolsListNames = new Set(toolsList.tools.map((tool) => tool.name))
 for (const name of ["get_my_maff_context", "claim_next_assignment", "claim_next_review", "create_project", "propose_project_goal", "approve_project_goal", "create_workstream", "claim_agent_assignment", "start_agent_run", "submit_workstream_report", "record_review_round", "complete_workstream", "create_claim", "create_proof_route", "create_proof_attempt", "create_gap"]) {

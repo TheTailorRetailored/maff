@@ -6,7 +6,7 @@ import { prisma } from "../db/prisma.js"
 import { config } from "../config.js"
 import { leanClient } from "../lean/leanClient.js"
 import { requireWorkspaceRole } from "../auth/permissions.js"
-import { computeSubmissionReadiness, workstreamDependenciesSatisfied } from "./readiness.js"
+import { computeSubmissionReadiness, normalizedObligationCheckStatus, workstreamDependenciesSatisfied } from "./readiness.js"
 import { inferMimeType, ingestFile, ingestRemoteFile, listZipEntries, readZipEntryBytes, storagePath, verifyStoredFile } from "../artifacts/storage.js"
 
 const roleRecipeFiles: Record<AgentRole, string> = {
@@ -635,6 +635,21 @@ export async function claimNextReview(input: { userId: string; workspaceRef?: st
   await requireWorkspaceRole(input.userId, workspace.id, "editor")
   const sessionId = input.sessionId ?? `maff-${randomUUID()}`
   const project = await resolveProject(workspace.id, input.project)
+  if (project) {
+    const readiness = await computeSubmissionReadiness(workspace.id, project.id)
+    const circuitBreaker = (readiness as any).workflow_circuit_breaker
+    if (circuitBreaker?.active) {
+      return {
+        workspace,
+        project,
+        assignment: null,
+        briefing: null,
+        message: "Automatic reviewer assignment is paused because the release-gate circuit breaker is active. Repair or classify the rejected/incomplete gate evidence before starting another review.",
+        workflow_circuit_breaker: circuitBreaker,
+        next_required_action: (readiness as any).next_required_action
+      }
+    }
+  }
   const leaseExpiresAt = new Date(Date.now() + (input.leaseMinutes ?? 120) * 60_000)
   const workstream = await prisma.workstream.findFirst({
     where: { workspaceId: workspace.id, projectId: project?.id, status: "needs_review" },
@@ -817,8 +832,12 @@ export async function recordReviewRound(input: {
   const manuscriptReviewTypes = new Set(["proof_integration", "end_to_end_mathematical", "novelty", "bibliography", "compile", "editorial", "source_fidelity"])
   let manuscriptTarget: { id: string; contentHash: string } | null = null
   if (manuscriptReviewTypes.has(reviewType)) {
-    manuscriptTarget = await prisma.manuscriptVersion.findFirst({ where: { workspaceId: input.workspaceId, OR: [{ id: input.targetVersion }, { contentHash: input.targetVersion }] }, select: { id: true, contentHash: true } })
-    if (!manuscriptTarget) throw new Error("This review type requires an exact accessible ManuscriptVersion id or content hash.")
+    const targetRef = input.targetVersion!
+    const targetSelectors: Prisma.ManuscriptVersionWhereInput[] = [{ contentHash: targetRef }]
+    if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(targetRef)) targetSelectors.push({ id: targetRef })
+    if (/^[1-9][0-9]*$/.test(targetRef)) targetSelectors.push({ version: Number(targetRef) })
+    manuscriptTarget = await prisma.manuscriptVersion.findFirst({ where: { workspaceId: input.workspaceId, projectId: workstream.projectId, OR: targetSelectors }, select: { id: true, contentHash: true } })
+    if (!manuscriptTarget) throw new Error("This review type requires an exact accessible ManuscriptVersion id, content hash, or version number.")
     if (input.targetObjectType && input.targetObjectType !== "ManuscriptVersion") throw new Error("Manuscript review targetObjectType must be ManuscriptVersion.")
     if (input.targetObjectId && input.targetObjectId !== manuscriptTarget.id) throw new Error("Manuscript review targetObjectId must match the exact ManuscriptVersion.")
   }
@@ -829,11 +848,12 @@ export async function recordReviewRound(input: {
     if (!artifactRefs.length && artifactCount === 0) throw new Error("Computational workstreams require recorded verification artifacts before approval.")
   }
   if (verdict === "approved") await assertDurablePhysicalOutputs(input.workspaceId, input.workstreamId, input.reportId ?? workstream.reportId ?? undefined)
-  const obligationChecks = input.obligationChecks ?? []
-  if (!Array.isArray(obligationChecks)) throw new Error("obligationChecks must be an array when provided.")
+  const rawObligationChecks = input.obligationChecks ?? []
+  if (!Array.isArray(rawObligationChecks)) throw new Error("obligationChecks must be an array when provided.")
+  let obligationChecks = rawObligationChecks.map((check) => ({ ...check, status: normalizedObligationCheckStatus(check.status) }))
   const obligationIds = obligationChecks.map((check, index) => {
     if (!check || typeof check.proofObligationId !== "string" || !check.proofObligationId.trim()) throw new Error(`obligationChecks[${index}].proofObligationId must be a non-empty string.`)
-    if (typeof check.status !== "string" || !check.status.trim()) throw new Error(`obligationChecks[${index}].status must be a non-empty string.`)
+    if (typeof check.status !== "string" || !["preserved", "partial", "omitted", "failed"].includes(check.status)) throw new Error(`obligationChecks[${index}].status must be preserved/passed, partial, omitted, or failed.`)
     return check.proofObligationId
   })
   if (new Set(obligationIds).size !== obligationIds.length) throw new Error("obligationChecks must not contain duplicate proofObligationId values.")
@@ -842,12 +862,27 @@ export async function recordReviewRound(input: {
     const report = await prisma.workstreamReport.findFirst({ where: { workspaceId: input.workspaceId, id: reportId, workstreamId: input.workstreamId } })
     if (!report) throw new Error("Review report must belong to the target workstream and workspace.")
   }
-  if (obligationIds.length) {
-    const allowed = await prisma.proofObligation.count({ where: { workspaceId: input.workspaceId, id: { in: obligationIds } } })
-    if (allowed !== obligationIds.length) throw new Error("Review obligation checks must reference accessible proof obligations.")
+  const checkedObligationIds = Array.isArray(input.checkedObligationIds) ? input.checkedObligationIds.filter((id): id is string => typeof id === "string" && Boolean(id.trim())) : []
+  if (reviewType === "proof_integration" && manuscriptTarget) {
+    const targetObligations = await prisma.proofObligation.findMany({ where: { workspaceId: input.workspaceId, manuscriptVersionId: manuscriptTarget.id }, select: { id: true, required: true } })
+    const targetIds = new Set(targetObligations.map((obligation) => obligation.id))
+    const invalidIds = [...new Set([...obligationIds, ...checkedObligationIds])].filter((id) => !targetIds.has(id))
+    if (invalidIds.length) throw new Error(`Proof-integration checks must belong to the exact target ManuscriptVersion; invalid ids: ${invalidIds.join(", ")}.`)
+    if (verdict === "approved") {
+      const explicitIds = new Set(obligationChecks.map((check) => check.proofObligationId))
+      obligationChecks = [...obligationChecks, ...checkedObligationIds.filter((id) => !explicitIds.has(id)).map((proofObligationId) => ({ proofObligationId, status: "preserved", evidenceMarkdown: "Preserved by this approved proof-integration review; supplied through checked_obligation_ids." }))]
+      const preservedIds = new Set(obligationChecks.filter((check) => check.status === "preserved").map((check) => check.proofObligationId))
+      const missingRequired = targetObligations.filter((obligation) => obligation.required && !preservedIds.has(obligation.id)).map((obligation) => obligation.id)
+      if (missingRequired.length) throw new Error(`An approved proof-integration review must preserve every required exact-version obligation; missing ids: ${missingRequired.join(", ")}.`)
+    }
+  }
+  const canonicalCheckedObligationIds = [...new Set([...checkedObligationIds, ...obligationChecks.map((check) => check.proofObligationId)])]
+  if (canonicalCheckedObligationIds.length) {
+    const allowed = await prisma.proofObligation.count({ where: { workspaceId: input.workspaceId, id: { in: canonicalCheckedObligationIds } } })
+    if (allowed !== canonicalCheckedObligationIds.length) throw new Error("Review obligation checks must reference accessible proof obligations.")
   }
   if (input.createdByAgentRunId) {
-    const existing = await prisma.reviewRound.findFirst({ where: { workspaceId: input.workspaceId, workstreamId: input.workstreamId, reportId, createdByAgentRunId: input.createdByAgentRunId, reviewType: reviewType as any, targetVersion: input.targetVersion } })
+    const existing = await prisma.reviewRound.findFirst({ where: { workspaceId: input.workspaceId, workstreamId: input.workstreamId, reportId, createdByAgentRunId: input.createdByAgentRunId, reviewType: reviewType as any, targetVersion: manuscriptTarget?.id ?? input.targetVersion } })
     if (existing) throw new Error(`A review from this AgentRun already exists for this report and review scope: ${existing.id}`)
   }
   const recordedReview = await prisma.$transaction(async (tx) => {
@@ -867,10 +902,10 @@ export async function recordReviewRound(input: {
         bodyMarkdown: input.bodyMarkdown,
         createdByAgentRunId: input.createdByAgentRunId,
         reviewType: reviewType as any,
-        targetVersion: input.targetVersion,
+        targetVersion: manuscriptTarget?.id ?? input.targetVersion,
         scope: jsonObject(input.scope),
         inspectedArtifactIds: jsonArray(input.inspectedArtifactIds),
-        checkedObligationIds: jsonArray(input.checkedObligationIds),
+        checkedObligationIds: jsonArray(canonicalCheckedObligationIds),
         parentMathReopenable: input.parentMathReopenable ?? true,
         priorApprovalsEvidenceOnly: input.priorApprovalsEvidenceOnly ?? true,
         independence: (input.independence ?? "same_workstream_reviewer") as any
