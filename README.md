@@ -109,7 +109,7 @@ Do not use `handle_path /api*`, `rewrite`, or equivalent prefix stripping unless
 2. Use a public `maff-web` SPA client with Authorization Code flow, PKCE required with S256, and exact callback/logout URLs. It has no client secret.
 3. Use a `maff` role container/resource client for Maff-only roles and set `OIDC_ROLE_CLIENT_ID=maff`. Roles are `reader`, `contributor`, `reviewer`, and `service-admin`.
 4. Set `OIDC_AUDIENCE` exactly to `https://maff.lachlanbridges.com/mcp`; configure an audience mapper on token-producing clients.
-5. Add OAuth client scopes `maff:read`, `maff:write`, `maff:review`, and `maff:admin`. The SPA normally requests the first three.
+5. Add OAuth client scopes `maff:read`, `maff:write`, `maff:review`, and `maff:admin`. The SPA requests exactly `openid profile email maff:read maff:write maff:review`; it does not request `offline_access` because normal interactive session renewal does not require a long-lived offline token.
 6. Predefine `maff-chatgpt` as a public client with client authentication off, token endpoint authentication method `none`, Authorization Code flow on, PKCE S256 required, the exact ChatGPT callback, and the Maff MCP audience. Maff does not implement DCR.
 7. Grant both the delegated scope and the matching `maff` client role. Unrelated client roles and realm roles are ignored. Workspace membership/role is checked independently.
 8. Confirm `/api/auth/debug-token` shows the expected `aud`, `iss`, granted scopes, and internal user id without copying tokens into logs or tickets.

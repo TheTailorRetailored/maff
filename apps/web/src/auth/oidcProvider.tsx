@@ -1,7 +1,7 @@
 import { AuthProvider } from "react-oidc-context"
 import type { ReactNode } from "react"
 
-const scope = "openid profile email offline_access maff:read maff:write maff:review"
+export const SPA_OIDC_SCOPE = "openid profile email maff:read maff:write maff:review"
 
 export function MaffAuthProvider({ children }: { children: ReactNode }) {
   const redirectUri = import.meta.env.VITE_OIDC_REDIRECT_URI
@@ -13,7 +13,7 @@ export function MaffAuthProvider({ children }: { children: ReactNode }) {
       client_id={import.meta.env.VITE_OIDC_CLIENT_ID}
       redirect_uri={redirectUri}
       post_logout_redirect_uri={postLogoutRedirectUri}
-      scope={scope}
+      scope={SPA_OIDC_SCOPE}
       response_type="code"
       disablePKCE={false}
       automaticSilentRenew

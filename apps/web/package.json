@@ -9,6 +9,7 @@
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "build": "tsc && vite build",
+    "test:auth": "node scripts/check-oidc-scopes.mjs",
     "preview": "vite preview --host 0.0.0.0"
   },
   "dependencies": {
