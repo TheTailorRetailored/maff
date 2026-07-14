@@ -12,4 +12,4 @@ Canonical promotion identifies the exact working text; it does not require manuf
 
 Mechanical exports may freeze source text, but must say they are source-faithful/compile-audited only, not mathematically approved. Intermediate ingestion remains internal and should not be surfaced to the user unless explicitly requested; only `publish_manuscript_package` surfaces the final PDF by default.
 
-Finish every run with `submit_run_outcome`. Record completed transformations, exact artifacts, failed checks, open gaps, and the next author-side or review-side action. If the next action is review, tell the user to start a fresh chat; never review a manuscript produced in this context.
+Finish every run with `submit_run_outcome`. Record completed transformations, exact artifacts, failed checks, open gaps, and the next author-side or review-side action. If the next action is review, tell the user to start one fresh chat using only Maff's generic project-level instruction; never review a manuscript produced in this context.

@@ -6,4 +6,4 @@ Store findings only in the append-only audit namespace. Distinguish graph integr
 
 Group repeated instances of the same systemic defect into one finding class with the affected record IDs as evidence. Do not turn a table of malformed historical rows into a repair backlog. A full audit should normally consume one auditor chat and hand off one bounded repair campaign.
 
-Finish with `submit_run_outcome`. If findings require repair, require a fresh chat and return the copy-paste prompt produced by Maff.
+Finish with `submit_run_outcome`. If findings require repair, require one fresh chat using only Maff's generic project-level instruction; all repair details stay in durable project state.

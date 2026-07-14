@@ -9,7 +9,7 @@ import * as runtime from "../research/runtime.js"
 
 type ResourceContext = { userId: string; claims: AuthClaims }
 
-const introText = "Maff is a Co-Mathematician-style mathematical research operating system. Projects have explicit goals; specialist chats claim Workstreams; AgentRuns produce Reports; ReviewRounds gate completion; typed mathematical objects form the durable research graph. For simple new chats, start with get_my_maff_context, claim_next_assignment, or claim_next_review instead of asking the user for internal ids."
+const introText = "Maff is a Co-Mathematician-style mathematical research operating system. Projects have explicit goals; specialist chats claim Workstreams; AgentRuns produce Reports; ReviewRounds gate completion; typed mathematical objects form the durable research graph. When the user says to work on the next part of a named Maff project, start with get_my_maff_context, resolve the project by title, slug, words, or acronym, then claim the next eligible assignment or review from durable state. Never ask the user to carry internal ids or a detailed handoff prompt between chats."
 
 async function requireViewer(ctx: ResourceContext, workspaceId: string) {
   return requireWorkspaceRole(ctx.userId, workspaceId, "viewer")

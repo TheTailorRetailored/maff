@@ -23,7 +23,9 @@ The reviewer records exact access through `record_object_access`, submits struct
 
 ## Continuity
 
-Every AgentRun closes through `submit_run_outcome`, which records completed work, changes, evidence, checks, problems, uncertainty, gap deltas, and one next action. Maff returns `same_chat`, `fresh_chat_required`, a waiting state, or a terminal state plus a user-facing prompt.
+Every AgentRun closes through `submit_run_outcome`, which records completed work, changes, evidence, checks, problems, uncertainty, gap deltas, and one next action. The detailed handoff stays in Maff. The user sees only `continue` when the current context remains eligible, or one generic project-level sentence when independence requires a fresh chat. A HostileReviewer context may drain multiple distinct eligible reviews; it must start a fresh chat before repairing or authoring.
+
+Project lookup accepts exact ids, slugs, titles, distinctive title words, and unambiguous acronym prefixes. A new chat can therefore say `Work on the next part of my Maff project: MMRW.` Maff resolves the project and chooses the next eligible assignment or review; the user does not transport role names, workstream ids, or repair instructions.
 
 Workstream review policy is applicability-based. Coordination, triage, literature evidence, gap analysis, experiment design, and mechanical Lean-check reports default to zero mandatory approvals and complete when their report is submitted. Proof attempts, counterexamples, computations, formalizations, and manuscript synthesis retain independent review by default. Dependencies respect the prerequisite's configured approval count; a zero-review prerequisite never needs a ceremonial approval. Computation may establish reproducibility through a structured database `Experiment` or a durable file artifact.
 

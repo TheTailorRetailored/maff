@@ -120,17 +120,11 @@ function asReviewVerdict(value?: string): ReviewVerdict {
   return verdict
 }
 
-function agentChatPrompt(projectTitle: string, role: AgentRole) {
-  return `Use Maff. I am a ${role} for ${projectTitle}. Claim my next assignment and follow the briefing.`
-}
-
-function reviewerChatPrompt(projectTitle: string) {
-  return `Use Maff. I am a HostileReviewer for ${projectTitle}. Review the next report needing review.`
-}
-
 function coordinatorChatPrompt(projectTitle: string) {
-  return `Use Maff. Coordinate the ${projectTitle} project and tell me what needs attention next. Include short prompts I can paste into specialist or reviewer chats.`
+  return `Work on the next part of my Maff project: ${projectTitle}.`
 }
+
+function nextProjectChatPrompt(projectTitle: string) { return coordinatorChatPrompt(projectTitle) }
 
 function workstreamWhereForRole(role?: AgentRole, kind?: WorkstreamKind) {
   const inferredKind = kind ?? (role ? kindByRole[role] : undefined)
@@ -166,10 +160,22 @@ async function resolveProject(workspaceId: string, projectRef?: string) {
   if (!projectRef) return undefined
   const normalized = normalizeLookup(projectRef)
   const projects = await prisma.project.findMany({ where: { workspaceId }, orderBy: { updatedAt: "desc" } })
+  const refTokens = normalized?.split(" ").filter(Boolean) ?? []
+  const compactRef = refTokens.join("")
+  const fuzzyMatches = projects.filter((candidate) => {
+    const title = normalizeLookup(candidate.title) ?? ""
+    const slug = normalizeLookup(candidate.slug) ?? ""
+    const tokens = [...new Set(`${title} ${slug}`.split(" ").filter(Boolean))]
+    const initialism = title.split(" ").filter(Boolean).map((token) => token[0]).join("")
+    return (refTokens.length > 1 && refTokens.every((token) => tokens.includes(token)))
+      || (compactRef.length >= 3 && initialism.startsWith(compactRef))
+  })
   const project = projects.find((candidate) => candidate.id === projectRef)
     ?? projects.find((candidate) => candidate.slug === projectRef)
     ?? projects.find((candidate) => normalizeLookup(candidate.title) === normalized)
     ?? projects.find((candidate) => normalizeLookup(candidate.title)?.includes(normalized ?? ""))
+    ?? (fuzzyMatches.length === 1 ? fuzzyMatches[0] : undefined)
+  if (!project && fuzzyMatches.length > 1) throw new Error(`Project reference "${projectRef}" is ambiguous: ${fuzzyMatches.map((candidate) => candidate.title).join("; ")}.`)
   if (!project) {
     const options = projects.map((candidate) => candidate.title).slice(0, 8)
     throw new Error(`No project matched "${projectRef}". Available projects: ${options.join("; ") || "none"}.`)
@@ -580,9 +586,9 @@ export async function getMyMaffContext(input: { userId: string; workspaceRef?: s
       running_or_blocked: running
     },
     suggested_chat_prompts: {
-      coordinator: project ? coordinatorChatPrompt(project.title) : "Use Maff. Show me my active projects, what needs attention next, and short prompts I can paste into project coordinator, specialist, or reviewer chats.",
-      specialist: nextAssignments[0] ? agentChatPrompt(nextAssignments[0].project.title, nextAssignments[0].coordinatorRole) : null,
-      reviewer: reviewQueue[0] ? reviewerChatPrompt(reviewQueue[0].project.title) : null
+      same_chat: "continue",
+      fresh_chat: project ? nextProjectChatPrompt(project.title) : "Work on the next part of one of my Maff projects.",
+      note: "Use a fresh chat only when Maff requires an independence boundary; Maff resolves and claims the next step from project state."
     }
   }
 }
@@ -1549,15 +1555,7 @@ export async function getProjectControlRoom(workspaceId: string, projectId: stri
   const dependencyStates = await Promise.all(workstreams.map(async (w) => ({ workstream: w, ...(await workstreamDependenciesSatisfied(workspaceId, w.id)) })))
   const readyWorkstreams = dependencyStates.filter((item) => item.satisfied && ["ready", "planned", "revision_required"].includes(item.workstream.status)).map((item) => item.workstream)
   const suggested = readyWorkstreams[0] ?? null
-  const suggestedPrompts = {
-    coordinator: coordinatorChatPrompt(project.title),
-    next_specialist: suggested ? agentChatPrompt(project.title, suggested.coordinatorRole) : null,
-    next_reviewer: needsReview[0] ? reviewerChatPrompt(project.title) : null,
-    ready_specialists: readyWorkstreams
-      .slice(0, 6)
-      .map((w) => ({ workstreamId: w.id, title: w.title, role: w.coordinatorRole, kind: w.kind, prompt: agentChatPrompt(project.title, w.coordinatorRole) })),
-    review_chats: needsReview.slice(0, 6).map((w) => ({ workstreamId: w.id, title: w.title, prompt: reviewerChatPrompt(project.title) }))
-  }
+  const suggestedPrompts = { same_chat: "continue", fresh_chat: nextProjectChatPrompt(project.title), note: "Maff selects the next eligible assignment or review from durable project state." }
   const groupedGoals = goals.reduce<Record<string, typeof goals>>((acc, goal) => {
     ;(acc[goal.status] ??= []).push(goal)
     return acc

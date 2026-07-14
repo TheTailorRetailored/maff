@@ -84,13 +84,14 @@ function recommendedRoleFor(action: Record<string, any>, fallback: AgentRole): A
   return typeof role === "string" ? role as AgentRole : fallback
 }
 
-export async function ensureProjectActionable(workspaceId: string, projectId: string, createIfMissing = true, suggestedAction?: Record<string, any>) {
+export async function ensureProjectActionable(workspaceId: string, projectId: string, createIfMissing = true, suggestedAction?: Record<string, any>, excludeWorkstreamId?: string) {
   const project = await prisma.project.findFirstOrThrow({ where: { workspaceId, id: projectId } })
   if (["completed", "terminated", "archived", "paused"].includes(project.status)) return { state: "terminal_or_paused", actionable: false, project_status: project.status }
+  const workstreamScope = { workspaceId, projectId, ...(excludeWorkstreamId ? { id: { not: excludeWorkstreamId } } : {}) }
   const [runnable, active, review, waiting, openGaps] = await Promise.all([
-    prisma.workstream.findFirst({ where: { workspaceId, projectId, status: { in: ["planned", "ready", "revision_required"] } }, orderBy: [{ priority: "desc" }, { updatedAt: "asc" }] }),
-    prisma.workstream.findFirst({ where: { workspaceId, projectId, status: { in: ["claimed", "running"] } } }),
-    prisma.workstream.findFirst({ where: { workspaceId, projectId, status: "needs_review" } }),
+    prisma.workstream.findFirst({ where: { ...workstreamScope, status: { in: ["planned", "ready", "revision_required"] } }, orderBy: [{ priority: "desc" }, { updatedAt: "asc" }] }),
+    prisma.workstream.findFirst({ where: { ...workstreamScope, status: { in: ["claimed", "running"] } } }),
+    prisma.workstream.findFirst({ where: { ...workstreamScope, status: "needs_review" } }),
     prisma.projectWaitingState.findFirst({ where: { workspaceId, projectId, active: true } }),
     prisma.gap.findMany({ where: { workspaceId, projectId, status: { in: ["open", "assigned"] }, severity: { in: ["major", "fatal"] } }, orderBy: { updatedAt: "asc" } })
   ])
@@ -108,19 +109,23 @@ export async function submitRunOutcome(input: { workspaceId: string; agentRunId:
   const run = await prisma.agentRun.findFirstOrThrow({ where: { workspaceId: input.workspaceId, id: input.agentRunId }, include: { project: true, workstream: true } })
   if (!["started", "running", "submitted"].includes(run.status)) throw new Error("Only an active or submitted AgentRun can produce a run outcome.")
   const nextAction = object(input.nextAction)
-  let frontier = await ensureProjectActionable(input.workspaceId, run.projectId, false)
-  const nextRole = recommendedRoleFor(nextAction, run.role)
-  const reviewBoundary = nextRole === "HostileReviewer" || ["review", "audit", "novelty", "editorial", "strategic"].some((word) => String(nextAction.kind ?? nextAction.type ?? "").toLowerCase().includes(word))
-  let mode: ContinuationMode = reviewBoundary ? "fresh_chat_required" : "same_chat"
-  let reason = reviewBoundary ? "The next action crosses from construction to independent judgment." : "The next action remains constructive work in the same role and context."
+  let frontier = await ensureProjectActionable(input.workspaceId, run.projectId, false, undefined, run.workstreamId)
+  const frontierRole = (frontier as any).next_workstream?.coordinatorRole as AgentRole | undefined
+  const nextRole = nextAction.role ? recommendedRoleFor(nextAction, run.role) : frontierRole ?? run.role
+  const actionKind = String(nextAction.kind ?? nextAction.type ?? "").toLowerCase()
+  const nextIsIndependent = ["HostileReviewer", "GraphAuditor"].includes(nextRole) || ["review", "audit", "novelty", "editorial", "strategic"].some((word) => actionKind.includes(word))
+  const currentIsIndependent = ["HostileReviewer", "GraphAuditor"].includes(run.role)
+  const reviewerMayContinue = run.role === "HostileReviewer" && nextRole === "HostileReviewer" && !actionKind.includes("audit")
+  const independenceBoundary = (nextIsIndependent || currentIsIndependent) && !reviewerMayContinue
+  let mode: ContinuationMode = independenceBoundary ? "fresh_chat_required" : "same_chat"
+  let reason = independenceBoundary ? "The next step requires a context independent of the work completed here." : reviewerMayContinue ? "This independent reviewer context may drain the next eligible review for the same project." : "The next step can continue safely in this context."
   if (nextAction.waiting_for_user) { mode = "waiting_for_user"; reason = String(nextAction.reason ?? "User direction is required.") }
   if (nextAction.waiting_for_external_condition) { mode = "waiting_for_external_condition"; reason = String(nextAction.reason ?? "An external condition must change.") }
   const requestedTerminalStatus = ["completed", "terminated"].includes(String(nextAction.project_status)) ? String(nextAction.project_status) : null
   if (requestedTerminalStatus) { mode = "terminal"; reason = String(nextAction.reason ?? `Project is ${requestedTerminalStatus}.`) }
   if (["completed", "terminated", "archived"].includes(run.project.status)) { mode = "terminal"; reason = `Project is ${run.project.status}.` }
-  if (mode !== "terminal" && !frontier.actionable && !["waiting_for_user", "waiting_for_external_condition"].includes(mode)) frontier = await ensureProjectActionable(input.workspaceId, run.projectId, true, nextAction)
-  const title = String(nextAction.title ?? (frontier as any).next_workstream?.title ?? "the next Maff assignment")
-  const userPrompt = mode === "same_chat" ? `Type continue to ${title.toLowerCase()}.` : mode === "fresh_chat_required" ? `Start a new chat and say: "Use Maff. Continue ${run.project.title} with ${title}."` : mode === "terminal" ? "No further assignment is required." : reason
+  if (mode !== "terminal" && !frontier.actionable && !["waiting_for_user", "waiting_for_external_condition"].includes(mode)) frontier = await ensureProjectActionable(input.workspaceId, run.projectId, true, nextAction, run.workstreamId)
+  const userPrompt = mode === "same_chat" ? `Say "continue".` : mode === "fresh_chat_required" ? `Start one new chat and say: "Work on the next part of my Maff project: ${run.project.title}."` : mode === "terminal" ? "No further assignment is required." : reason
   const outcome = await prisma.$transaction(async (tx) => {
     if (["waiting_for_user", "waiting_for_external_condition"].includes(mode)) {
       await tx.projectWaitingState.updateMany({ where: { workspaceId: input.workspaceId, projectId: run.projectId, active: true }, data: { active: false, resolvedAt: new Date() } })
@@ -163,7 +168,7 @@ export async function commitProjectImport(input: { workspaceId: string; importId
     }
     await tx.workstream.create({ data: { workspaceId: input.workspaceId, projectId, title: "Audit imported baseline", kind: "hostile_review", coordinatorRole: "GraphAuditor", status: "ready", priority: 100, targetObjectType: "ProjectImport", targetObjectId: staged.id, instructions: "In a fresh context, reconstruct the imported project's mathematical and publication state without inheriting author assertions as approval.", allowedWrites: ["ProjectAudit", "AuditFinding", "RunOutcome"], forbiddenActions: ["Do not edit imported project objects during the audit."], successCriteria: ["Immutable baseline audit completed with an actionable handoff."], reviewPolicy: { review_type: "other", min_approved_rounds: 0 } } })
     await tx.projectImport.update({ where: { id: staged.id }, data: { projectId, userCorrections: object(input.userCorrections), status: "committed", committedAt: new Date() } })
-    return { project_id: projectId, import_id: staged.id, status: "imported_unverified", next_action: "Start a fresh chat and audit the imported baseline." }
+    return { project_id: projectId, import_id: staged.id, status: "imported_unverified", next_action: `Start one new chat and say: "Work on the next part of my Maff project: ${staged.title}."` }
   })
 }
 
@@ -229,7 +234,7 @@ export async function runProjectGraphAudit(input: { workspaceId: string; project
     recorded_approved_gates: reviews.filter((review) => review.verdict === "approved").map((review) => ({ id: review.id, review_type: review.reviewType, evidence_status: review.evidenceStatus }))
   }
   const audit = await prisma.projectAudit.create({ data: { workspaceId: input.workspaceId, projectId: input.projectId, mode, status: "completed", auditorRunId: input.auditorRunId, graphSnapshotHash: hash(snapshot), policyVersion: READINESS_POLICY_VERSION, storedReadiness: storedReadiness as any, reconstructedReadiness: readiness as any, summaryMarkdown: summary, noProjectMutation: true, completedAt: new Date(), findings: { create: findings.map((finding) => ({ workspaceId: input.workspaceId, projectId: input.projectId, severity: finding.severity, category: finding.category, title: finding.title, descriptionMarkdown: finding.descriptionMarkdown, targetObjectType: finding.targetObjectType, targetObjectId: finding.targetObjectId, evidence: finding.evidence, proposedRepair: finding.proposedRepair })) } }, include: { findings: true } })
-  return { audit, project_mutated: false, next_action: findings.length ? { continuation_mode: "fresh_chat_required", prompt: `Start a new chat and say: "Use Maff. Apply the latest full ${project.title} audit, create the repair campaign, and begin the highest-priority repair."` } : { continuation_mode: "fresh_chat_required", prompt: `Start a new chat and say: "Use Maff. Continue the ${project.title} release process."` } }
+  return { audit, project_mutated: false, next_action: { continuation_mode: "fresh_chat_required", prompt: `Start one new chat and say: "Work on the next part of my Maff project: ${project.title}."`, state_owned_handoff: true } }
 }
 
 export async function beginRepairFromAudit(input: { workspaceId: string; projectId: string; auditId?: string }) {
@@ -244,7 +249,7 @@ export async function beginRepairFromAudit(input: { workspaceId: string; project
       return defectiveReviewIds.length ? tx.gap.updateMany({ where: { workspaceId: input.workspaceId, projectId: input.projectId, status: { not: "resolved" }, targetObjectType: "ReviewRound", targetObjectId: { in: defectiveReviewIds } }, data: { status: "resolved", suggestedResolution: `Historical review-rerun gap consolidated into bounded repair campaign ${existing.id}; rerun only a genuinely missing gate for the exact current release candidate.` } }) : { count: 0 }
     })
     const next = existing.tasks.find((task) => ["active", "planned", "blocked"].includes(task.status)) ?? null
-    return { campaign: existing, tasks: existing.tasks, next_action: next, idempotent: true, consolidated_gap_count: reconciled.count, continuation: { mode: "same_chat", prompt: next ? `Type continue to ${next.title.toLowerCase()}.` : "The bounded repair campaign has no remaining task." }, frontier: await ensureProjectActionable(input.workspaceId, input.projectId, true) }
+    return { campaign: existing, tasks: existing.tasks, next_action: next, idempotent: true, consolidated_gap_count: reconciled.count, continuation: { mode: "same_chat", prompt: next ? `Say "continue".` : "The bounded repair campaign has no remaining task." }, frontier: await ensureProjectActionable(input.workspaceId, input.projectId, true) }
   }
   const result = await prisma.$transaction(async (tx) => {
     const legacyCampaigns = await tx.repairCampaign.findMany({ where: { workspaceId: input.workspaceId, projectId: input.projectId, auditId: audit.id, status: { in: ["planned", "active", "awaiting_reaudit"] } }, include: { tasks: true } })
@@ -271,7 +276,7 @@ export async function beginRepairFromAudit(input: { workspaceId: string; project
       tasks.push(await tx.repairTask.create({ data: { workspaceId: input.workspaceId, projectId: input.projectId, campaignId: campaign.id, workstreamId: workstream.id, title: phase.title, instructions: phase.instructions, priority: phase.priority, status: index === 0 ? "active" : "planned", successCondition: phase.success, killCondition: "A fresh substantive finding requires a new grouped audit campaign rather than expanding this campaign." } }))
     }
     if (accepted.length) await tx.auditFinding.updateMany({ where: { id: { in: accepted.map((finding) => finding.id) }, status: "proposed" }, data: { status: "accepted" } })
-    return { campaign, tasks, next_action: tasks[0], superseded_campaign_ids: legacyCampaigns.map((candidate) => candidate.id), quarantined_review_count: defectiveReviewIds.length, consolidated_gap_count: consolidatedGaps.count, phase_count: tasks.length, continuation: { mode: "same_chat", prompt: `Type continue to reconstruct the current verification baseline. This campaign is capped at ${tasks.length} phases.` } }
+    return { campaign, tasks, next_action: tasks[0], superseded_campaign_ids: legacyCampaigns.map((candidate) => candidate.id), quarantined_review_count: defectiveReviewIds.length, consolidated_gap_count: consolidatedGaps.count, phase_count: tasks.length, continuation: { mode: "same_chat", prompt: `Say "continue".`, phase_cap: tasks.length } }
   })
   const frontier = await ensureProjectActionable(input.workspaceId, input.projectId, true)
   return { ...result, frontier }
