@@ -16,5 +16,4 @@ The regression suite must prove:
 - intermediate ingestion emits no resource link while explicit surfacing and final publication do;
 - corrupted or missing managed bytes block publication.
 
-After deployment, run a forensic/migration audit against MMRW before accepting any historical readiness state. Preserve the audit, start a fresh repair chat, and rerun exact-version gates only after its accepted findings are resolved.
-
+After deployment, run a forensic/migration audit against MMRW before accepting any historical readiness state. Preserve the immutable audit, then start its bounded repair campaign. Historical provenance and execution defects must be quarantined in bulk; do not create one gap, workstream, or rerun per historical row. Reconstruct the exact current release candidate, rerun only its genuinely missing gates, and finish with one fresh immutable re-audit. The intended user path is capped at three role contexts: coordinator, reviewer when needed, and fresh auditor.

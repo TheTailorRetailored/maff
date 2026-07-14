@@ -190,18 +190,38 @@ export async function runProjectGraphAudit(input: { workspaceId: string; project
   ])
   const snapshot = { project: { id: project.id, status: project.status, updatedAt: project.updatedAt }, versions: versions.map((v) => [v.id, v.contentHash, v.isCanonical]), reviews: reviews.map((r) => [r.id, r.reviewType, r.verdict, r.evidenceStatus]), gaps: gaps.map((g) => [g.id, g.status, g.severity]), artifacts: artifacts.map((a) => [a.id, a.sha256, a.storageStatus]), workstreams: workstreams.map((w) => [w.id, w.status]), imports: imports.map((r) => [r.id, r.verdict, r.challengedAt]) }
   const findings: Array<Record<string, any>> = []
-  for (const review of reviews) {
-    if (review.reviewType !== "legacy_unspecified" && (!review.createdByAgentRunId || !review.reviewAssignmentId)) findings.push({ severity: "critical", category: "review_provenance", title: "Unassigned internal manuscript approval", descriptionMarkdown: `Review ${review.id} has typed approval without a completed locked assignment.`, targetObjectType: "ReviewRound", targetObjectId: review.id, evidence: [review.id], proposedRepair: "Quarantine the review and rerun the gate in a fresh eligible context." })
-    if (review.createdByAgentRun && !["completed", "submitted"].includes(review.createdByAgentRun.status)) findings.push({ severity: "major", category: "review_execution", title: "Reviewer run did not complete", descriptionMarkdown: `Review ${review.id} references run ${review.createdByAgentRun.id} in state ${review.createdByAgentRun.status}.`, targetObjectType: "ReviewRound", targetObjectId: review.id, evidence: [review.createdByAgentRun.id], proposedRepair: "Quarantine and rerun." })
-  }
+  const provenanceDefects = reviews.filter((review) => review.reviewType !== "legacy_unspecified" && (!review.createdByAgentRunId || !review.reviewAssignmentId))
+  if (provenanceDefects.length) findings.push({
+    severity: "critical",
+    category: "review_provenance",
+    title: "Internal review provenance is structurally incomplete",
+    descriptionMarkdown: `${provenanceDefects.length} review records have typed decisions without complete locked-assignment provenance. This is one systemic workflow defect, not ${provenanceDefects.length} independent mathematical repairs.`,
+    targetObjectType: "Project",
+    targetObjectId: project.id,
+    evidence: provenanceDefects.map((review) => review.id),
+    proposedRepair: "Bulk-quarantine the defective historical evidence, reconstruct the current release-candidate gate state, and rerun only gates still missing for that exact candidate."
+  })
+  const executionDefects = reviews.filter((review) => review.createdByAgentRun && !["completed", "submitted"].includes(review.createdByAgentRun.status))
+  if (executionDefects.length) findings.push({
+    severity: "major",
+    category: "review_execution",
+    title: "Reviewer-run completion is structurally unreliable",
+    descriptionMarkdown: `${executionDefects.length} review records reference reviewer runs that did not complete. Treat these as one infrastructure defect and preserve the individual records only as forensic evidence.`,
+    targetObjectType: "Project",
+    targetObjectId: project.id,
+    evidence: executionDefects.flatMap((review) => [review.id, review.createdByAgentRunId]).filter(Boolean),
+    proposedRepair: "Bulk-quarantine the incomplete historical runs and execute only the current release-candidate review delta through fresh locked assignments."
+  })
   for (const version of versions.filter((v) => v.isCanonical)) {
     if (!version.obligations.length) findings.push({ severity: "critical", category: "proof_ledger", title: "Canonical manuscript has no proof obligations", descriptionMarkdown: `Canonical version ${version.id} has an empty ledger.`, targetObjectType: "ManuscriptVersion", targetObjectId: version.id, evidence: [], proposedRepair: "Reconstruct an atomic exact-version proof ledger." })
     if (!version.physicalArtifacts.length) findings.push({ severity: "major", category: "artifact_integrity", title: "Canonical manuscript lacks exact physical artifacts", descriptionMarkdown: `Version ${version.id} has no attached immutable source or PDF bytes.`, targetObjectType: "ManuscriptVersion", targetObjectId: version.id, evidence: [], proposedRepair: "Ingest and attach exact source and PDF artifacts." })
   }
-  for (const external of imports.filter((review) => ["needs_revision", "rejected"].includes(review.verdict) && !review.triagedAt)) findings.push({ severity: "major", category: "external_challenge", title: "External challenge has not been triaged", descriptionMarkdown: `External review ${external.id} remains unresolved.`, targetObjectType: "ExternalReviewImport", targetObjectId: external.id, evidence: [external.id], proposedRepair: "Create linked gaps and repair or dismiss each finding with evidence." })
+  const untriagedExternal = imports.filter((review) => ["needs_revision", "rejected"].includes(review.verdict) && !review.triagedAt)
+  if (untriagedExternal.length) findings.push({ severity: "major", category: "external_challenge", title: "External challenges require consolidated triage", descriptionMarkdown: `${untriagedExternal.length} adverse external review records remain untriaged.`, targetObjectType: "Project", targetObjectId: project.id, evidence: untriagedExternal.map((review) => review.id), proposedRepair: "Triage the external findings together, then create only distinct mathematical or manuscript gaps." })
   const empty = await ensureProjectActionable(input.workspaceId, input.projectId, false)
   if (empty.state === "workflow_frontier_empty" && project.status === "active") findings.push({ severity: "major", category: "frontier_continuity", title: "Active project has no actionable frontier", descriptionMarkdown: "No runnable, active, review, waiting, paused, or terminal state exists.", targetObjectType: "Project", targetObjectId: project.id, evidence: [], proposedRepair: "Reconcile the frontier without inventing busywork." })
-  const summary = `Graph audit found ${findings.filter((f) => f.severity === "critical").length} critical and ${findings.filter((f) => f.severity === "major").length} major findings. No project state was changed.`
+  const affectedObjects = new Set(findings.flatMap((finding) => finding.evidence ?? [])).size
+  const summary = `Graph audit found ${findings.filter((f) => f.severity === "critical").length} critical and ${findings.filter((f) => f.severity === "major").length} major defect classes affecting ${affectedObjects} recorded objects. Repeated instances were grouped so repair remains bounded. No project state was changed.`
   const storedReadiness = {
     project_status: project.status,
     canonical_versions: versions.filter((version) => version.isCanonical).map((version) => ({ id: version.id, verification_state: version.verificationState, freeze_level: version.freezeLevel })),
@@ -213,18 +233,39 @@ export async function runProjectGraphAudit(input: { workspaceId: string; project
 
 export async function beginRepairFromAudit(input: { workspaceId: string; projectId: string; auditId?: string }) {
   const audit = input.auditId ? await prisma.projectAudit.findFirstOrThrow({ where: { workspaceId: input.workspaceId, projectId: input.projectId, id: input.auditId }, include: { findings: true } }) : await prisma.projectAudit.findFirstOrThrow({ where: { workspaceId: input.workspaceId, projectId: input.projectId, status: "completed" }, orderBy: { createdAt: "desc" }, include: { findings: true } })
-  const proposed = audit.findings.filter((finding) => finding.status === "proposed" && ["critical", "major"].includes(finding.severity))
+  const existing = await prisma.repairCampaign.findFirst({ where: { workspaceId: input.workspaceId, projectId: input.projectId, auditId: audit.id, title: { startsWith: "Bounded audit repair" }, status: { in: ["active", "awaiting_reaudit"] } }, include: { tasks: { orderBy: { priority: "desc" } } } })
+  if (existing) {
+    const next = existing.tasks.find((task) => ["active", "planned", "blocked"].includes(task.status)) ?? null
+    return { campaign: existing, tasks: existing.tasks, next_action: next, idempotent: true, continuation: { mode: "same_chat", prompt: next ? `Type continue to ${next.title.toLowerCase()}.` : "The bounded repair campaign has no remaining task." }, frontier: await ensureProjectActionable(input.workspaceId, input.projectId, true) }
+  }
+  const accepted = audit.findings.filter((finding) => ["proposed", "accepted"].includes(finding.status) && ["critical", "major"].includes(finding.severity))
   const result = await prisma.$transaction(async (tx) => {
-    const campaign = await tx.repairCampaign.create({ data: { workspaceId: input.workspaceId, projectId: input.projectId, auditId: audit.id, title: `Repair campaign for ${audit.mode} ${audit.id}`, status: "active" } })
+    const legacyCampaigns = await tx.repairCampaign.findMany({ where: { workspaceId: input.workspaceId, projectId: input.projectId, auditId: audit.id, status: { in: ["planned", "active", "awaiting_reaudit"] } }, include: { tasks: true } })
+    const legacyTasks = legacyCampaigns.flatMap((candidate) => candidate.tasks)
+    const legacyWorkstreamIds = legacyTasks.flatMap((task) => task.workstreamId ? [task.workstreamId] : [])
+    const legacyGapIds = legacyTasks.flatMap((task) => task.gapId ? [task.gapId] : [])
+    if (legacyWorkstreamIds.length) await tx.workstream.updateMany({ where: { workspaceId: input.workspaceId, id: { in: legacyWorkstreamIds }, status: { notIn: ["completed", "abandoned"] } }, data: { status: "abandoned", escalationMessage: "Superseded by a bounded audit-repair campaign; historical reports remain preserved." } })
+    if (legacyGapIds.length) await tx.gap.updateMany({ where: { workspaceId: input.workspaceId, id: { in: legacyGapIds }, status: { not: "resolved" } }, data: { status: "resolved", suggestedResolution: `Workflow-only audit row consolidated into the bounded repair campaign for audit ${audit.id}; this is not a mathematical resolution.` } })
+    if (legacyTasks.length) await tx.repairTask.updateMany({ where: { id: { in: legacyTasks.map((task) => task.id) }, status: { not: "completed" } }, data: { status: "cancelled" } })
+    if (legacyCampaigns.length) await tx.repairCampaign.updateMany({ where: { id: { in: legacyCampaigns.map((candidate) => candidate.id) } }, data: { status: "cancelled" } })
+
+    const evidenceIds = [...new Set(accepted.filter((finding) => ["review_provenance", "review_execution"].includes(finding.category)).flatMap((finding) => [finding.targetObjectId, ...array(finding.evidence).map(String)]).filter((id): id is string => Boolean(id)))]
+    const defectiveReviews = evidenceIds.length ? await tx.reviewRound.findMany({ where: { workspaceId: input.workspaceId, projectId: input.projectId, id: { in: evidenceIds } }, select: { id: true } }) : []
+    if (defectiveReviews.length) await tx.reviewRound.updateMany({ where: { id: { in: defectiveReviews.map((review) => review.id) } }, data: { evidenceStatus: "quarantined" } })
+
+    const campaign = await tx.repairCampaign.create({ data: { workspaceId: input.workspaceId, projectId: input.projectId, auditId: audit.id, title: `Bounded audit repair for ${audit.mode} ${audit.id}`, status: "active" } })
+    const phases = [
+      { title: "Reconstruct the current verification baseline", kind: "project_coordination", role: "ProjectCoordinator", priority: 100, instructions: "Treat defective historical review rows as quarantined forensic evidence. Identify the exact canonical release candidate, reconstruct gate readiness, and record only the current missing gate delta. Do not create one task per historical review.", success: "The exact current release candidate and its genuinely missing release gates are recorded." },
+      { title: "Execute the current-candidate release-gate delta", kind: "project_coordination", role: "ProjectCoordinator", priority: 90, instructions: "For the exact canonical release candidate, create fresh locked independent review workstreams only for gates that remain missing. Mark each such workstream review_policy.remediation=true with the exact review_type. Never rerun a historical review merely to repair telemetry. One author-disjoint reviewer chat may drain these distinct gate assignments sequentially; a separate chat per gate is not required.", success: "Every genuinely missing current-candidate gate has fresh valid evidence or one explicit blocker." },
+      { title: "Run the fresh immutable release re-audit", kind: "hostile_review", role: "GraphAuditor", priority: 80, instructions: "In a fresh GraphAuditor context, run one immutable release audit over the repaired current state. Do not edit project objects during the audit.", success: "A fresh immutable audit confirms readiness or yields a newly grouped bounded finding set." }
+    ] as const
     const tasks = []
-    for (const [index, finding] of proposed.entries()) {
-      const gap = await tx.gap.create({ data: { workspaceId: input.workspaceId, projectId: input.projectId, title: finding.title, descriptionMarkdown: finding.descriptionMarkdown, severity: (finding.severity === "critical" ? "fatal" : finding.severity) as any, status: "open", suggestedResolution: finding.proposedRepair, targetObjectType: finding.targetObjectType, targetObjectId: finding.targetObjectId, auditFindingId: finding.id } })
-      const workstream = await tx.workstream.create({ data: { workspaceId: input.workspaceId, projectId: input.projectId, title: `Audit repair: ${finding.title}`, kind: "gap_analysis", coordinatorRole: "GapAnalyst", status: index === 0 ? "ready" : "planned", priority: 100 - index, targetObjectType: "Gap", targetObjectId: gap.id, instructions: finding.proposedRepair ?? "Resolve the finding with durable evidence.", allowedWrites: ["Gap", "ResearchArtifact", "Claim", "ProofObligation", "WorkstreamReport", "RunOutcome"], forbiddenActions: ["Do not alter or delete the immutable audit record.", "Do not mark the finding repaired without exact evidence."], successCriteria: ["The linked gap is resolved with exact evidence and survives fresh re-audit."], reviewPolicy: { min_approved_rounds: 1, review_type: "other" } } })
-      const task = await tx.repairTask.create({ data: { workspaceId: input.workspaceId, projectId: input.projectId, campaignId: campaign.id, auditFindingId: finding.id, gapId: gap.id, workstreamId: workstream.id, title: finding.title, instructions: finding.proposedRepair ?? "Resolve the finding with durable evidence.", priority: 100 - index, status: index === 0 ? "active" : "planned", successCondition: "The linked gap is resolved with exact evidence and survives fresh re-audit.", killCondition: "Repair is impossible without weakening or pivoting the theorem." } })
-      await tx.auditFinding.update({ where: { id: finding.id }, data: { status: "accepted" } })
-      tasks.push(task)
+    for (const [index, phase] of phases.entries()) {
+      const workstream = await tx.workstream.create({ data: { workspaceId: input.workspaceId, projectId: input.projectId, title: phase.title, kind: phase.kind, coordinatorRole: phase.role, status: index === 0 ? "ready" : "blocked", priority: phase.priority, targetObjectType: "ProjectAudit", targetObjectId: audit.id, instructions: phase.instructions, escalationMessage: index === 0 ? null : "Waiting for the prior bounded repair phase.", allowedWrites: ["Workstream", "ReviewAssignment", "ReviewRound", "ProjectAudit", "AuditFinding", "WorkstreamReport", "RunOutcome"], forbiddenActions: ["Do not alter or delete immutable audit or review history.", "Do not create per-row historical rerun tasks.", "Do not edit the manuscript unless a new substantive defect is independently established."], successCriteria: [phase.success], reviewPolicy: { min_approved_rounds: 0, review_type: "other", bounded_audit_repair: true, phase: index + 1 } } })
+      tasks.push(await tx.repairTask.create({ data: { workspaceId: input.workspaceId, projectId: input.projectId, campaignId: campaign.id, workstreamId: workstream.id, title: phase.title, instructions: phase.instructions, priority: phase.priority, status: index === 0 ? "active" : "planned", successCondition: phase.success, killCondition: "A fresh substantive finding requires a new grouped audit campaign rather than expanding this campaign." } }))
     }
-    return { campaign, tasks, next_action: tasks[0] ?? null, continuation: { mode: "same_chat", prompt: tasks[0] ? `Type continue to begin ${tasks[0].title}.` : "No repair tasks were accepted." } }
+    if (accepted.length) await tx.auditFinding.updateMany({ where: { id: { in: accepted.map((finding) => finding.id) }, status: "proposed" }, data: { status: "accepted" } })
+    return { campaign, tasks, next_action: tasks[0], superseded_campaign_ids: legacyCampaigns.map((candidate) => candidate.id), quarantined_review_count: defectiveReviews.length, phase_count: tasks.length, continuation: { mode: "same_chat", prompt: `Type continue to reconstruct the current verification baseline. This campaign is capped at ${tasks.length} phases.` } }
   })
   const frontier = await ensureProjectActionable(input.workspaceId, input.projectId, true)
   return { ...result, frontier }

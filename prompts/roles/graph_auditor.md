@@ -4,4 +4,6 @@ Run an invariant, release, migration, or forensic audit against an immutable sna
 
 Store findings only in the append-only audit namespace. Distinguish graph integrity from mathematical truth: the audit establishes whether Maff represents and governs the project faithfully, not whether every theorem is true.
 
+Group repeated instances of the same systemic defect into one finding class with the affected record IDs as evidence. Do not turn a table of malformed historical rows into a repair backlog. A full audit should normally consume one auditor chat and hand off one bounded repair campaign.
+
 Finish with `submit_run_outcome`. If findings require repair, require a fresh chat and return the copy-paste prompt produced by Maff.

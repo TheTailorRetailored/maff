@@ -33,9 +33,12 @@ Existing projects use staged import: begin, ingest exact artifacts, analyze and 
 
 ## Audits and repair
 
-`run_project_graph_audit` supports invariant, release, migration, and forensic modes. Full modes require a fresh `GraphAuditor` run. The audit records a snapshot hash and proposed findings without changing project state. `begin_repair_from_audit` in a fresh chat accepts findings, creates targeted gaps, and starts an ordered repair campaign. A fresh auditor rechecks the result.
+`run_project_graph_audit` supports invariant, release, migration, and forensic modes. Full modes require a fresh `GraphAuditor` run. The audit records a snapshot hash and proposed findings without changing project state. Repeated instances of one systemic defect are stored as one finding class with all affected record IDs as evidence; an audit does not become dozens of repair jobs merely because historical telemetry contains dozens of bad rows.
+
+`begin_repair_from_audit` starts a bounded three-phase campaign: reconstruct the current verification baseline, execute only the exact current-candidate release-gate delta, then run one fresh immutable re-audit. Starting it supersedes older row-by-row campaigns for the same audit, preserves their reports, marks their workflow-only gaps as consolidated, and quarantines defective historical review evidence in bulk. It never schedules one rerun per historical review. The phases advance automatically when their workstreams complete, so the normal user path is one coordinator chat, one author-disjoint reviewer chat if current gates are missing, and one fresh auditor chat. A reviewer chat may drain multiple distinct current-candidate gates sequentially.
+
+The release-gate circuit breaker ignores quarantined, unassigned, and incomplete attempts. It may be bypassed only by an explicit remediation workstream targeting the exact canonical manuscript with a recognized release-gate type; arbitrary duplicate review work remains blocked.
 
 ## Artifacts and publication
 
 `create_artifact` ingests managed bytes but returns metadata only. `surface_artifact` is explicit. `publish_manuscript_package` is the only default user-visible publication path and requires reconstructed publication-candidate readiness plus verified source and PDF bytes.
-

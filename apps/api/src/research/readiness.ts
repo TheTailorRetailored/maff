@@ -1,6 +1,6 @@
 import { prisma } from "../db/prisma.js"
 
-export const READINESS_POLICY_VERSION = "1.0.0-research-integrity"
+export const READINESS_POLICY_VERSION = "1.1.0-bounded-audit-repair"
 export const REQUIRED_MANUSCRIPT_GATES = ["proof_integration", "end_to_end_mathematical", "novelty", "bibliography", "editorial", "compile"] as const
 export type RequiredGate = typeof REQUIRED_MANUSCRIPT_GATES[number]
 type VersionIdentity = { id: string; version: number; contentHash: string; theoremFingerprint: string; citationFingerprint: string }
@@ -140,7 +140,10 @@ export async function computeSubmissionReadiness(workspaceId: string, projectId:
   }
   const repeatedWithoutNewIssues = releaseOrder.filter((type) => {
     if (gates[type].satisfied) return false
-    const exactAttempts = diagnostics[type].filter((item) => item.basis === "exact_version").map((item) => item.review).sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
+    const exactAttempts = diagnostics[type]
+      .filter((item) => item.basis === "exact_version" && item.review.evidenceStatus === "assigned_valid" && item.review.reviewAssignment?.status === "submitted" && item.review.reviewAssignment?.reviewerRun?.status === "completed")
+      .map((item) => item.review)
+      .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
     return exactAttempts.length >= 2 && exactAttempts.slice(-2).every((review) => strings(review.issues).length === 0)
   })
   const acceptedButIncomplete = releaseOrder.filter((type) => !gates[type].satisfied && diagnostics[type].some((item) => item.accepted))

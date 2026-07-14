@@ -644,9 +644,20 @@ export async function claimNextReview(input: { userId: string; workspaceRef?: st
   const sessionId = input.sessionId ?? `maff-${randomUUID()}`
   const project = await resolveProject(workspace.id, input.project)
   const readiness = project ? await computeSubmissionReadiness(workspace.id, project.id) : null
+  const reviewCandidates = await prisma.workstream.findMany({
+    where: { workspaceId: workspace.id, projectId: project?.id, status: "needs_review" },
+    include: { project: true, goal: true, reports: { orderBy: { updatedAt: "desc" }, take: 1 } },
+    orderBy: [{ priority: "desc" }, { updatedAt: "asc" }]
+  })
+  const canonicalTargetId = (readiness as any)?.canonical_manuscript?.id as string | undefined
+  const requiredGates = new Set(["proof_integration", "end_to_end_mathematical", "novelty", "bibliography", "editorial", "compile"])
+  const remediationWorkstream = reviewCandidates.find((candidate) => {
+    const policy = jsonObject(candidate.reviewPolicy) as any
+    return policy.remediation === true && requiredGates.has(String(policy.review_type)) && candidate.targetObjectType === "ManuscriptVersion" && candidate.targetObjectId === canonicalTargetId
+  })
   if (project && readiness) {
     const circuitBreaker = (readiness as any).workflow_circuit_breaker
-    if (circuitBreaker?.active) {
+    if (circuitBreaker?.active && !remediationWorkstream) {
       return {
         workspace,
         project,
@@ -659,12 +670,7 @@ export async function claimNextReview(input: { userId: string; workspaceRef?: st
     }
   }
   const leaseExpiresAt = new Date(Date.now() + (input.leaseMinutes ?? 120) * 60_000)
-  let workstream = await prisma.workstream.findFirst({
-    where: { workspaceId: workspace.id, projectId: project?.id, status: "needs_review" },
-    include: { project: true, goal: true, reports: { orderBy: { updatedAt: "desc" }, take: 1 } },
-    orderBy: [{ priority: "desc" }, { updatedAt: "asc" }]
-  })
-  const canonicalTargetId = (readiness as any)?.canonical_manuscript?.id as string | undefined
+  let workstream = remediationWorkstream ?? reviewCandidates[0] ?? null
   if (canonicalTargetId) {
     const authorSessionConflict = await prisma.objectContribution.count({
       where: {
@@ -713,6 +719,7 @@ export async function claimNextReview(input: { userId: string; workspaceRef?: st
       "Do not complete the Workstream directly."
     ],
     review_assignment_policy: { review_type: reviewType, target_object_type: targetObjectType, target_object_id: targetObjectId, prior_approvals_hidden_initially: true, independence_computed_by_server: true },
+    workflow_circuit_breaker_bypass: remediationWorkstream?.id === workstream.id ? { active: true, reason: "Explicit exact-candidate remediation review", scope: reviewType } : null,
     output_contract: {
       required_sections: ["Verdict", "Major issues", "Required changes", "Checked references", "Attack categories", "Evidence"],
       required_tool_calls: ["record_object_access", "submit_assigned_review", "submit_run_outcome"]
@@ -1001,7 +1008,21 @@ export async function completeWorkstream(input: { workspaceId: string; workstrea
   const approvedReviews = await prisma.reviewRound.count({ where: { workspaceId: input.workspaceId, workstreamId: input.workstreamId, verdict: "approved" } })
   if (approvedReviews < minApprovals) throw new Error(`Workstream cannot complete until ${minApprovals} approved ReviewRound(s) exist.`)
   await assertDurablePhysicalOutputs(input.workspaceId, input.workstreamId, workstream.reportId ?? undefined)
-  return prisma.workstream.update({ where: { id: input.workstreamId, workspaceId: input.workspaceId }, data: { status: "completed", completedAt: new Date() } })
+  return prisma.$transaction(async (tx) => {
+    const completed = await tx.workstream.update({ where: { id: input.workstreamId, workspaceId: input.workspaceId }, data: { status: "completed", completedAt: new Date() } })
+    const repairTask = await tx.repairTask.findFirst({ where: { workspaceId: input.workspaceId, workstreamId: input.workstreamId }, include: { campaign: true } })
+    if (!repairTask) return completed
+    await tx.repairTask.update({ where: { id: repairTask.id }, data: { status: "completed" } })
+    const nextTask = await tx.repairTask.findFirst({ where: { workspaceId: input.workspaceId, campaignId: repairTask.campaignId, status: { in: ["planned", "blocked"] } }, orderBy: { priority: "desc" } })
+    if (nextTask) {
+      await tx.repairTask.update({ where: { id: nextTask.id }, data: { status: "active" } })
+      if (nextTask.workstreamId) await tx.workstream.update({ where: { id: nextTask.workstreamId }, data: { status: "ready", escalationMessage: null } })
+      await tx.repairCampaign.update({ where: { id: repairTask.campaignId }, data: { status: "active" } })
+    } else {
+      await tx.repairCampaign.update({ where: { id: repairTask.campaignId }, data: { status: "completed" } })
+    }
+    return completed
+  })
 }
 
 export async function markWorkstreamBlocked(input: { workspaceId: string; workstreamId: string; message: string }) {
