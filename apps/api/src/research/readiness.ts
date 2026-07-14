@@ -1,6 +1,6 @@
 import { prisma } from "../db/prisma.js"
 
-export const READINESS_POLICY_VERSION = "1.3.1-atomic-review-ownership"
+export const READINESS_POLICY_VERSION = "1.3.2-adverse-review-sequencing"
 export const REQUIRED_MANUSCRIPT_GATES = ["proof_integration", "end_to_end_mathematical", "novelty", "bibliography", "editorial", "compile"] as const
 export type RequiredGate = typeof REQUIRED_MANUSCRIPT_GATES[number]
 type VersionIdentity = { id: string; version: number; contentHash: string; theoremFingerprint: string; citationFingerprint: string }
@@ -74,6 +74,10 @@ export async function computeSubmissionReadiness(workspaceId: string, projectId:
     return { review, ...match }
   })
   const diagnostics = Object.fromEntries(REQUIRED_MANUSCRIPT_GATES.map((type) => [type, diagnosticsFor(type)])) as Record<RequiredGate, Array<{ review: any; accepted: boolean; basis: string | null; reason: string | null }>>
+  const adverseExactReviews = reviews.filter((review) => ["needs_revision", "rejected"].includes(review.verdict) && REQUIRED_MANUSCRIPT_GATES.includes(review.reviewType as RequiredGate)).filter((review) => {
+    const match = reviewEvidenceMatch(review, version, versions, review.reviewType as RequiredGate)
+    return match.accepted && review.evidenceStatus === "assigned_valid" && review.reviewAssignment?.status === "submitted" && review.reviewAssignment.reviewerRun.status === "completed"
+  })
   const gateReviews = (type: RequiredGate) => diagnostics[type].filter((item) => item.accepted).map((item) => item.review)
   const obligationChecks = await prisma.reviewObligationCheck.findMany({ where: { workspaceId, proofObligationId: { in: version.obligations.map((o) => o.id) } }, include: { reviewRound: true } })
   const integrationReviews = gateReviews("proof_integration")
@@ -101,6 +105,7 @@ export async function computeSubmissionReadiness(workspaceId: string, projectId:
   const numericalRequired = claims.some((claim) => (claim.metadata as any)?.requires_numerical_validation === true)
   const numericalDiagnostics = reviews.filter((review) => review.reviewType === "numerical_verification" && review.verdict === approved && review.evidenceStatus === "assigned_valid" && review.reviewAssignment?.status === "submitted" && review.reviewAssignment.reviewerRun.status === "completed")
   const gates: Record<string, any> = {
+    adverse_review_resolution: { satisfied: adverseExactReviews.length === 0, review_ids: adverseExactReviews.map((review) => review.id), reason: "Accepted adverse exact-candidate reviews must be repaired in a new manuscript version before remaining release gates continue." },
     artifact_integrity: { satisfied: physicalHealthy(sourceArtifacts) && physicalHealthy(pdfArtifacts), source_artifact_ids: sourceArtifacts.map((item) => item.artifact.id), pdf_artifact_ids: pdfArtifacts.map((item) => item.artifact.id), reason: "Exact managed source and compiled PDF bytes must both be attached and healthy." },
     proof_obligation_ledger: { satisfied: !zeroObligationLedger && weakObligations.length === 0, weak_obligation_ids: weakObligations.map((o) => o.id), reason: "A nontrivial canonical manuscript needs atomic obligations covering assumptions, excluded regimes, or boundary cases." },
     proof_integration: { satisfied: !zeroObligationLedger && integrationReviews.length > 0 && missingObligations.length === 0, review_ids: integrationReviews.map((r) => r.id), missing_obligation_ids: missingObligations.map((o) => o.id), invalid_zero_obligation_ledger: zeroObligationLedger, compatibility_checked_id_review_ids: compatibilityReviewIds, evidence: evidence("proof_integration") },
@@ -121,6 +126,7 @@ export async function computeSubmissionReadiness(workspaceId: string, projectId:
     return `No approved ${type} evidence is registered for release candidate ${version.id}.`
   }
   const reasons = [
+    ...adverseExactReviews.map((review) => `Accepted ${review.verdict} ${review.reviewType} review ${review.id} requires a revised exact manuscript version.`),
     ...REQUIRED_MANUSCRIPT_GATES.filter((type) => !gates[type].satisfied).map(gateReason),
     ...(!gates.artifact_integrity.satisfied ? [gates.artifact_integrity.reason] : []),
     ...(!gates.proof_obligation_ledger.satisfied ? [gates.proof_obligation_ledger.reason] : []),
@@ -129,7 +135,7 @@ export async function computeSubmissionReadiness(workspaceId: string, projectId:
     ...blockingGaps.map((g) => `Open ${g.severity} gap ${g.id}: ${g.title}.`)
   ]
   const releaseOrder: RequiredGate[] = ["compile", "proof_integration", "novelty", "bibliography", "end_to_end_mathematical", "editorial"]
-  const nextGate = releaseOrder.find((type) => !gates[type].satisfied) ?? null
+  const nextGate = adverseExactReviews.length ? null : releaseOrder.find((type) => !gates[type].satisfied) ?? null
   const nextAction: Record<RequiredGate, string> = {
     compile: `Run mechanical validation against exact release candidate ${version.id}.`,
     proof_integration: `Review every required obligation against exact release candidate ${version.id}; record one preserved/passed obligation check per required obligation.`,
@@ -153,18 +159,18 @@ export async function computeSubmissionReadiness(workspaceId: string, projectId:
     submission_ready: reasons.length === 0,
     publication_candidate: reasons.length === 0,
     policy_version: READINESS_POLICY_VERSION,
-    status: reasons.length ? externalChallenges.length ? "externally_challenged" : circuitBreakerGates.length ? "workflow_infrastructure_blocked" : "release_gates_pending" : "publication_candidate",
+    status: reasons.length ? externalChallenges.length ? "externally_challenged" : adverseExactReviews.length ? "revision_required" : circuitBreakerGates.length ? "workflow_infrastructure_blocked" : "release_gates_pending" : "publication_candidate",
     lifecycle_stage: reasons.length === 0 ? "publication_candidate" : gates.end_to_end_mathematical.satisfied ? "internally_refereed" : gates.proof_integration.satisfied ? "proof_integration_checked" : gates.compile.satisfied ? "build_reproducible" : "draft",
     canonical_manuscript: { id: version.id, artifact_id: version.artifactId, version: version.version, content_hash: version.contentHash, theorem_fingerprint: version.theoremFingerprint, citation_fingerprint: version.citationFingerprint },
     release_candidate: { id: version.id, label: `RC-${version.version}`, exact_content_hash: version.contentHash, theorem_fingerprint: version.theoremFingerprint, citation_fingerprint: version.citationFingerprint, immutable_review_target: true },
     gates,
-    gate_plan: releaseOrder.map((type) => ({ gate: type, status: gates[type].satisfied ? "complete" : type === nextGate ? "next" : "pending", accepted_review_ids: gates[type].review_ids, next_action: gates[type].satisfied ? null : nextAction[type] })),
-    next_required_action: nextGate ? { gate: nextGate, instruction: nextAction[nextGate] } : null,
+    gate_plan: [...(adverseExactReviews.length ? [{ gate: "revision", status: "next", accepted_review_ids: adverseExactReviews.map((review) => review.id), next_action: `Apply the bounded required changes from accepted adverse review${adverseExactReviews.length === 1 ? "" : "s"} ${adverseExactReviews.map((review) => review.id).join(", ")} and register a new exact manuscript version.` }] : []), ...releaseOrder.map((type) => ({ gate: type, status: gates[type].satisfied ? "complete" : type === nextGate ? "next" : "pending", accepted_review_ids: gates[type].review_ids, next_action: gates[type].satisfied ? null : nextAction[type] }))],
+    next_required_action: adverseExactReviews.length ? { gate: "revision", review_round_ids: adverseExactReviews.map((review) => review.id), instruction: `Apply the bounded required changes from accepted adverse review${adverseExactReviews.length === 1 ? "" : "s"} and register a new exact manuscript version before any further release review.` } : nextGate ? { gate: nextGate, instruction: nextAction[nextGate] } : null,
     workflow_circuit_breaker: { active: circuitBreakerGates.length > 0, pause_duplicate_final_reviews: circuitBreakerGates.length > 0, affected_gates: circuitBreakerGates, instruction: circuitBreakerGates.length ? "Do not create another identical review. Repair or classify the rejected/incomplete gate evidence shown in gates.<type>.evidence." : null },
     reasons,
     blocking_object_references: blockingGaps.map((g) => ({ type: "Gap", id: g.id, path: paths.get(`Gap:${g.id}`) ?? [`Claim:${g.claimId ?? "unlinked"}`, `Gap:${g.id}`] })),
     stale_review_references: stale,
-    missing_gate_references: ["artifact_integrity", "proof_obligation_ledger", ...REQUIRED_MANUSCRIPT_GATES, ...(numericalRequired ? ["numerical_verification"] : []), "external_challenge_resolution"].filter((type) => !gates[type].satisfied),
+    missing_gate_references: ["adverse_review_resolution", "artifact_integrity", "proof_obligation_ledger", ...REQUIRED_MANUSCRIPT_GATES, ...(numericalRequired ? ["numerical_verification"] : []), "external_challenge_resolution"].filter((type) => !gates[type].satisfied),
     open_relevant_gaps: relevantGaps,
     governing_claim_ids: governingClaimIds,
     proof_obligations: { total: version.obligations.length, uncovered_required_ids: missingObligations.map((o) => o.id) }

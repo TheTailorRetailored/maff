@@ -85,7 +85,7 @@ const tool = (name: string, description: string, role: WorkspaceRole, inputSchem
   annotations: { readOnlyHint: readOnlyToolNames.has(name), openWorldHint: false, destructiveHint: false, idempotentHint: idempotentToolNames.has(name) },
   meta
 })
-export const mcpServerVersion = "1.3.1-atomic-review-ownership"
+export const mcpServerVersion = "1.3.2-adverse-review-sequencing"
 export const expectedMcpToolCount = 112
 
 export const toolDefinitions: ToolDef[] = [

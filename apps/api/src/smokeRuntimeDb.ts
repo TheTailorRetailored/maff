@@ -296,6 +296,7 @@ assert.equal((await prisma.agentRun.findUniqueOrThrow({ where: { id: reviewerRun
 // A locked needs-revision verdict closes the reviewer assignment and creates one
 // bounded author repair. It must not send the same review workstream around again.
 const boundedReviewWorkstream = await runtime.createWorkstream({ workspaceId: workspace.id, projectId: project.id, goalId: goal.id, title: "Bounded end-to-end review", kind: "hostile_review", instructions: "Check the exact theorem interface.", coordinatorRole: "HostileReviewer", priority: 101, targetObjectType: "ManuscriptVersion", targetObjectId: manuscriptVersion.id, reviewPolicy: { min_approved_rounds: 1, review_type: "end_to_end_mathematical", locked_assignment_required: true, remediation: true } })
+const supersededCompileReview = await runtime.createWorkstream({ workspaceId: workspace.id, projectId: project.id, goalId: goal.id, title: "Compile review that must wait for revision", kind: "hostile_review", instructions: "Check the old exact candidate compile.", coordinatorRole: "HostileReviewer", priority: 99, targetObjectType: "ManuscriptVersion", targetObjectId: manuscriptVersion.id, reviewPolicy: { min_approved_rounds: 1, review_type: "compile", locked_assignment_required: true } })
 assert.equal(boundedReviewWorkstream.status, "needs_review")
 const boundedClaim = await runtime.claimNextAssignment({ userId: user.id, workspaceRef: workspace.id, project: project.id, role: "HostileReviewer", sessionId: `bounded-review-session-${suffix}`, model: "smoke" }) as any
 assert.equal(boundedClaim.assignment?.id, boundedReviewWorkstream.id, "generic next-step routing should transparently use the locked review entrypoint")
@@ -305,9 +306,14 @@ const boundedEvidence = "The exact manuscript and source archive were attacked f
 const boundedVerdict = await runtime.recordReviewRound({ workspaceId: workspace.id, workstreamId: boundedReviewWorkstream.id, verdict: "needs_revision", reviewType: "end_to_end_mathematical", targetVersion: manuscriptVersion.id, bodyMarkdown: boundedEvidence, issues: ["A finite-n normalization is undefined on an exceptional event."], requiredChanges: ["Define the normalization on the exceptional event without changing the limiting claim."], checkedRefs: [durableArtifact.id], createdByAgentRunId: boundedClaim.agent_run!.id, reviewAssignmentId: boundedClaim.review_assignment!.assignment.id, submissionToken: boundedClaim.review_assignment!.submission_token, evidenceSections: [{ sectionType: "end_to_end_mathematical", conclusion: "needs_revision", evidenceMarkdown: boundedEvidence, checkedRefs: [durableArtifact.id], attackCategories: ["finite-n totality"] }] })
 assert.equal(boundedVerdict.evidenceStatus, "assigned_valid")
 assert.equal((await prisma.workstream.findUniqueOrThrow({ where: { id: boundedReviewWorkstream.id } })).status, "completed")
+assert.equal((await prisma.workstream.findUniqueOrThrow({ where: { id: supersededCompileReview.id } })).status, "abandoned", "an adverse exact-candidate verdict should suspend other reviews of the superseded candidate")
 const boundedRepair = await prisma.workstream.findFirstOrThrow({ where: { parentWorkstreamId: boundedReviewWorkstream.id, status: "ready" } })
 assert.equal(boundedRepair.coordinatorRole, "PaperWriter")
+assert.equal(boundedRepair.priority, 102)
 assert.match(boundedRepair.instructions, /Define the normalization/)
+const adverseReadiness = await runtime.computeProjectSubmissionReadiness(workspace.id, project.id)
+assert.equal(adverseReadiness.status, "revision_required")
+assert.equal(adverseReadiness.next_required_action?.gate, "revision")
 const boundedOutcome = await runtime.submitRunOutcome({ workspaceId: workspace.id, agentRunId: boundedClaim.agent_run!.id, completedWork: ["Recorded the bounded exact-version verdict."], changedObjects: [`ReviewRound:${boundedVerdict.id}`, `Workstream:${boundedRepair.id}`], evidenceGenerated: ["Exact artifact access"], checksPerformed: ["Finite-n totality attack"], problemsEncountered: [], unresolvedUncertainty: [], gapsCreated: [], gapsResolved: [], nextAction: { kind: "paper_synthesis", role: "PaperWriter" } })
 assert.equal(boundedOutcome.continuation.mode, "fresh_chat_required")
 

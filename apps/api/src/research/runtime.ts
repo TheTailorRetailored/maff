@@ -1066,6 +1066,13 @@ export async function recordReviewRound(input: {
       const compileRepair = reviewType === "compile"
       const repairKind: WorkstreamKind = literatureRepair ? "literature_review" : compileRepair ? "computation" : "paper_synthesis"
       const repairRole: AgentRole = literatureRepair ? "LiteratureAgent" : compileRepair ? "CodingAgent" : "PaperWriter"
+      const supersededReviews = await tx.workstream.findMany({ where: { workspaceId: input.workspaceId, projectId: workstream.projectId, id: { not: input.workstreamId }, targetObjectType: "ManuscriptVersion", targetObjectId: manuscriptTarget.id, coordinatorRole: "HostileReviewer", status: { in: ["needs_review", "claimed", "running"] } }, select: { id: true } })
+      const supersededReviewIds = supersededReviews.map((candidate) => candidate.id)
+      if (supersededReviewIds.length) {
+        await tx.reviewAssignment.updateMany({ where: { workspaceId: input.workspaceId, workstreamId: { in: supersededReviewIds }, status: "claimed" }, data: { status: "cancelled" } })
+        await tx.agentRun.updateMany({ where: { workspaceId: input.workspaceId, workstreamId: { in: supersededReviewIds }, status: { in: ["started", "running", "submitted"] } }, data: { status: "cancelled", finishedAt: new Date() } })
+        await tx.workstream.updateMany({ where: { workspaceId: input.workspaceId, id: { in: supersededReviewIds } }, data: { status: "abandoned", claimedSessionId: null, assignedToUserId: null, leaseExpiresAt: null } })
+      }
       await tx.workstream.create({
         data: {
           workspaceId: input.workspaceId,
@@ -1076,7 +1083,7 @@ export async function recordReviewRound(input: {
           kind: repairKind,
           coordinatorRole: repairRole,
           status: "ready",
-          priority: Math.max(workstream.priority, 100),
+          priority: Math.max(workstream.priority + 1, 101),
           targetObjectType: "ManuscriptVersion",
           targetObjectId: manuscriptTarget.id,
           instructions: `Apply only the bounded changes required by ReviewRound ${review.id}.\n\nRequired changes:\n${requiredChanges.map((change) => `- ${change}`).join("\n") || "- Resolve the recorded review issues."}\n\nIssues:\n${issues.map((issue) => `- ${issue}`).join("\n") || "- See the linked ReviewRound evidence."}`,

@@ -144,7 +144,7 @@ for (const prop of ["report_id", "workstream_id"]) {
   assert.ok(submitReportProps[prop], `submit_report_for_review schema must advertise ${prop}`)
 }
 
-assert.equal(mcpServerVersion, "1.3.1-atomic-review-ownership")
+assert.equal(mcpServerVersion, "1.3.2-adverse-review-sequencing")
 assert.equal(normalizedObligationCheckStatus("passed"), "preserved")
 assert.equal(normalizedObligationCheckStatus("preserved"), "preserved")
 assert.equal(normalizedObligationCheckStatus("failed"), "failed")
