@@ -233,12 +233,18 @@ export async function runProjectGraphAudit(input: { workspaceId: string; project
 
 export async function beginRepairFromAudit(input: { workspaceId: string; projectId: string; auditId?: string }) {
   const audit = input.auditId ? await prisma.projectAudit.findFirstOrThrow({ where: { workspaceId: input.workspaceId, projectId: input.projectId, id: input.auditId }, include: { findings: true } }) : await prisma.projectAudit.findFirstOrThrow({ where: { workspaceId: input.workspaceId, projectId: input.projectId, status: "completed" }, orderBy: { createdAt: "desc" }, include: { findings: true } })
+  const accepted = audit.findings.filter((finding) => ["proposed", "accepted"].includes(finding.status) && ["critical", "major"].includes(finding.severity))
+  const evidenceIds = [...new Set(accepted.filter((finding) => ["review_provenance", "review_execution"].includes(finding.category)).flatMap((finding) => [finding.targetObjectId, ...array(finding.evidence).map(String)]).filter((id): id is string => Boolean(id)))]
+  const defectiveReviewIds = evidenceIds.length ? (await prisma.reviewRound.findMany({ where: { workspaceId: input.workspaceId, projectId: input.projectId, id: { in: evidenceIds } }, select: { id: true } })).map((review) => review.id) : []
   const existing = await prisma.repairCampaign.findFirst({ where: { workspaceId: input.workspaceId, projectId: input.projectId, auditId: audit.id, title: { startsWith: "Bounded audit repair" }, status: { in: ["active", "awaiting_reaudit"] } }, include: { tasks: { orderBy: { priority: "desc" } } } })
   if (existing) {
+    const reconciled = await prisma.$transaction(async (tx) => {
+      if (defectiveReviewIds.length) await tx.reviewRound.updateMany({ where: { id: { in: defectiveReviewIds } }, data: { evidenceStatus: "quarantined" } })
+      return defectiveReviewIds.length ? tx.gap.updateMany({ where: { workspaceId: input.workspaceId, projectId: input.projectId, status: { not: "resolved" }, targetObjectType: "ReviewRound", targetObjectId: { in: defectiveReviewIds } }, data: { status: "resolved", suggestedResolution: `Historical review-rerun gap consolidated into bounded repair campaign ${existing.id}; rerun only a genuinely missing gate for the exact current release candidate.` } }) : { count: 0 }
+    })
     const next = existing.tasks.find((task) => ["active", "planned", "blocked"].includes(task.status)) ?? null
-    return { campaign: existing, tasks: existing.tasks, next_action: next, idempotent: true, continuation: { mode: "same_chat", prompt: next ? `Type continue to ${next.title.toLowerCase()}.` : "The bounded repair campaign has no remaining task." }, frontier: await ensureProjectActionable(input.workspaceId, input.projectId, true) }
+    return { campaign: existing, tasks: existing.tasks, next_action: next, idempotent: true, consolidated_gap_count: reconciled.count, continuation: { mode: "same_chat", prompt: next ? `Type continue to ${next.title.toLowerCase()}.` : "The bounded repair campaign has no remaining task." }, frontier: await ensureProjectActionable(input.workspaceId, input.projectId, true) }
   }
-  const accepted = audit.findings.filter((finding) => ["proposed", "accepted"].includes(finding.status) && ["critical", "major"].includes(finding.severity))
   const result = await prisma.$transaction(async (tx) => {
     const legacyCampaigns = await tx.repairCampaign.findMany({ where: { workspaceId: input.workspaceId, projectId: input.projectId, auditId: audit.id, status: { in: ["planned", "active", "awaiting_reaudit"] } }, include: { tasks: true } })
     const legacyTasks = legacyCampaigns.flatMap((candidate) => candidate.tasks)
@@ -249,9 +255,8 @@ export async function beginRepairFromAudit(input: { workspaceId: string; project
     if (legacyTasks.length) await tx.repairTask.updateMany({ where: { id: { in: legacyTasks.map((task) => task.id) }, status: { not: "completed" } }, data: { status: "cancelled" } })
     if (legacyCampaigns.length) await tx.repairCampaign.updateMany({ where: { id: { in: legacyCampaigns.map((candidate) => candidate.id) } }, data: { status: "cancelled" } })
 
-    const evidenceIds = [...new Set(accepted.filter((finding) => ["review_provenance", "review_execution"].includes(finding.category)).flatMap((finding) => [finding.targetObjectId, ...array(finding.evidence).map(String)]).filter((id): id is string => Boolean(id)))]
-    const defectiveReviews = evidenceIds.length ? await tx.reviewRound.findMany({ where: { workspaceId: input.workspaceId, projectId: input.projectId, id: { in: evidenceIds } }, select: { id: true } }) : []
-    if (defectiveReviews.length) await tx.reviewRound.updateMany({ where: { id: { in: defectiveReviews.map((review) => review.id) } }, data: { evidenceStatus: "quarantined" } })
+    if (defectiveReviewIds.length) await tx.reviewRound.updateMany({ where: { id: { in: defectiveReviewIds } }, data: { evidenceStatus: "quarantined" } })
+    const consolidatedGaps = defectiveReviewIds.length ? await tx.gap.updateMany({ where: { workspaceId: input.workspaceId, projectId: input.projectId, status: { not: "resolved" }, targetObjectType: "ReviewRound", targetObjectId: { in: defectiveReviewIds } }, data: { status: "resolved", suggestedResolution: `Historical review-rerun gap consolidated into the bounded repair campaign for audit ${audit.id}; rerun only a genuinely missing gate for the exact current release candidate.` } }) : { count: 0 }
 
     const campaign = await tx.repairCampaign.create({ data: { workspaceId: input.workspaceId, projectId: input.projectId, auditId: audit.id, title: `Bounded audit repair for ${audit.mode} ${audit.id}`, status: "active" } })
     const phases = [
@@ -265,7 +270,7 @@ export async function beginRepairFromAudit(input: { workspaceId: string; project
       tasks.push(await tx.repairTask.create({ data: { workspaceId: input.workspaceId, projectId: input.projectId, campaignId: campaign.id, workstreamId: workstream.id, title: phase.title, instructions: phase.instructions, priority: phase.priority, status: index === 0 ? "active" : "planned", successCondition: phase.success, killCondition: "A fresh substantive finding requires a new grouped audit campaign rather than expanding this campaign." } }))
     }
     if (accepted.length) await tx.auditFinding.updateMany({ where: { id: { in: accepted.map((finding) => finding.id) }, status: "proposed" }, data: { status: "accepted" } })
-    return { campaign, tasks, next_action: tasks[0], superseded_campaign_ids: legacyCampaigns.map((candidate) => candidate.id), quarantined_review_count: defectiveReviews.length, phase_count: tasks.length, continuation: { mode: "same_chat", prompt: `Type continue to reconstruct the current verification baseline. This campaign is capped at ${tasks.length} phases.` } }
+    return { campaign, tasks, next_action: tasks[0], superseded_campaign_ids: legacyCampaigns.map((candidate) => candidate.id), quarantined_review_count: defectiveReviewIds.length, consolidated_gap_count: consolidatedGaps.count, phase_count: tasks.length, continuation: { mode: "same_chat", prompt: `Type continue to reconstruct the current verification baseline. This campaign is capped at ${tasks.length} phases.` } }
   })
   const frontier = await ensureProjectActionable(input.workspaceId, input.projectId, true)
   return { ...result, frontier }
