@@ -1,6 +1,6 @@
 import { prisma } from "../db/prisma.js"
 
-export const READINESS_POLICY_VERSION = "1.1.0-bounded-audit-repair"
+export const READINESS_POLICY_VERSION = "1.2.0-applicability-based-evidence"
 export const REQUIRED_MANUSCRIPT_GATES = ["proof_integration", "end_to_end_mathematical", "novelty", "bibliography", "editorial", "compile"] as const
 export type RequiredGate = typeof REQUIRED_MANUSCRIPT_GATES[number]
 type VersionIdentity = { id: string; version: number; contentHash: string; theoremFingerprint: string; citationFingerprint: string }
@@ -69,7 +69,7 @@ export async function computeSubmissionReadiness(workspaceId: string, projectId:
     if (!match.accepted) return { review, ...match }
     if (review.evidenceStatus !== "assigned_valid" || !review.reviewAssignment) return { review, accepted: false, basis: match.basis, reason: "assigned_review_evidence_required" }
     if (review.reviewAssignment.status !== "submitted" || review.reviewAssignment.reviewerRun.status !== "completed") return { review, accepted: false, basis: match.basis, reason: "completed_reviewer_run_required" }
-    if (!review.evidenceSections.some((section) => section.sectionType === type && section.evidenceMarkdown.trim().length >= 120)) return { review, accepted: false, basis: match.basis, reason: "substantive_evidence_section_required" }
+    if (!review.evidenceSections.some((section) => section.sectionType === type && section.evidenceMarkdown.trim().length > 0 && section.conclusion.trim().length > 0)) return { review, accepted: false, basis: match.basis, reason: "structured_evidence_section_required" }
     if (["proof_integration", "end_to_end_mathematical", "novelty", "bibliography", "editorial"].includes(type) && !["author_disjoint", "fully_disjoint_internal_referee"].includes(review.reviewAssignment.independence)) return { review, accepted: false, basis: match.basis, reason: "computed_author_disjoint_reviewer_required" }
     return { review, ...match }
   })
@@ -173,5 +173,10 @@ export async function computeSubmissionReadiness(workspaceId: string, projectId:
 
 export async function workstreamDependenciesSatisfied(workspaceId: string, workstreamId: string) {
   const dependencies = await prisma.workstreamDependency.findMany({ where: { workspaceId, dependentWorkstreamId: workstreamId }, include: { prerequisite: { include: { reviews: true } } } })
-  return { satisfied: dependencies.every((d) => d.prerequisite.status === "completed" && d.prerequisite.reviews.some((r) => r.verdict === approved)), dependencies }
+  return { satisfied: dependencies.every((dependency) => {
+    const policy = dependency.prerequisite.reviewPolicy as Record<string, unknown>
+    const requiredApprovals = typeof policy.min_approved_rounds === "number" ? policy.min_approved_rounds : 1
+    const approvals = dependency.prerequisite.reviews.filter((review) => review.verdict === approved).length
+    return dependency.prerequisite.status === "completed" && approvals >= requiredApprovals
+  }), dependencies }
 }

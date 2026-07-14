@@ -25,6 +25,12 @@ The reviewer records exact access through `record_object_access`, submits struct
 
 Every AgentRun closes through `submit_run_outcome`, which records completed work, changes, evidence, checks, problems, uncertainty, gap deltas, and one next action. Maff returns `same_chat`, `fresh_chat_required`, a waiting state, or a terminal state plus a user-facing prompt.
 
+Workstream review policy is applicability-based. Coordination, triage, literature evidence, gap analysis, experiment design, and mechanical Lean-check reports default to zero mandatory approvals and complete when their report is submitted. Proof attempts, counterexamples, computations, formalizations, and manuscript synthesis retain independent review by default. Dependencies respect the prerequisite's configured approval count; a zero-review prerequisite never needs a ceremonial approval. Computation may establish reproducibility through a structured database `Experiment` or a durable file artifact.
+
+An audit distinguishes corrupted or falsely claimed evidence from work that is simply not finished yet. Missing source/PDF outputs on an ordinary working manuscript are release-plan items reported by readiness, not graph defects and not reasons to create an audit-repair campaign. An attached artifact whose bytes are missing or corrupt is a genuine integrity defect.
+
+Evidence gates validate structured content, not verbosity. Review sections require a conclusion and concrete evidence, proof-obligation checks require specific evidence, and end-to-end review records actual attack categories. Arbitrary character counts and fixed category quotas are not evidence.
+
 `ensure_project_actionable` is the reconciliation/watchdog surface. It creates a task only when tied to a blocker or to the structural defect of an unexplained empty frontier.
 
 ## Imports

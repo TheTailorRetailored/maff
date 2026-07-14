@@ -19,7 +19,9 @@ Artifacts may link directly to a workstream, a ResearchArtifact, and one or more
 5. Run `verify_artifact`; inspect ZIP entries with `list_artifact_archive`.
 6. Retrieve bytes through `download_artifact`, `read_artifact_archive_file`, or `export_physical_artifacts`. These return authenticated streaming references, not JSON/base64 payloads.
 
-Submission, approval, and completion run a durability preflight whenever the workstream policy requires physical artifacts, the report claims generated physical output, or a referenced ResearchArtifact contains a path. The preflight verifies managed bytes, required archive members from `metadata.required_files`, direct links, and rejects metadata-only paths.
+Submission, approval, and completion run a durability preflight only when structured state explicitly says physical bytes are material: `reviewPolicy.requires_physical_artifacts=true`. Neither ordinary prose nor merely referencing a legacy `ResearchArtifact.filePath` creates that obligation; a memo may discuss or diagnose missing files without becoming a file-producing task. When the policy applies, the preflight verifies managed bytes, required archive members from `metadata.required_files`, direct links, and rejects metadata-only paths.
+
+Canonical promotion identifies the exact working manuscript text and therefore does not require a compiled PDF. Exact managed source and PDF bytes may be attached later as immutable evidence without changing the semantic content hash; they remain mandatory for artifact-integrity readiness and final publication packaging. Creating a dummy Markdown, ZIP, or PDF solely to satisfy workflow state is forbidden.
 
 ## Existing records and MMRW Version 3
 

@@ -74,6 +74,27 @@ assert.equal(approval.verdict, "approved")
 const completed = await runtime.completeWorkstream({ workspaceId: workspace.id, workstreamId: workstream.id })
 assert.equal(completed.status, "completed")
 
+// Database-native coordination evidence must not be forced into a ceremonial file.
+const memoWorkstream = await runtime.createWorkstream({ workspaceId: workspace.id, projectId: project.id, title: "Database-native baseline memo", kind: "project_coordination", instructions: "Record why the compiled PDF and physical artifacts are not yet release requirements." })
+const diagnosedLegacyPath = await runtime.createResearchArtifact({ workspaceId: workspace.id, projectId: project.id, title: "Diagnosed missing legacy file", kind: "migration_report", filePath: "/mnt/data/missing-legacy.pdf", contentMarkdown: "This path is provenance-only and is being diagnosed, not submitted as output." })
+const memoSubmission = await runtime.submitWorkstreamReport({ workspaceId: workspace.id, workstreamId: memoWorkstream.id, title: "Baseline memo", bodyMarkdown: "The current baseline discusses a compiled PDF and physical artifacts, but produces no file.", linkedObjectRefs: [`Project:${project.id}`], artifactRefs: [diagnosedLegacyPath.id] })
+assert.equal(memoSubmission.workstream_status, "completed")
+assert.equal(memoSubmission.auto_advance, "zero_review_workstream_completed")
+assert.equal(await prisma.artifact.count({ where: { workspaceId: workspace.id, workstreamId: memoWorkstream.id } }), 0)
+
+// A zero-review prerequisite is satisfied by completion, not a fake approval.
+const dependentMemo = await runtime.createWorkstream({ workspaceId: workspace.id, projectId: project.id, title: "Dependent database memo", kind: "project_coordination", instructions: "Consume the completed baseline memo.", dependencyWorkstreamIds: [memoWorkstream.id] })
+const dependentSubmission = await runtime.submitWorkstreamReport({ workspaceId: workspace.id, workstreamId: dependentMemo.id, title: "Dependent memo", bodyMarkdown: "Consumed the database-native baseline.", linkedObjectRefs: [`Workstream:${memoWorkstream.id}`], artifactRefs: [] })
+assert.equal(dependentSubmission.workstream_status, "completed")
+
+// Computation may use a structured database Experiment instead of fabricating a file.
+const computationWorkstream = await runtime.createWorkstream({ workspaceId: workspace.id, projectId: project.id, goalId: goal.id, title: "Database-native computation", kind: "computation", instructions: "Record a reproducible calculation in the research graph." })
+await runtime.createExperiment({ workspaceId: workspace.id, projectId: project.id, workstreamId: computationWorkstream.id, title: "Finite check", hypothesisMarkdown: "The finite case passes.", methodMarkdown: "Enumerate the finite domain.", resultMarkdown: "All enumerated cases passed.", reproducibility: { method: "deterministic enumeration", seed: null }, status: "completed" })
+const computationReport = await runtime.submitWorkstreamReport({ workspaceId: workspace.id, workstreamId: computationWorkstream.id, title: "Structured computation", bodyMarkdown: "The result and reproducibility metadata are stored in the linked Experiment.", linkedObjectRefs: [], artifactRefs: [] })
+assert.equal(computationReport.workstream_status, "needs_review")
+await runtime.recordReviewRound({ workspaceId: workspace.id, workstreamId: computationWorkstream.id, reportId: computationReport.report_id, verdict: "approved", bodyMarkdown: "The structured Experiment is sufficient reproducibility evidence.", issues: [], requiredChanges: [], checkedRefs: [] })
+assert.equal((await runtime.completeWorkstream({ workspaceId: workspace.id, workstreamId: computationWorkstream.id })).status, "completed")
+
 await assert.rejects(() => runtime.updateClaimStatus({ workspaceId: workspace.id, claimId: claim.id, status: "lean_verified", actorRole: "ProofAttemptAgent" }), /ProofAttemptAgent/)
 
 const theorem = await runtime.createLeanTheorem({ workspaceId: workspace.id, projectId: project.id, leanName: "smoke_theorem", proofFile: "Smoke.lean", statementMarkdown: "theorem smoke : True := by trivial", hasSorry: true, hasAxiom: false })
@@ -115,13 +136,15 @@ assert.ok(controlRoom.workstreams_by_status.completed?.some((item) => item.id ==
   const authorRun = await runtime.startAgentRun({ workspaceId: workspace.id, workstreamId: authorWorkstream.id, sessionId: `author-session-${suffix}`, model: "smoke" })
   const manuscriptVersion = await runtime.createManuscriptVersion({ workspaceId: workspace.id, projectId: project.id, artifactId: manuscript.id, parentArtifactIds: [sourceA.id], claimIds: [claim.id], createdByAgentRunId: authorRun.agentRun.id })
   const obligation = await runtime.createProofObligation({ workspaceId: workspace.id, projectId: project.id, manuscriptVersionId: manuscriptVersion.id, claimId: claim.id, sourceArtifactId: sourceA.id, title: "Uniform moving-start majorant", statementMarkdown: "Uniform majorant on the stated domain.", manuscriptLocation: "Lemma 4.1", assumptions: ["The stated domain hypotheses hold."], excludedRegimes: ["Degenerate endpoints are excluded."], boundaryCases: ["The moving start equals the left endpoint."], semanticConsequences: ["The theorem is uniform over admissible starts."], authorAssertion: "The detailed source proof is integrated at Lemma 4.1." })
-  await assert.rejects(() => runtime.promoteManuscriptVersion({ workspaceId: workspace.id, manuscriptVersionId: manuscriptVersion.id }), /exact managed source and compiled PDF/i)
+  const canonicalBeforePhysicalFiles = await runtime.promoteManuscriptVersion({ workspaceId: workspace.id, manuscriptVersionId: manuscriptVersion.id })
+  assert.equal(canonicalBeforePhysicalFiles.isCanonical, true, "canonical working text must not require a ceremonial PDF")
   await assert.rejects(
     () => runtime.recordReviewRound({ workspaceId: workspace.id, workstreamId: workstream.id, verdict: "approved", reviewType: "proof_integration", targetVersion: manuscriptVersion.id, bodyMarkdown: "A direct typed approval must not count.", issues: [], requiredChanges: [], checkedRefs: [sourceA.id] }),
     /server-issued ReviewAssignment/i
   )
   let readiness = await runtime.computeProjectSubmissionReadiness(workspace.id, project.id)
   assert.equal(readiness.submission_ready, false)
+  assert.equal((readiness.gates as Record<string, any>).artifact_integrity.satisfied, false, "working-text promotion must not bypass final source/PDF requirements")
   const preservationGap = await runtime.createGap({ workspaceId: workspace.id, projectId: project.id, claimId: claim.id, title: "Uniform majorant omitted during integration", descriptionMarkdown: "Vague assertion replaced detailed proof.", severity: "major" })
   readiness = await runtime.computeProjectSubmissionReadiness(workspace.id, project.id)
   assert.ok(readiness.reasons.some((reason) => reason.includes(preservationGap.id)))
@@ -208,7 +231,7 @@ try {
   await runtime.attachArtifactToManuscriptVersion({ workspaceId: workspace.id, artifactId: durableArtifact.id, manuscriptVersionId: manuscriptVersion.id, role: "source_bundle" })
   const compiledPdf = await runtime.createArtifactFromPath({ workspaceId: workspace.id, projectId: project.id, workstreamId: physicalWorkstream.id, path: pdfPath, title: "Exact compiled manuscript PDF", kind: "pdf" })
   await runtime.attachArtifactToManuscriptVersion({ workspaceId: workspace.id, artifactId: compiledPdf.id, manuscriptVersionId: manuscriptVersion.id, role: "compiled_pdf" })
-  const canonicalManuscript = await runtime.promoteManuscriptVersion({ workspaceId: workspace.id, manuscriptVersionId: manuscriptVersion.id })
+  const canonicalManuscript = await runtime.getManuscriptVersion(workspace.id, manuscriptVersion.id)
   assert.equal(canonicalManuscript.isCanonical, true)
   assert.equal(canonicalManuscript.verificationState, "ledger_complete")
   await assert.rejects(() => runtime.claimNextReview({ userId: user.id, workspaceRef: workspace.id, project: project.id, sessionId: `author-session-${suffix}`, model: "smoke" }), /Start a fresh chat/i)

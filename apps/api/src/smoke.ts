@@ -11,6 +11,7 @@ import { productionOidc } from "./config.js"
 import { advertisedScopes, hasBearerAuthorization, hasPermission, rolesForClient, scopes } from "./auth/scopes.js"
 import { callTool, compactToolResult, contentResult, expectedMcpToolCount, formatResearchArtifact, mcpAuthorizationMatrix, mcpServerVersion, mcpToolsListResult, structuredContentForTool, toolDefinitions } from "./mcp/server.js"
 import { normalizedObligationCheckStatus, reviewEvidenceMatch } from "./research/readiness.js"
+import { validateReviewEvidence } from "./research/integrity.js"
 
 const root = path.resolve("tmp-workspace")
 assert.equal(assertInsideRoot(root, path.join(root, "vault", "A.md")), path.resolve(root, "vault", "A.md"))
@@ -143,7 +144,7 @@ for (const prop of ["report_id", "workstream_id"]) {
   assert.ok(submitReportProps[prop], `submit_report_for_review schema must advertise ${prop}`)
 }
 
-assert.equal(mcpServerVersion, "1.1.0-bounded-audit-repair")
+assert.equal(mcpServerVersion, "1.2.0-applicability-based-evidence")
 assert.equal(normalizedObligationCheckStatus("passed"), "preserved")
 assert.equal(normalizedObligationCheckStatus("preserved"), "preserved")
 assert.equal(normalizedObligationCheckStatus("failed"), "failed")
@@ -152,6 +153,9 @@ const priorCandidate = { id: "version-3", version: 3, contentHash: "content-3", 
 assert.deepEqual(reviewEvidenceMatch({ targetVersion: "4" }, releaseCandidate, [priorCandidate, releaseCandidate], "compile"), { accepted: true, basis: "exact_version", reason: null })
 assert.deepEqual(reviewEvidenceMatch({ targetVersion: "version-3" }, releaseCandidate, [priorCandidate, releaseCandidate], "bibliography"), { accepted: true, basis: "citation_fingerprint", reason: null })
 assert.equal(reviewEvidenceMatch({ targetVersion: "version-3" }, releaseCandidate, [priorCandidate, releaseCandidate], "proof_integration").accepted, false)
+assert.doesNotThrow(() => validateReviewEvidence({ reviewType: "end_to_end_mathematical", verdict: "approved", evidenceSections: [{ sectionType: "end_to_end_mathematical", conclusion: "holds", evidenceMarkdown: "Checked the boundary case directly.", attackCategories: ["boundary"] }] }))
+assert.throws(() => validateReviewEvidence({ reviewType: "editorial", verdict: "approved", evidenceSections: [{ sectionType: "editorial", evidenceMarkdown: "Evidence without a conclusion." }] }), /conclusion and concrete evidence/i)
+assert.throws(() => validateReviewEvidence({ reviewType: "end_to_end_mathematical", verdict: "approved", evidenceSections: [{ sectionType: "end_to_end_mathematical", conclusion: "holds", evidenceMarkdown: "Checked directly.", attackCategories: [] }] }), /arbitrary quota/i)
 const toolsList = mcpToolsListResult()
 const toolsListNames = new Set(toolsList.tools.map((tool) => tool.name))
 for (const name of ["get_my_maff_context", "claim_next_assignment", "claim_next_review", "create_project", "propose_project_goal", "approve_project_goal", "create_workstream", "claim_agent_assignment", "start_agent_run", "submit_workstream_report", "record_review_round", "complete_workstream", "create_claim", "create_proof_route", "create_proof_attempt", "create_gap"]) {

@@ -275,7 +275,17 @@ function outputContract(role: AgentRole) {
       required_tool_calls: ["lean_check", "mark_lean_verified", "create_or_update_workstream_report", "submit_report_for_review"]
     }
   }
-  return { required_sections: ["Research process", "Artifacts produced", "Uncertainties", "Next steps"], required_tool_calls: ["create_or_update_workstream_report", "submit_report_for_review"] }
+  return { required_sections: ["Research process", "Evidence and project objects produced", "Uncertainties", "Next steps"], required_tool_calls: ["create_or_update_workstream_report", "submit_report_for_review"] }
+}
+
+const defaultNoReviewKinds = new Set<WorkstreamKind>(["project_coordination", "triage", "literature_review", "gap_analysis", "experiment_design", "lean_check"])
+
+function defaultReviewPolicy(kind: WorkstreamKind) {
+  return {
+    min_approved_rounds: defaultNoReviewKinds.has(kind) ? 0 : 1,
+    reviewer_role: "HostileReviewer",
+    ...(kind === "computation" ? { requires_reproducibility_evidence: true } : {})
+  }
 }
 
 export async function listWorkspacesForUser(userId: string) {
@@ -400,8 +410,8 @@ export async function createWorkstream(input: {
       instructions: input.instructions,
       allowedWrites: input.allowedWrites !== undefined ? jsonArray(input.allowedWrites) : allowedWritesByRole[role],
       forbiddenActions: input.forbiddenActions !== undefined ? jsonArray(input.forbiddenActions) : forbiddenActions(role),
-      successCriteria: input.successCriteria !== undefined ? jsonArray(input.successCriteria) : ["Submit a report with linked artifacts and uncertainties.", "Pass required review rounds."],
-      reviewPolicy: input.reviewPolicy !== undefined ? jsonObject(input.reviewPolicy) : { min_approved_rounds: 1, reviewer_role: "HostileReviewer" }
+      successCriteria: input.successCriteria !== undefined ? jsonArray(input.successCriteria) : ["Submit a report with linked evidence or project-object references when applicable, plus unresolved uncertainties.", ...(defaultNoReviewKinds.has(input.kind) ? [] : ["Pass the configured review policy."])],
+      reviewPolicy: input.reviewPolicy !== undefined ? jsonObject(input.reviewPolicy) : defaultReviewPolicy(input.kind)
       }
     })
     if (prerequisites.length) await tx.workstreamDependency.createMany({ data: prerequisites.map((prerequisiteWorkstreamId) => ({ workspaceId: input.workspaceId, dependentWorkstreamId: workstream.id, prerequisiteWorkstreamId })) })
@@ -427,8 +437,6 @@ function artifactView<T extends { byteSize?: bigint | null }>(artifact: T) {
   return { ...artifact, byteSize: artifact.byteSize === null || artifact.byteSize === undefined ? null : Number(artifact.byteSize) }
 }
 
-const physicalClaimPattern = /\b(physical (?:file|artifact|output)|generated (?:file|archive|zip|pdf|manuscript)|registered (?:the )?(?:exact )?(?:physical )?artifact|compiled (?:pdf|manuscript))\b/i
-
 async function assertDurablePhysicalOutputs(workspaceId: string, workstreamId: string, reportId?: string) {
   const workstream = await prisma.workstream.findFirstOrThrow({ where: { workspaceId, id: workstreamId } })
   const report = reportId
@@ -439,8 +447,6 @@ async function assertDurablePhysicalOutputs(workspaceId: string, workstreamId: s
   const researchArtifacts = referencedIds.length ? await prisma.researchArtifact.findMany({ where: { workspaceId, id: { in: referencedIds } } }) : []
   const policy = workstream.reviewPolicy as Record<string, unknown>
   const claimsPhysical = policy.requires_physical_artifacts === true
-    || physicalClaimPattern.test(`${workstream.instructions}\n${JSON.stringify(workstream.successCriteria)}\n${report?.bodyMarkdown ?? ""}`)
-    || researchArtifacts.some((artifact) => Boolean(artifact.filePath))
   if (!claimsPhysical) return []
   const durable = await prisma.artifact.findMany({ where: { workspaceId, workstreamId, storageKey: { not: null }, sha256: { not: null }, byteSize: { not: null } }, include: { manuscriptLinks: true } })
   if (!durable.length) throw new Error("Physical-output durability preflight failed: no ingested durable Artifact is linked to this workstream. A container-local path is provenance only.")
@@ -821,8 +827,8 @@ export async function submitReportForReview(input: { workspaceId: string; report
   const submitted = await prisma.workstreamReport.update({ where: { id: report.id, workspaceId: input.workspaceId }, data: { status: "submitted", submittedAt: new Date() } })
   const currentWorkstream = await prisma.workstream.findFirstOrThrow({ where: { id: submitted.workstreamId, workspaceId: input.workspaceId } })
   const currentPolicy = jsonObject(currentWorkstream.reviewPolicy) as any
-  if (currentPolicy.bounded_audit_repair === true && Number(currentPolicy.min_approved_rounds ?? 0) === 0) {
-    if (Number(currentPolicy.phase) === 2) {
+  if (Number(currentPolicy.min_approved_rounds ?? 1) === 0) {
+    if (currentPolicy.bounded_audit_repair === true && Number(currentPolicy.phase) === 2) {
       const children = await prisma.workstream.findMany({ where: { workspaceId: input.workspaceId, parentWorkstreamId: currentWorkstream.id } })
       const remediationChildren = children.filter((child) => (jsonObject(child.reviewPolicy) as any).remediation === true)
       if (remediationChildren.length) {
@@ -831,7 +837,7 @@ export async function submitReportForReview(input: { workspaceId: string; report
       }
     }
     const completed = await completeWorkstream({ workspaceId: input.workspaceId, workstreamId: currentWorkstream.id })
-    return { ok: true, report_id: submitted.id, workstream_id: submitted.workstreamId, report_status: submitted.status, submitted_at: submitted.submittedAt, workstream_status: completed.status, auto_advance: "bounded_phase_completed" }
+    return { ok: true, report_id: submitted.id, workstream_id: submitted.workstreamId, report_status: submitted.status, submitted_at: submitted.submittedAt, workstream_status: completed.status, auto_advance: currentPolicy.bounded_audit_repair === true ? "bounded_phase_completed" : "zero_review_workstream_completed" }
   }
   const workstream = await prisma.workstream.update({ where: { id: submitted.workstreamId, workspaceId: input.workspaceId }, data: { status: "needs_review", reportId: submitted.id } })
   return {
@@ -925,11 +931,13 @@ export async function recordReviewRound(input: {
       if (!accessedArtifacts) throw new Error(`${reviewType} review requires verified access evidence for a permitted exact physical artifact.`)
     }
   }
-  if (verdict === "approved" && workstream.kind === "computation") {
-    const report = input.reportId ? await prisma.workstreamReport.findFirst({ where: { workspaceId: input.workspaceId, id: input.reportId } }) : null
-    const artifactRefs = normalizeLines(report?.artifactRefs)
-    const artifactCount = await prisma.artifact.count({ where: { workspaceId: input.workspaceId, workstreamId: input.workstreamId } })
-    if (!artifactRefs.length && artifactCount === 0) throw new Error("Computational workstreams require recorded verification artifacts before approval.")
+  if (verdict === "approved" && workstream.kind === "computation" && (jsonObject(workstream.reviewPolicy) as any).requires_reproducibility_evidence !== false) {
+    const [experiments, artifactCount] = await Promise.all([
+      prisma.experiment.findMany({ where: { workspaceId: input.workspaceId, workstreamId: input.workstreamId }, select: { resultMarkdown: true, reproducibility: true } }),
+      prisma.artifact.count({ where: { workspaceId: input.workspaceId, workstreamId: input.workstreamId, storageKey: { not: null }, sha256: { not: null }, byteSize: { not: null } } })
+    ])
+    const structuredExperiment = experiments.some((experiment) => experiment.resultMarkdown.trim().length > 0 && Object.keys(jsonObject(experiment.reproducibility)).length > 0)
+    if (!structuredExperiment && artifactCount === 0) throw new Error("Computational approval requires substantive reproducibility evidence: either a structured Experiment with a recorded result and reproducibility metadata, or a durable Artifact. A ceremonial file is not required.")
   }
   if (verdict === "approved") await assertDurablePhysicalOutputs(input.workspaceId, input.workstreamId, input.reportId ?? workstream.reportId ?? undefined)
   const rawObligationChecks = input.obligationChecks ?? []
@@ -1481,16 +1489,12 @@ export async function attachArtifactToManuscriptVersion(input: { workspaceId: st
     prisma.manuscriptVersion.findFirstOrThrow({ where: { workspaceId: input.workspaceId, id: input.manuscriptVersionId } })
   ])
   if (artifact.projectId !== manuscript.projectId) throw new Error("Artifact and ManuscriptVersion must belong to the same project.")
-  if (manuscript.isCanonical) throw new Error("A canonical ManuscriptVersion is immutable. Attach exact artifacts before promotion; changes require a new version.")
   const verification = await verifyArtifact(input.workspaceId, artifact.id)
   if (!verification.ok) throw Object.assign(new Error(`Artifact bytes are ${verification.status}.`), { status: 409 })
-  return prisma.$transaction(async (tx) => {
-    const link = await tx.artifactManuscriptVersion.create({ data: input })
-    const links = await tx.artifactManuscriptVersion.findMany({ where: { manuscriptVersionId: manuscript.id }, include: { artifact: true } })
-    const exactPhysicalManifest = links.map((item) => [item.role, item.artifact.sha256, item.artifact.byteSize?.toString()]).sort((a, b) => String(a[0]).localeCompare(String(b[0])))
-    await tx.manuscriptVersion.update({ where: { id: manuscript.id }, data: { contentHash: fingerprint(JSON.stringify({ semantic: manuscript.contentHash, physical: exactPhysicalManifest })) } })
-    return link
-  })
+  // Physical links are immutable evidence about an existing semantic version. Adding a
+  // source bundle or compiled PDF later must neither rewrite that version's content hash
+  // nor manufacture a new semantic version merely to satisfy release packaging.
+  return prisma.artifactManuscriptVersion.create({ data: input })
 }
 
 export async function exportPhysicalArtifacts(input: { workspaceId: string; workstreamId?: string; manuscriptVersionId?: string }) {
@@ -1826,16 +1830,13 @@ export async function getManuscriptVersion(workspaceId: string, manuscriptVersio
   }
 }
 
-/** Promotion is the ledger circuit breaker: a nontrivial canonical manuscript may not have zero obligations. */
+/** Promotion identifies the canonical working text. Publication bytes remain a later release gate. */
 export async function promoteManuscriptVersion(input: { workspaceId: string; manuscriptVersionId: string }) {
   return prisma.$transaction(async (tx) => {
     const version = await tx.manuscriptVersion.findFirstOrThrow({ where: { workspaceId: input.workspaceId, id: input.manuscriptVersionId } })
     const obligations = await tx.proofObligation.findMany({ where: { workspaceId: input.workspaceId, manuscriptVersionId: version.id, required: true } })
     if (obligations.length === 0) throw new Error("A canonical manuscript requires at least one required proof obligation in its exact-version ledger.")
     if (obligations.some((obligation) => !Array.isArray(obligation.assumptions) || !Array.isArray(obligation.boundaryCases) || (!obligation.assumptions.length && !obligation.boundaryCases.length && !(Array.isArray(obligation.excludedRegimes) && obligation.excludedRegimes.length)))) throw new Error("Every required proof obligation must record assumptions, boundary cases, or excluded regimes before promotion.")
-    const physical = await tx.artifactManuscriptVersion.findMany({ where: { workspaceId: input.workspaceId, manuscriptVersionId: version.id }, include: { artifact: true } })
-    const healthyRole = (roles: string[]) => physical.some((link) => roles.includes(link.role) && link.artifact.storageStatus === "available" && Boolean(link.artifact.storageKey && link.artifact.sha256 && link.artifact.byteSize !== null))
-    if (!healthyRole(["source_bundle", "manuscript_source"]) || !healthyRole(["compiled_pdf", "final_pdf"])) throw new Error("Canonical promotion requires exact managed source and compiled PDF artifacts attached before promotion.")
     const provenance = await tx.objectContribution.count({ where: { workspaceId: input.workspaceId, projectId: version.projectId, objectType: "ManuscriptVersion", objectId: version.id, type: { in: ["authored", "edited", "integrated", "repaired"] } } })
     if (!provenance) throw new Error("Canonical promotion requires constructive AgentRun provenance for the exact ManuscriptVersion.")
     const prior = await tx.manuscriptVersion.findFirst({ where: { workspaceId: input.workspaceId, projectId: version.projectId, isCanonical: true } })

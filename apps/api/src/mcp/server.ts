@@ -85,7 +85,7 @@ const tool = (name: string, description: string, role: WorkspaceRole, inputSchem
   annotations: { readOnlyHint: readOnlyToolNames.has(name), openWorldHint: false, destructiveHint: false, idempotentHint: idempotentToolNames.has(name) },
   meta
 })
-export const mcpServerVersion = "1.1.0-bounded-audit-repair"
+export const mcpServerVersion = "1.2.0-applicability-based-evidence"
 export const expectedMcpToolCount = 112
 
 export const toolDefinitions: ToolDef[] = [
