@@ -1,3 +1,6 @@
+import os from "node:os"
+import path from "node:path"
+
 export const productionOidc = {
   issuer: "https://auth.lachlanbridges.com/realms/bridges",
   audience: "https://maff.lachlanbridges.com/mcp"
@@ -6,6 +9,7 @@ export const productionOidc = {
 export const config = {
   port: Number(process.env.PORT ?? 3001),
   dataDir: process.env.DATA_DIR ?? "./data",
+  artifactIngestRoots: (process.env.ARTIFACT_INGEST_ROOTS ?? [os.tmpdir(), "/mnt/data", path.resolve(process.env.DATA_DIR ?? "./data", "incoming")].join(path.delimiter)).split(path.delimiter).map((value) => path.resolve(value.trim())).filter(Boolean),
   publicBaseUrl: process.env.PUBLIC_BASE_URL ?? "http://localhost:3001",
   corsOrigins: (process.env.CORS_ORIGINS ?? "http://localhost:3000,http://127.0.0.1:3000").split(",").map((s) => s.trim()).filter(Boolean),
   autoJoinSharedWorkspace: (process.env.AUTO_JOIN_SHARED_WORKSPACE ?? "false").toLowerCase() === "true",

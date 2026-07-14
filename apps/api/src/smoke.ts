@@ -10,6 +10,7 @@ import { restAuthorizationRequirement } from "./auth/authorizationMatrix.js"
 import { productionOidc } from "./config.js"
 import { advertisedScopes, hasBearerAuthorization, hasPermission, rolesForClient, scopes } from "./auth/scopes.js"
 import { callTool, compactToolResult, contentResult, expectedMcpToolCount, formatResearchArtifact, mcpAuthorizationMatrix, mcpServerVersion, mcpToolsListResult, structuredContentForTool, toolDefinitions } from "./mcp/server.js"
+import { normalizedObligationCheckStatus, reviewEvidenceMatch } from "./research/readiness.js"
 
 const root = path.resolve("tmp-workspace")
 assert.equal(assertInsideRoot(root, path.join(root, "vault", "A.md")), path.resolve(root, "vault", "A.md"))
@@ -72,7 +73,7 @@ const restRouteEntries = readdirSync("src/rest").filter((name) => name.endsWith(
   const source = readFileSync(path.join("src/rest", name), "utf8")
   return [...source.matchAll(/router\.(get|post|put|patch|delete)\("([^"]+)"/g)].map((match) => ({ method: match[1], path: match[2] }))
 })
-assert.equal(restRouteEntries.length, 81, "authenticated REST registry changed; review the authorization matrix intentionally")
+assert.equal(restRouteEntries.length, 89, "authenticated REST registry changed; review the authorization matrix intentionally")
 for (const route of restRouteEntries) {
   const requirement = restAuthorizationRequirement(route.method, route.path)
   assert.ok(advertisedScopes.includes(requirement.scope as typeof advertisedScopes[number]), `unmapped REST scope for ${route.method} ${route.path}`)
@@ -142,7 +143,15 @@ for (const prop of ["report_id", "workstream_id"]) {
   assert.ok(submitReportProps[prop], `submit_report_for_review schema must advertise ${prop}`)
 }
 
-assert.equal(mcpServerVersion, "0.5.0-nontransitive-review-gates")
+assert.equal(mcpServerVersion, "1.0.0-research-integrity")
+assert.equal(normalizedObligationCheckStatus("passed"), "preserved")
+assert.equal(normalizedObligationCheckStatus("preserved"), "preserved")
+assert.equal(normalizedObligationCheckStatus("failed"), "failed")
+const releaseCandidate = { id: "version-4", version: 4, contentHash: "content-4", theoremFingerprint: "theorem-4", citationFingerprint: "citations-shared" }
+const priorCandidate = { id: "version-3", version: 3, contentHash: "content-3", theoremFingerprint: "theorem-3", citationFingerprint: "citations-shared" }
+assert.deepEqual(reviewEvidenceMatch({ targetVersion: "4" }, releaseCandidate, [priorCandidate, releaseCandidate], "compile"), { accepted: true, basis: "exact_version", reason: null })
+assert.deepEqual(reviewEvidenceMatch({ targetVersion: "version-3" }, releaseCandidate, [priorCandidate, releaseCandidate], "bibliography"), { accepted: true, basis: "citation_fingerprint", reason: null })
+assert.equal(reviewEvidenceMatch({ targetVersion: "version-3" }, releaseCandidate, [priorCandidate, releaseCandidate], "proof_integration").accepted, false)
 const toolsList = mcpToolsListResult()
 const toolsListNames = new Set(toolsList.tools.map((tool) => tool.name))
 for (const name of ["get_my_maff_context", "claim_next_assignment", "claim_next_review", "create_project", "propose_project_goal", "approve_project_goal", "create_workstream", "claim_agent_assignment", "start_agent_run", "submit_workstream_report", "record_review_round", "complete_workstream", "create_claim", "create_proof_route", "create_proof_attempt", "create_gap"]) {
@@ -160,6 +169,66 @@ for (const listedTool of toolsList.tools) {
 for (const name of ["get_research_artifact", "export_research_artifact_bundle", "create_manuscript_version", "create_proof_obligation", "get_integration_coverage", "compute_submission_readiness"]) {
   assert.ok(toolsListNames.has(name), `tools/list missing ${name}`)
 }
+for (const name of ["record_object_contribution", "record_object_access", "submit_run_outcome", "ensure_project_actionable", "begin_project_import", "analyze_project_import", "preview_project_import", "commit_project_import", "run_project_graph_audit", "begin_repair_from_audit", "publish_manuscript_package", "surface_artifact"]) {
+  assert.ok(toolsListNames.has(name), `tools/list missing integrity tool ${name}`)
+}
+for (const name of ["create_artifact_from_path", "get_artifact", "download_artifact", "list_artifacts", "list_artifact_archive", "read_artifact_archive_file", "verify_artifact", "attach_artifact_to_manuscript_version", "export_physical_artifacts", "get_manuscript_version"]) {
+  assert.ok(toolDefinitions.some((tool) => tool.name === name), `missing durable artifact tool ${name}`)
+}
+const createArtifactTool = toolsList.tools.find((tool) => tool.name === "create_artifact") as any
+assert.deepEqual(createArtifactTool?._meta?.["openai/fileParams"], ["file"])
+const createArtifactProps = createArtifactTool.inputSchema.properties as Record<string, unknown>
+assert.ok(createArtifactProps.file, "create_artifact schema must advertise connector file upload")
+assert.ok(createArtifactProps.expected_sha256, "create_artifact schema must advertise expected_sha256")
+const pathArtifactTool = toolDefinitions.find((tool) => tool.name === "create_artifact_from_path")
+assert.ok(pathArtifactTool, "missing create_artifact_from_path")
+assert.deepEqual((pathArtifactTool.inputSchema as { required?: string[] }).required, ["workspace_id", "project_id", "server_path", "title"])
+const createdArtifactResult = contentResult("create_artifact", compactToolResult("create_artifact", {
+  id: "artifact-1",
+  kind: "archive",
+  title: "Bundle",
+  uri: "maff-artifact://workspace/hash",
+  originalFilename: "bundle.zip",
+  mimeType: "application/zip",
+  byteSize: 42,
+  sha256: "a".repeat(64),
+  storageStatus: "available",
+  verification: { ok: true, status: "available", actualSha256: "a".repeat(64), actualByteSize: 42 },
+  download: { uri: "https://maff.example/api/artifacts/artifact-1/content?workspaceId=workspace-1", name: "bundle.zip", mime_type: "application/zip", byte_size: 42, sha256: "a".repeat(64) },
+  createdAt: new Date("2026-07-13T00:00:00.000Z")
+}))
+assert.equal((createdArtifactResult.structuredContent as any).verification.ok, true)
+assert.equal((createdArtifactResult.structuredContent as any).download.uri.includes("/api/artifacts/artifact-1/content"), true)
+assert.equal(createdArtifactResult.content[0].type, "text", "intermediate ingestion must not surface a user-visible file link")
+const surfacedArtifactResult = contentResult("surface_artifact", { uri: "https://maff.example/api/artifacts/artifact-1/content", name: "bundle.zip", mime_type: "application/zip" })
+assert.equal(surfacedArtifactResult.content[0].type, "resource_link", "explicit artifact surfacing must return a user-visible file link")
+const publicationResult = contentResult("publish_manuscript_package", { package_id: "package-1", final_pdf: { uri: "https://maff.example/api/artifacts/final/content", name: "paper.pdf", mime_type: "application/pdf" } })
+assert.equal(publicationResult.content[0].type, "resource_link", "the final publication package must surface its PDF")
+const archiveTextResult = contentResult("read_artifact_archive_file", {
+  artifact_id: "artifact-1",
+  entry_path: "main.tex",
+  name: "main.tex",
+  mime_type: "application/x-tex",
+  byte_size: 12,
+  sha256: "b".repeat(64),
+  embedded_resource: { uri: "maff://artifacts/artifact-1/archive/main.tex", mime_type: "application/x-tex", text: "Exact source" }
+})
+assert.equal((archiveTextResult.structuredContent as any).embedded_resource, undefined)
+assert.equal(archiveTextResult.content[0].type, "resource")
+assert.equal((archiveTextResult.content[0] as any).resource.text, "Exact source")
+assert.equal(archiveTextResult.content[1].type, "text")
+assert.equal((archiveTextResult.content[1] as any).text, "Exact source")
+const archivePdfResult = contentResult("read_artifact_archive_file", {
+  artifact_id: "artifact-1",
+  entry_path: "main.pdf",
+  name: "main.pdf",
+  mime_type: "application/pdf",
+  byte_size: 4,
+  sha256: "c".repeat(64),
+  embedded_resource: { uri: "maff://artifacts/artifact-1/archive/main.pdf", mime_type: "application/pdf", blob: "JVBERg==" }
+})
+assert.equal(archivePdfResult.content[0].type, "resource")
+assert.equal((archivePdfResult.content[0] as any).resource.blob, "JVBERg==")
 const getResearchArtifactTool = toolDefinitions.find((tool) => tool.name === "get_research_artifact")
 assert.ok(getResearchArtifactTool, "missing get_research_artifact")
 assert.deepEqual((getResearchArtifactTool.inputSchema as { required?: string[] }).required, ["workspace_id", "artifact_id"])

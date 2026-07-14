@@ -1,9 +1,12 @@
 import type { Router } from "express"
+import path from "node:path"
+import { pipeline } from "node:stream/promises"
 import { z } from "zod"
 import { requireUser } from "../auth/oidc.js"
 import { requireWorkspaceRole } from "../auth/permissions.js"
 import * as runtime from "../research/runtime.js"
 import { asyncHandler } from "./asyncHandler.js"
+import { openZipEntry } from "../artifacts/storage.js"
 
 const optionalText = z.string().min(1).optional()
 const confidence = z.enum(["low", "medium", "high"]).optional()
@@ -38,6 +41,58 @@ async function requireBodyRole(userId: string, body: unknown, role: "viewer" | "
 }
 
 export function registerResearchRuntimeRoutes(router: Router) {
+  router.get("/artifacts", asyncHandler(async (req, res) => {
+    const user = requireUser(req)
+    const query = parse(z.object({ workspaceId: z.string().uuid(), projectId: z.string().uuid().optional(), workstreamId: z.string().uuid().optional(), researchArtifactId: z.string().uuid().optional(), manuscriptVersionId: z.string().uuid().optional() }), req.query)
+    await requireWorkspaceRole(user.id, query.workspaceId, "viewer")
+    res.json(await runtime.listArtifacts(query))
+  }))
+  router.get("/artifacts/:id", asyncHandler(async (req, res) => {
+    const user = requireUser(req)
+    const query = parse(z.object({ workspaceId: z.string().uuid() }), req.query)
+    await requireWorkspaceRole(user.id, query.workspaceId, "viewer")
+    res.json(await runtime.getArtifact(query.workspaceId, parse(idParams, req.params).id))
+  }))
+  router.post("/artifacts/from-path", asyncHandler(async (req, res) => {
+    const user = requireUser(req)
+    const body = parse(baseWrite.extend({ projectId: z.string().uuid(), workstreamId: z.string().uuid().optional(), researchArtifactId: z.string().uuid().optional(), path: z.string().min(1), title: z.string().min(1), kind: optionalText, mimeType: optionalText, createdByAgentRunId: z.string().uuid().optional() }), req.body)
+    await requireWorkspaceRole(user.id, body.workspaceId, "editor")
+    res.status(201).json(await runtime.createArtifactFromPath(body as any))
+  }))
+  router.get("/artifacts/:id/content", asyncHandler(async (req, res) => {
+    const user = requireUser(req)
+    const query = parse(z.object({ workspaceId: z.string().uuid() }), req.query)
+    await requireWorkspaceRole(user.id, query.workspaceId, "viewer")
+    const stored = await runtime.getArtifactStorageFile(query.workspaceId, parse(idParams, req.params).id)
+    res.type(stored.artifact.mimeType ?? "application/octet-stream")
+    res.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(stored.artifact.originalFilename ?? stored.artifact.title)}`)
+    res.setHeader("Digest", `sha-256=${Buffer.from(stored.artifact.sha256!, "hex").toString("base64")}`)
+    await pipeline((await import("node:fs")).createReadStream(stored.file), res)
+  }))
+  router.get("/artifacts/:id/archive", asyncHandler(async (req, res) => {
+    const user = requireUser(req)
+    const query = parse(z.object({ workspaceId: z.string().uuid() }), req.query)
+    await requireWorkspaceRole(user.id, query.workspaceId, "viewer")
+    res.json(await runtime.listArtifactArchive(query.workspaceId, parse(idParams, req.params).id))
+  }))
+  router.get("/artifacts/:id/archive-entry", asyncHandler(async (req, res) => {
+    const user = requireUser(req)
+    const query = parse(z.object({ workspaceId: z.string().uuid(), path: z.string().min(1) }), req.query)
+    await requireWorkspaceRole(user.id, query.workspaceId, "viewer")
+    const artifactId = parse(idParams, req.params).id
+    const stored = await runtime.getArtifactStorageFile(query.workspaceId, artifactId)
+    const selected = await openZipEntry(stored.artifact.storageKey!, query.path)
+    res.type(runtimeMimeForArchiveEntry(query.path))
+    res.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(path.basename(query.path))}`)
+    res.setHeader("Content-Length", String(selected.entry.uncompressedSize))
+    await pipeline(selected.stream, res)
+  }))
+  router.post("/artifacts/:id/manuscript-links", asyncHandler(async (req, res) => {
+    const user = requireUser(req)
+    const body = parse(z.object({ workspaceId: z.string().uuid(), manuscriptVersionId: z.string().uuid(), role: z.string().min(1) }), req.body)
+    await requireWorkspaceRole(user.id, body.workspaceId, "editor")
+    res.status(201).json(await runtime.attachArtifactToManuscriptVersion({ workspaceId: body.workspaceId, artifactId: parse(idParams, req.params).id, manuscriptVersionId: body.manuscriptVersionId, role: body.role }))
+  }))
   router.get("/research/deltas", asyncHandler(async (req, res) => {
     const query = await requireQueryRole(requireUser(req).id, req.query, "viewer")
     res.json(await runtime.listResearchDeltas(query))
@@ -379,6 +434,11 @@ export function registerResearchRuntimeRoutes(router: Router) {
     await requireWorkspaceRole(user.id, req.params.id, "editor")
     res.status(201).json(await runtime.createManuscriptVersion({ workspaceId: req.params.id, projectId: req.params.projectId, artifactId: req.body.artifactId, parentArtifactIds: req.body.parentArtifactIds, claimIds: req.body.claimIds, theoremFingerprint: req.body.theoremFingerprint, citationFingerprint: req.body.citationFingerprint }))
   }))
+  router.get("/workspaces/:id/manuscripts/:manuscriptVersionId", asyncHandler(async (req, res) => {
+    const user = requireUser(req)
+    await requireWorkspaceRole(user.id, req.params.id, "viewer")
+    res.json(await runtime.getManuscriptVersion(req.params.id, req.params.manuscriptVersionId))
+  }))
 
   router.post("/workspaces/:id/manuscripts/:manuscriptVersionId/promote", asyncHandler(async (req, res) => {
     const user = requireUser(req)
@@ -409,4 +469,9 @@ export function registerResearchRuntimeRoutes(router: Router) {
     await requireWorkspaceRole(user.id, req.params.id, "editor")
     res.status(201).json(await runtime.createProjectBranch({ workspaceId: req.params.id, projectId: req.params.projectId, title: req.body.title, state: req.body.state, rationaleMarkdown: req.body.rationaleMarkdown, targetObjectType: req.body.targetObjectType, targetObjectId: req.body.targetObjectId }))
   }))
+}
+
+function runtimeMimeForArchiveEntry(filename: string) {
+  const extension = path.extname(filename).toLowerCase()
+  return ({ ".tex": "application/x-tex", ".bib": "application/x-bibtex", ".pdf": "application/pdf", ".json": "application/json", ".txt": "text/plain", ".md": "text/markdown" } as Record<string, string>)[extension] ?? "application/octet-stream"
 }

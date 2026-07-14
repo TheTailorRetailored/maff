@@ -6,7 +6,11 @@ import { prisma } from "../db/prisma.js"
 import { config } from "../config.js"
 import { leanClient } from "../lean/leanClient.js"
 import { requireWorkspaceRole } from "../auth/permissions.js"
-import { computeSubmissionReadiness, workstreamDependenciesSatisfied } from "./readiness.js"
+import { computeSubmissionReadiness, normalizedObligationCheckStatus, workstreamDependenciesSatisfied } from "./readiness.js"
+import { inferMimeType, ingestFile, ingestRemoteFile, listZipEntries, readZipEntryBytes, storagePath, verifyStoredFile } from "../artifacts/storage.js"
+import { analyzeProjectImport, beginProjectImport, beginRepairFromAudit, commitProjectImport, createPublicationPackage, createReviewAssignment, ensureProjectActionable, recordObjectAccess, recordObjectContribution, runProjectGraphAudit, submitRunOutcome, triageExternalReview, validateReviewAssignment, validateReviewEvidence } from "./integrity.js"
+
+export { analyzeProjectImport, beginProjectImport, beginRepairFromAudit, commitProjectImport, createPublicationPackage, ensureProjectActionable, recordObjectAccess, recordObjectContribution, runProjectGraphAudit, submitRunOutcome, triageExternalReview }
 
 const roleRecipeFiles: Record<AgentRole, string> = {
   ProjectCoordinator: "project_coordinator.md",
@@ -22,7 +26,9 @@ const roleRecipeFiles: Record<AgentRole, string> = {
   FormalizationAgent: "formalization_agent.md",
   LeanChecker: "lean_checker.md",
   PaperWriter: "paper_writer.md",
-  TriageAgent: "triage_agent.md"
+  TriageAgent: "triage_agent.md",
+  ImportAgent: "import_agent.md",
+  GraphAuditor: "graph_auditor.md"
 }
 
 const roleByKind: Record<WorkstreamKind, AgentRole> = {
@@ -57,7 +63,9 @@ const allowedWritesByRole: Record<AgentRole, string[]> = {
   FormalizationAgent: ["FormalizationTarget", "LeanTheorem", "Assumption", "Artifact", "WorkstreamReport", "AgentMessage"],
   LeanChecker: ["LeanTheorem", "Artifact", "WorkstreamReport", "AgentMessage"],
   PaperWriter: ["Artifact", "WorkstreamReport", "AgentMessage"],
-  TriageAgent: ["Workstream", "AgentMessage", "WorkstreamReport"]
+  TriageAgent: ["Workstream", "AgentMessage", "WorkstreamReport"],
+  ImportAgent: ["ProjectImport", "Artifact", "RunOutcome", "AgentMessage"],
+  GraphAuditor: ["ProjectAudit", "AuditFinding", "RunOutcome", "AgentMessage"]
 }
 
 function slugify(value: string) {
@@ -227,6 +235,7 @@ async function roleRecipe(role: AgentRole) {
 
 function forbiddenActions(role: AgentRole) {
   const common = [
+    "Do not describe a physical result as registered when only a container-local path or caller-supplied hash exists; ingest and verify the bytes as an Artifact first.",
     "Do not complete Workstream directly; submit a report, block, or escalate.",
     "Do not delete or overwrite failed attempts.",
     "Do not write outside allowed_writes."
@@ -414,6 +423,55 @@ export async function getWorkstream(workspaceId: string, workstreamId: string) {
   })
 }
 
+function artifactView<T extends { byteSize?: bigint | null }>(artifact: T) {
+  return { ...artifact, byteSize: artifact.byteSize === null || artifact.byteSize === undefined ? null : Number(artifact.byteSize) }
+}
+
+const physicalClaimPattern = /\b(physical (?:file|artifact|output)|generated (?:file|archive|zip|pdf|manuscript)|registered (?:the )?(?:exact )?(?:physical )?artifact|compiled (?:pdf|manuscript))\b/i
+
+async function assertDurablePhysicalOutputs(workspaceId: string, workstreamId: string, reportId?: string) {
+  const workstream = await prisma.workstream.findFirstOrThrow({ where: { workspaceId, id: workstreamId } })
+  const report = reportId
+    ? await prisma.workstreamReport.findFirstOrThrow({ where: { workspaceId, workstreamId, id: reportId } })
+    : await prisma.workstreamReport.findFirst({ where: { workspaceId, workstreamId }, orderBy: { updatedAt: "desc" } })
+  const artifactRefs = normalizeLines(report?.artifactRefs)
+  const referencedIds = artifactRefs.map((reference) => reference.includes(":") ? reference.slice(reference.lastIndexOf(":") + 1) : reference).filter((reference) => /^[0-9a-f]{8}-[0-9a-f-]{27,}$/i.test(reference))
+  const researchArtifacts = referencedIds.length ? await prisma.researchArtifact.findMany({ where: { workspaceId, id: { in: referencedIds } } }) : []
+  const policy = workstream.reviewPolicy as Record<string, unknown>
+  const claimsPhysical = policy.requires_physical_artifacts === true
+    || physicalClaimPattern.test(`${workstream.instructions}\n${JSON.stringify(workstream.successCriteria)}\n${report?.bodyMarkdown ?? ""}`)
+    || researchArtifacts.some((artifact) => Boolean(artifact.filePath))
+  if (!claimsPhysical) return []
+  const durable = await prisma.artifact.findMany({ where: { workspaceId, workstreamId, storageKey: { not: null }, sha256: { not: null }, byteSize: { not: null } }, include: { manuscriptLinks: true } })
+  if (!durable.length) throw new Error("Physical-output durability preflight failed: no ingested durable Artifact is linked to this workstream. A container-local path is provenance only.")
+  for (const artifact of durable) {
+    const verification = await verifyStoredFile(artifact.storageKey!, artifact.sha256!, artifact.byteSize)
+    if (!verification.ok) {
+      await prisma.artifact.update({ where: { id: artifact.id }, data: { storageStatus: verification.status === "missing" ? "missing" : "corrupt" } })
+      throw new Error(`Physical-output durability preflight failed for Artifact ${artifact.id}: stored bytes are ${verification.status === "missing" ? "missing" : "corrupt"}.`)
+    }
+    const metadata = artifact.metadata as Record<string, unknown>
+    const requiredFiles = Array.isArray(metadata.required_files) ? metadata.required_files.filter((value): value is string => typeof value === "string") : []
+    if (requiredFiles.length) {
+      const entries = new Set((await listZipEntries(artifact.storageKey!)).map((entry) => entry.path))
+      const missing = requiredFiles.filter((required) => !entries.has(required))
+      if (missing.length) throw new Error(`Physical-output durability preflight failed for Artifact ${artifact.id}: archive is missing required files: ${missing.join(", ")}.`)
+    }
+  }
+  for (const researchArtifact of researchArtifacts.filter((artifact) => artifact.filePath)) {
+    if (researchArtifact.fileStatus !== "durable" || !durable.some((artifact) => artifact.researchArtifactId === researchArtifact.id)) {
+      throw new Error(`ResearchArtifact ${researchArtifact.id} cites a local file path without a linked durable Artifact; it cannot satisfy a physical-output claim.`)
+    }
+  }
+  const manuscriptIds = referencedIds.length ? await prisma.manuscriptVersion.findMany({ where: { workspaceId, id: { in: referencedIds } }, select: { id: true } }) : []
+  for (const manuscript of manuscriptIds) {
+    if (!durable.some((artifact) => artifact.manuscriptLinks.some((link) => link.manuscriptVersionId === manuscript.id))) {
+      throw new Error(`Physical-output durability preflight failed: ManuscriptVersion ${manuscript.id} has no directly linked durable Artifact.`)
+    }
+  }
+  return durable.map(artifactView)
+}
+
 async function targetObjects(workstream: { targetObjectType: string | null; targetObjectId: string | null; workspaceId: string; projectId: string }) {
   if (!workstream.targetObjectType || !workstream.targetObjectId) return []
   const type = workstream.targetObjectType
@@ -449,7 +507,9 @@ export async function getAgentBriefing(workspaceId: string, workstreamId: string
     forbidden_actions: normalizeLines(workstream.forbiddenActions),
     success_criteria: normalizeLines(workstream.successCriteria),
     output_contract: outputContract(role),
-    completion_options: ["submit_workstream_report", "mark_workstream_blocked", "escalate_workstream"]
+    mandatory_handoff: { tool: "submit_run_outcome", required_fields: ["completed_work", "changed_objects", "evidence_generated", "checks_performed", "problems_encountered", "unresolved_uncertainty", "gaps_created", "gaps_resolved", "next_action"], rule: "An active project may not be left without runnable work, an explicit waiting condition, or a terminal justification. The server decides whether the next step can remain in this chat." },
+    durable_artifact_policy: "A container-local path is ephemeral. A physical result is not registered until its bytes have been ingested into durable Maff storage and successfully retrieved in a fresh-session preflight.",
+    completion_options: ["submit_workstream_report", "mark_workstream_blocked", "escalate_workstream", "submit_run_outcome"]
   }
 }
 
@@ -583,12 +643,45 @@ export async function claimNextReview(input: { userId: string; workspaceRef?: st
   await requireWorkspaceRole(input.userId, workspace.id, "editor")
   const sessionId = input.sessionId ?? `maff-${randomUUID()}`
   const project = await resolveProject(workspace.id, input.project)
+  const readiness = project ? await computeSubmissionReadiness(workspace.id, project.id) : null
+  if (project && readiness) {
+    const circuitBreaker = (readiness as any).workflow_circuit_breaker
+    if (circuitBreaker?.active) {
+      return {
+        workspace,
+        project,
+        assignment: null,
+        briefing: null,
+        message: "Automatic reviewer assignment is paused because the release-gate circuit breaker is active. Repair or classify the rejected/incomplete gate evidence before starting another review.",
+        workflow_circuit_breaker: circuitBreaker,
+        next_required_action: (readiness as any).next_required_action
+      }
+    }
+  }
   const leaseExpiresAt = new Date(Date.now() + (input.leaseMinutes ?? 120) * 60_000)
-  const workstream = await prisma.workstream.findFirst({
+  let workstream = await prisma.workstream.findFirst({
     where: { workspaceId: workspace.id, projectId: project?.id, status: "needs_review" },
     include: { project: true, goal: true, reports: { orderBy: { updatedAt: "desc" }, take: 1 } },
     orderBy: [{ priority: "desc" }, { updatedAt: "asc" }]
   })
+  const canonicalTargetId = (readiness as any)?.canonical_manuscript?.id as string | undefined
+  if (canonicalTargetId) {
+    const authorSessionConflict = await prisma.objectContribution.count({
+      where: {
+        workspaceId: workspace.id,
+        projectId: project?.id,
+        objectType: "ManuscriptVersion",
+        objectId: canonicalTargetId,
+        type: { in: ["created", "authored", "edited", "integrated", "repaired", "computed", "compiled"] },
+        agentRun: { sessionId }
+      }
+    })
+    if (authorSessionConflict) throw new Error("This session contributed to the canonical manuscript and cannot claim its review. Start a fresh chat.")
+  }
+  if (!workstream && project && (readiness as any)?.next_required_action && (readiness as any)?.canonical_manuscript) {
+    const gate = (readiness as any).next_required_action.gate
+    workstream = await prisma.workstream.create({ data: { workspaceId: workspace.id, projectId: project.id, title: `${gate.replace(/_/g, " ")} for ${(readiness as any).release_candidate.label}`, kind: "hostile_review", coordinatorRole: "HostileReviewer", status: "needs_review", priority: 100, targetObjectType: "ManuscriptVersion", targetObjectId: (readiness as any).canonical_manuscript.id, instructions: (readiness as any).next_required_action.instruction, allowedWrites: ["ReviewRound", "ReviewEvidenceSection", "RunOutcome"], forbiddenActions: ["Do not edit the reviewed manuscript or its mathematical objects."], successCriteria: [`Complete assigned ${gate} evidence contract against the exact release candidate.`], reviewPolicy: { review_type: gate, min_approved_rounds: 1 } }, include: { project: true, goal: true, reports: { orderBy: { updatedAt: "desc" }, take: 1 } } })
+  }
   if (!workstream) {
     return {
       workspace,
@@ -603,6 +696,11 @@ export async function claimNextReview(input: { userId: string; workspaceRef?: st
     data: { claimedSessionId: sessionId, assignedToUserId: input.userId, leaseExpiresAt }
   })
   const baseBriefing = await getAgentBriefing(workspace.id, workstream.id)
+  const reviewPolicy = jsonObject(workstream.reviewPolicy) as any
+  const reviewType = String(reviewPolicy.review_type ?? (readiness as any)?.next_required_action?.gate ?? "other")
+  const manuscript = (readiness as any)?.canonical_manuscript?.id ? await prisma.manuscriptVersion.findFirst({ where: { workspaceId: workspace.id, id: (readiness as any).canonical_manuscript.id }, include: { physicalArtifacts: true } }) : null
+  const targetObjectType = manuscript ? "ManuscriptVersion" : workstream.targetObjectType ?? "WorkstreamReport"
+  const targetObjectId = manuscript?.id ?? workstream.targetObjectId ?? workstream.reports[0]?.id ?? workstream.id
   const briefing = {
     ...baseBriefing,
     role: "HostileReviewer",
@@ -611,11 +709,13 @@ export async function claimNextReview(input: { userId: string; workspaceRef?: st
     forbidden_actions: [
       "Do not edit the report or reviewed mathematical objects.",
       "Do not approve your own work from the same AgentRun.",
+      "Do not approve a physical-output claim until get_artifact/verify_artifact and download_artifact or archive retrieval resolve the exact bytes.",
       "Do not complete the Workstream directly."
     ],
+    review_assignment_policy: { review_type: reviewType, target_object_type: targetObjectType, target_object_id: targetObjectId, prior_approvals_hidden_initially: true, independence_computed_by_server: true },
     output_contract: {
-      required_sections: ["Verdict", "Major issues", "Required changes", "Checked references"],
-      required_tool_calls: ["record_review_round"]
+      required_sections: ["Verdict", "Major issues", "Required changes", "Checked references", "Attack categories", "Evidence"],
+      required_tool_calls: ["record_object_access", "submit_assigned_review", "submit_run_outcome"]
     },
     completion_options: ["record_review_round"]
   }
@@ -634,12 +734,14 @@ export async function claimNextReview(input: { userId: string; workspaceRef?: st
       updatedObjectRefs: []
     }
   })
+  const locked = agentRun ? await createReviewAssignment({ workspaceId: workspace.id, projectId: workstream.projectId, workstreamId: workstream.id, reviewerRunId: agentRun.id, reviewType, targetObjectType, targetObjectId, targetHash: manuscript?.contentHash, manuscriptVersionId: manuscript?.id, permittedArtifactIds: manuscript?.physicalArtifacts.map((link) => link.artifactId) ?? [], briefing, leaseExpiresAt }) : null
   return {
     workspace,
     project: workstream.project,
     assignment: workstream,
     briefing,
     agent_run: agentRun,
+    review_assignment: locked,
     session_id: sessionId,
     prompt_to_agent: "Review the submitted report only and create a ReviewRound. Do not edit the reviewed objects."
   }
@@ -708,6 +810,7 @@ export async function submitReportForReview(input: { workspaceId: string; report
   const report = input.reportId
     ? await prisma.workstreamReport.findFirstOrThrow({ where: { workspaceId: input.workspaceId, id: input.reportId } })
     : await prisma.workstreamReport.findFirstOrThrow({ where: { workspaceId: input.workspaceId, workstreamId: input.workstreamId }, orderBy: { updatedAt: "desc" } })
+  await assertDurablePhysicalOutputs(input.workspaceId, report.workstreamId, report.id)
   const submitted = await prisma.workstreamReport.update({ where: { id: report.id, workspaceId: input.workspaceId }, data: { status: "submitted", submittedAt: new Date() } })
   const workstream = await prisma.workstream.update({ where: { id: submitted.workstreamId, workspaceId: input.workspaceId }, data: { status: "needs_review", reportId: submitted.id } })
   return {
@@ -747,11 +850,14 @@ export async function recordReviewRound(input: {
   obligationChecks?: Array<{ proofObligationId: string; status: string; evidenceMarkdown?: string }>
   bodyMarkdown: string
   createdByAgentRunId?: string
+  reviewAssignmentId?: string
+  submissionToken?: string
+  evidenceSections?: unknown
 }) {
   const workstream = await prisma.workstream.findFirstOrThrow({ where: { workspaceId: input.workspaceId, id: input.workstreamId } })
   if (input.createdByAgentRunId) {
     const run = await prisma.agentRun.findFirstOrThrow({ where: { workspaceId: input.workspaceId, id: input.createdByAgentRunId } })
-    if (run.workstreamId === input.workstreamId && run.role === workstream.coordinatorRole) throw new Error("Reviewer cannot review or edit the same workstream output in the same ReviewRound.")
+    if (run.workstreamId === input.workstreamId && run.role === workstream.coordinatorRole && !input.reviewAssignmentId) throw new Error("Reviewer cannot review or edit the same workstream output in the same ReviewRound without a dedicated locked review assignment.")
   }
   const verdict = asReviewVerdict(input.verdict)
   const reviewType = input.reviewType ?? "legacy_unspecified"
@@ -763,10 +869,40 @@ export async function recordReviewRound(input: {
   const manuscriptReviewTypes = new Set(["proof_integration", "end_to_end_mathematical", "novelty", "bibliography", "compile", "editorial", "source_fidelity"])
   let manuscriptTarget: { id: string; contentHash: string } | null = null
   if (manuscriptReviewTypes.has(reviewType)) {
-    manuscriptTarget = await prisma.manuscriptVersion.findFirst({ where: { workspaceId: input.workspaceId, OR: [{ id: input.targetVersion }, { contentHash: input.targetVersion }] }, select: { id: true, contentHash: true } })
-    if (!manuscriptTarget) throw new Error("This review type requires an exact accessible ManuscriptVersion id or content hash.")
+    const targetRef = input.targetVersion!
+    const targetSelectors: Prisma.ManuscriptVersionWhereInput[] = [{ contentHash: targetRef }]
+    if (/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(targetRef)) targetSelectors.push({ id: targetRef })
+    if (/^[1-9][0-9]*$/.test(targetRef)) targetSelectors.push({ version: Number(targetRef) })
+    manuscriptTarget = await prisma.manuscriptVersion.findFirst({ where: { workspaceId: input.workspaceId, projectId: workstream.projectId, OR: targetSelectors }, select: { id: true, contentHash: true } })
+    if (!manuscriptTarget) throw new Error("This review type requires an exact accessible ManuscriptVersion id, content hash, or version number.")
     if (input.targetObjectType && input.targetObjectType !== "ManuscriptVersion") throw new Error("Manuscript review targetObjectType must be ManuscriptVersion.")
     if (input.targetObjectId && input.targetObjectId !== manuscriptTarget.id) throw new Error("Manuscript review targetObjectId must match the exact ManuscriptVersion.")
+  }
+  let lockedAssignment: Awaited<ReturnType<typeof validateReviewAssignment>> | null = null
+  if (manuscriptReviewTypes.has(reviewType)) {
+    if (!input.reviewAssignmentId || !input.submissionToken || !input.createdByAgentRunId || !manuscriptTarget) throw new Error("Internal manuscript reviews require a server-issued ReviewAssignment, submission token, and active reviewer AgentRun.")
+    lockedAssignment = await validateReviewAssignment({ workspaceId: input.workspaceId, assignmentId: input.reviewAssignmentId, submissionToken: input.submissionToken, reviewerRunId: input.createdByAgentRunId, reviewType, targetObjectId: manuscriptTarget.id, workstreamId: input.workstreamId })
+    const permittedArtifactIds = Array.isArray(lockedAssignment.permittedArtifactIds)
+      ? lockedAssignment.permittedArtifactIds.filter((id): id is string => typeof id === "string")
+      : []
+    const accessedTarget = await prisma.objectAccessEvidence.count({
+      where: {
+        workspaceId: input.workspaceId,
+        projectId: workstream.projectId,
+        agentRunId: input.createdByAgentRunId,
+        OR: [
+          { objectType: "ManuscriptVersion", objectId: manuscriptTarget.id },
+          ...(permittedArtifactIds.length ? [{ artifactId: { in: permittedArtifactIds } }] : [])
+        ]
+      }
+    })
+    if (!accessedTarget) throw new Error("Assigned manuscript review requires durable access evidence for the locked manuscript version or one of its permitted exact artifacts.")
+    const artifactCriticalReview = new Set(["proof_integration", "end_to_end_mathematical", "compile", "source_fidelity"])
+    if (artifactCriticalReview.has(reviewType)) {
+      if (!permittedArtifactIds.length) throw new Error(`${reviewType} review requires locked exact physical artifacts.`)
+      const accessedArtifacts = await prisma.objectAccessEvidence.count({ where: { workspaceId: input.workspaceId, projectId: workstream.projectId, agentRunId: input.createdByAgentRunId, artifactId: { in: permittedArtifactIds } } })
+      if (!accessedArtifacts) throw new Error(`${reviewType} review requires verified access evidence for a permitted exact physical artifact.`)
+    }
   }
   if (verdict === "approved" && workstream.kind === "computation") {
     const report = input.reportId ? await prisma.workstreamReport.findFirst({ where: { workspaceId: input.workspaceId, id: input.reportId } }) : null
@@ -774,11 +910,13 @@ export async function recordReviewRound(input: {
     const artifactCount = await prisma.artifact.count({ where: { workspaceId: input.workspaceId, workstreamId: input.workstreamId } })
     if (!artifactRefs.length && artifactCount === 0) throw new Error("Computational workstreams require recorded verification artifacts before approval.")
   }
-  const obligationChecks = input.obligationChecks ?? []
-  if (!Array.isArray(obligationChecks)) throw new Error("obligationChecks must be an array when provided.")
+  if (verdict === "approved") await assertDurablePhysicalOutputs(input.workspaceId, input.workstreamId, input.reportId ?? workstream.reportId ?? undefined)
+  const rawObligationChecks = input.obligationChecks ?? []
+  if (!Array.isArray(rawObligationChecks)) throw new Error("obligationChecks must be an array when provided.")
+  let obligationChecks = rawObligationChecks.map((check) => ({ ...check, status: normalizedObligationCheckStatus(check.status) }))
   const obligationIds = obligationChecks.map((check, index) => {
     if (!check || typeof check.proofObligationId !== "string" || !check.proofObligationId.trim()) throw new Error(`obligationChecks[${index}].proofObligationId must be a non-empty string.`)
-    if (typeof check.status !== "string" || !check.status.trim()) throw new Error(`obligationChecks[${index}].status must be a non-empty string.`)
+    if (typeof check.status !== "string" || !["preserved", "partial", "omitted", "failed"].includes(check.status)) throw new Error(`obligationChecks[${index}].status must be preserved/passed, partial, omitted, or failed.`)
     return check.proofObligationId
   })
   if (new Set(obligationIds).size !== obligationIds.length) throw new Error("obligationChecks must not contain duplicate proofObligationId values.")
@@ -787,12 +925,26 @@ export async function recordReviewRound(input: {
     const report = await prisma.workstreamReport.findFirst({ where: { workspaceId: input.workspaceId, id: reportId, workstreamId: input.workstreamId } })
     if (!report) throw new Error("Review report must belong to the target workstream and workspace.")
   }
-  if (obligationIds.length) {
-    const allowed = await prisma.proofObligation.count({ where: { workspaceId: input.workspaceId, id: { in: obligationIds } } })
-    if (allowed !== obligationIds.length) throw new Error("Review obligation checks must reference accessible proof obligations.")
+  const checkedObligationIds = Array.isArray(input.checkedObligationIds) ? input.checkedObligationIds.filter((id): id is string => typeof id === "string" && Boolean(id.trim())) : []
+  if (reviewType === "proof_integration" && manuscriptTarget) {
+    const targetObligations = await prisma.proofObligation.findMany({ where: { workspaceId: input.workspaceId, manuscriptVersionId: manuscriptTarget.id }, select: { id: true, required: true } })
+    const targetIds = new Set(targetObligations.map((obligation) => obligation.id))
+    const invalidIds = [...new Set([...obligationIds, ...checkedObligationIds])].filter((id) => !targetIds.has(id))
+    if (invalidIds.length) throw new Error(`Proof-integration checks must belong to the exact target ManuscriptVersion; invalid ids: ${invalidIds.join(", ")}.`)
+    if (verdict === "approved") {
+      const preservedIds = new Set(obligationChecks.filter((check) => check.status === "preserved").map((check) => check.proofObligationId))
+      const missingRequired = targetObligations.filter((obligation) => obligation.required && !preservedIds.has(obligation.id)).map((obligation) => obligation.id)
+      if (missingRequired.length) throw new Error(`An approved proof-integration review must preserve every required exact-version obligation; missing ids: ${missingRequired.join(", ")}.`)
+    }
+  }
+  const evidenceSections = lockedAssignment ? validateReviewEvidence({ reviewType, verdict, evidenceSections: input.evidenceSections, obligationChecks, checkedRefs: input.checkedRefs, scope: input.scope }) : []
+  const canonicalCheckedObligationIds = [...new Set([...checkedObligationIds, ...obligationChecks.map((check) => check.proofObligationId)])]
+  if (canonicalCheckedObligationIds.length) {
+    const allowed = await prisma.proofObligation.count({ where: { workspaceId: input.workspaceId, id: { in: canonicalCheckedObligationIds } } })
+    if (allowed !== canonicalCheckedObligationIds.length) throw new Error("Review obligation checks must reference accessible proof obligations.")
   }
   if (input.createdByAgentRunId) {
-    const existing = await prisma.reviewRound.findFirst({ where: { workspaceId: input.workspaceId, workstreamId: input.workstreamId, reportId, createdByAgentRunId: input.createdByAgentRunId, reviewType: reviewType as any, targetVersion: input.targetVersion } })
+    const existing = await prisma.reviewRound.findFirst({ where: { workspaceId: input.workspaceId, workstreamId: input.workstreamId, reportId, createdByAgentRunId: input.createdByAgentRunId, reviewType: reviewType as any, targetVersion: manuscriptTarget?.id ?? input.targetVersion } })
     if (existing) throw new Error(`A review from this AgentRun already exists for this report and review scope: ${existing.id}`)
   }
   const recordedReview = await prisma.$transaction(async (tx) => {
@@ -811,17 +963,25 @@ export async function recordReviewRound(input: {
         checkedRefs: jsonArray(input.checkedRefs),
         bodyMarkdown: input.bodyMarkdown,
         createdByAgentRunId: input.createdByAgentRunId,
+        reviewAssignmentId: lockedAssignment?.id,
+        evidenceStatus: lockedAssignment ? "assigned_valid" : "unverified_legacy",
         reviewType: reviewType as any,
-        targetVersion: input.targetVersion,
+        targetVersion: manuscriptTarget?.id ?? input.targetVersion,
         scope: jsonObject(input.scope),
         inspectedArtifactIds: jsonArray(input.inspectedArtifactIds),
-        checkedObligationIds: jsonArray(input.checkedObligationIds),
+        checkedObligationIds: jsonArray(canonicalCheckedObligationIds),
         parentMathReopenable: input.parentMathReopenable ?? true,
         priorApprovalsEvidenceOnly: input.priorApprovalsEvidenceOnly ?? true,
-        independence: (input.independence ?? "same_workstream_reviewer") as any
+        independence: (lockedAssignment ? ["author_disjoint", "fully_disjoint_internal_referee"].includes(lockedAssignment.independence) ? "independent_reviewer" : "same_workstream_reviewer" : input.independence ?? "same_workstream_reviewer") as any
       }
     })
     if (obligationChecks.length) await tx.reviewObligationCheck.createMany({ data: obligationChecks.map((check) => ({ workspaceId: input.workspaceId, reviewRoundId: review.id, proofObligationId: check.proofObligationId, status: check.status, evidenceMarkdown: check.evidenceMarkdown })) })
+    if (lockedAssignment && input.createdByAgentRunId) {
+      const assignmentUpdate = await tx.reviewAssignment.updateMany({ where: { id: lockedAssignment.id, status: "claimed" }, data: { status: "submitted", submittedAt: new Date() } })
+      if (assignmentUpdate.count !== 1) throw new Error("Review assignment was already consumed or expired.")
+      await tx.agentRun.update({ where: { id: input.createdByAgentRunId }, data: { status: "submitted" } })
+      if (evidenceSections.length) await tx.reviewEvidenceSection.createMany({ data: evidenceSections.map((raw) => { const section = jsonObject(raw) as Record<string, any>; return { workspaceId: input.workspaceId, projectId: workstream.projectId, reviewRoundId: review.id, sectionType: String(section.sectionType ?? section.section_type), conclusion: String(section.conclusion ?? ""), evidenceMarkdown: String(section.evidenceMarkdown ?? section.evidence_markdown ?? ""), checkedRefs: jsonArray(section.checkedRefs ?? section.checked_refs), externalSources: jsonArray(section.externalSources ?? section.external_sources), attackCategories: jsonArray(section.attackCategories ?? section.attack_categories) } }) })
+    }
     const workstreamStatus = verdict === "approved" ? "approved" : verdict === "needs_revision" || verdict === "rejected" ? "revision_required" : verdict === "escalate" ? "escalated" : "blocked"
     const reportStatus = verdict === "approved" ? "reviewed_approved" : "reviewed_needs_revision"
     await tx.workstream.update({ where: { id: input.workstreamId, workspaceId: input.workspaceId }, data: { status: workstreamStatus as any } })
@@ -840,6 +1000,7 @@ export async function completeWorkstream(input: { workspaceId: string; workstrea
   const minApprovals = typeof policy.min_approved_rounds === "number" ? policy.min_approved_rounds : 1
   const approvedReviews = await prisma.reviewRound.count({ where: { workspaceId: input.workspaceId, workstreamId: input.workstreamId, verdict: "approved" } })
   if (approvedReviews < minApprovals) throw new Error(`Workstream cannot complete until ${minApprovals} approved ReviewRound(s) exist.`)
+  await assertDurablePhysicalOutputs(input.workspaceId, input.workstreamId, workstream.reportId ?? undefined)
   return prisma.workstream.update({ where: { id: input.workstreamId, workspaceId: input.workspaceId }, data: { status: "completed", completedAt: new Date() } })
 }
 
@@ -870,6 +1031,8 @@ export async function requestWorkstreamRevision(input: { workspaceId: string; wo
 export async function approveWorkstream(input: { workspaceId: string; workstreamId: string }) {
   const approvals = await prisma.reviewRound.count({ where: { workspaceId: input.workspaceId, workstreamId: input.workstreamId, verdict: "approved" } })
   if (!approvals) throw new Error("Cannot approve Workstream without an approved ReviewRound.")
+  const workstream = await prisma.workstream.findFirstOrThrow({ where: { workspaceId: input.workspaceId, id: input.workstreamId } })
+  await assertDurablePhysicalOutputs(input.workspaceId, input.workstreamId, workstream.reportId ?? undefined)
   return prisma.workstream.update({ where: { id: input.workstreamId, workspaceId: input.workspaceId }, data: { status: "approved" } })
 }
 
@@ -931,7 +1094,7 @@ export async function createProofAttempt(input: { workspaceId: string; projectId
   return attempt
 }
 
-export async function createGap(input: { workspaceId: string; projectId: string; claimId?: string; proofAttemptId?: string; routeId?: string; title: string; descriptionMarkdown: string; severity?: string; status?: string; suggestedResolution?: string }) {
+export async function createGap(input: { workspaceId: string; projectId: string; claimId?: string; proofAttemptId?: string; routeId?: string; title: string; descriptionMarkdown: string; severity?: string; status?: string; suggestedResolution?: string; targetObjectType?: string; targetObjectId?: string; externalReviewId?: string; auditFindingId?: string }) {
   const gap = await prisma.gap.create({
     data: {
       workspaceId: input.workspaceId,
@@ -943,7 +1106,11 @@ export async function createGap(input: { workspaceId: string; projectId: string;
       descriptionMarkdown: input.descriptionMarkdown,
       severity: input.severity as any ?? "unknown",
       status: input.status as any ?? "open",
-      suggestedResolution: input.suggestedResolution
+      suggestedResolution: input.suggestedResolution,
+      targetObjectType: input.targetObjectType,
+      targetObjectId: input.targetObjectId,
+      externalReviewId: input.externalReviewId,
+      auditFindingId: input.auditFindingId
     }
   })
   await recordSubstantiveAction({ workspaceId: input.workspaceId, projectId: input.projectId, actionType: "gap_created", targetType: "Gap", targetId: gap.id, summary: gap.title })
@@ -1092,8 +1259,219 @@ export async function searchResearchObjects(input: { workspaceId: string; projec
   return { claims, routes, gaps, papers, known_results: knownResults, research_deltas: researchDeltas, research_artifacts: researchArtifacts, mechanisms, spinout_candidates: spinoutCandidates, assumption_regimes: assumptionRegimes, theorem_contracts: theoremContracts, frontier_snapshots: frontierSnapshots }
 }
 
-export async function createArtifact(input: { workspaceId: string; projectId: string; workstreamId?: string; kind?: string; title: string; uri?: string; path?: string; contentHash?: string; metadata?: unknown; createdByAgentRunId?: string }) {
-  return prisma.artifact.create({ data: { workspaceId: input.workspaceId, projectId: input.projectId, workstreamId: input.workstreamId, kind: input.kind as any ?? "other", title: input.title, uri: input.uri, path: input.path, contentHash: input.contentHash, metadata: jsonObject(input.metadata), createdByAgentRunId: input.createdByAgentRunId } })
+type ConnectorArtifactFile = {
+  download_url?: string
+  downloadUrl?: string
+  file_id?: string
+  fileId?: string
+  mime_type?: string
+  mimeType?: string
+  file_name?: string
+  fileName?: string
+}
+
+function expectedHash(input: { expectedSha256?: string; contentHash?: string }) {
+  const value = (input.expectedSha256 ?? input.contentHash)?.trim().toLowerCase()
+  if (!value) return undefined
+  if (!/^[a-f0-9]{64}$/.test(value)) throw Object.assign(new Error("expected_sha256 must be a lowercase or uppercase SHA-256 hex digest."), { status: 400 })
+  return value
+}
+
+function assertExpectedHash(expectedSha256: string | undefined, actualSha256: string) {
+  if (expectedSha256 && expectedSha256 !== actualSha256) {
+    throw Object.assign(new Error(`Artifact hash mismatch: expected ${expectedSha256}, got ${actualSha256}. No available Artifact record was created.`), { status: 400, code: "artifact_hash_mismatch" })
+  }
+}
+
+function connectorFileDetails(file: ConnectorArtifactFile) {
+  const downloadUrl = file.download_url ?? file.downloadUrl
+  const fileId = file.file_id ?? file.fileId
+  if (!downloadUrl || !fileId) throw Object.assign(new Error("create_artifact file upload requires a connector file with download_url and file_id."), { status: 400 })
+  const suppliedMimeType = file.mime_type ?? file.mimeType
+  const filename = path.basename(file.file_name ?? file.fileName ?? fileId)
+  return { downloadUrl, fileId, suppliedMimeType, filename }
+}
+
+async function assertArtifactScope(input: { workspaceId: string; projectId: string; workstreamId?: string; createdByAgentRunId?: string; researchArtifactId?: string }) {
+  await prisma.project.findFirstOrThrow({ where: { workspaceId: input.workspaceId, id: input.projectId } })
+  if (input.workstreamId) await prisma.workstream.findFirstOrThrow({ where: { workspaceId: input.workspaceId, projectId: input.projectId, id: input.workstreamId } })
+  if (input.createdByAgentRunId) await prisma.agentRun.findFirstOrThrow({ where: { workspaceId: input.workspaceId, projectId: input.projectId, id: input.createdByAgentRunId, workstreamId: input.workstreamId } })
+  if (input.researchArtifactId) await prisma.researchArtifact.findFirstOrThrow({ where: { workspaceId: input.workspaceId, projectId: input.projectId, id: input.researchArtifactId } })
+}
+
+async function createArtifactRecord(input: { workspaceId: string; projectId: string; workstreamId?: string; researchArtifactId?: string; createdByAgentRunId?: string; kind?: string; title: string; mimeType?: string; metadata?: unknown; sourcePath?: string | null; sourceType: string; sourceFileId?: string; expectedSha256?: string; ingested: Awaited<ReturnType<typeof ingestFile>> }) {
+  const mimeType = inferMimeType(input.ingested.originalFilename, input.mimeType)
+  const metadata = { ...(jsonObject(input.metadata) as Prisma.InputJsonObject), source_type: input.sourceType, client_expected_sha256: input.expectedSha256 ?? null, connector_file_id: input.sourceFileId ?? null }
+  const artifact = await prisma.$transaction(async (tx) => {
+    const created = await tx.artifact.create({
+      data: {
+        workspaceId: input.workspaceId, projectId: input.projectId, workstreamId: input.workstreamId,
+        kind: input.kind as any ?? (mimeType === "application/pdf" ? "pdf" : "other"), title: input.title,
+        originalFilename: input.ingested.originalFilename, mimeType, byteSize: BigInt(input.ingested.byteSize), sha256: input.ingested.sha256,
+        storageKey: input.ingested.storageKey, storageStatus: "available", uri: `maff-artifact://${input.workspaceId}/${input.ingested.sha256}`,
+        path: input.sourcePath, contentHash: input.ingested.sha256, metadata, researchArtifactId: input.researchArtifactId,
+        createdByAgentRunId: input.createdByAgentRunId
+      }
+    })
+    if (input.researchArtifactId) await tx.researchArtifact.update({ where: { id: input.researchArtifactId }, data: { fileStatus: "durable", fileDiagnostic: `Durable bytes ingested as Artifact ${created.id}; filePath is provenance only.` } })
+    return created
+  })
+  return {
+    ...artifactView(artifact),
+    verification: {
+      ok: true,
+      status: "available",
+      expected_sha256: artifact.sha256,
+      actualSha256: artifact.sha256,
+      expected_byte_size: Number(artifact.byteSize),
+      actualByteSize: Number(artifact.byteSize)
+    },
+    download: {
+      artifact_id: artifact.id,
+      name: artifact.originalFilename ?? artifact.title,
+      mime_type: artifact.mimeType ?? "application/octet-stream",
+      byte_size: Number(artifact.byteSize),
+      sha256: artifact.sha256,
+      uri: `${config.publicBaseUrl}/api/artifacts/${artifact.id}/content?workspaceId=${input.workspaceId}`
+    }
+  }
+}
+
+export async function createArtifact(input: { workspaceId: string; projectId: string; workstreamId?: string; kind?: string; title: string; uri?: string; path?: string; file?: ConnectorArtifactFile; contentHash?: string; expectedSha256?: string; metadata?: unknown; createdByAgentRunId?: string; researchArtifactId?: string; mimeType?: string }) {
+  if (input.file) return createArtifactFromFile({ ...input, file: input.file })
+  if (input.path) return createArtifactFromPath({ ...input, path: input.path })
+  if (!input.uri) throw new Error("create_artifact requires path ingestion for physical files. URI-only records are allowed only for external durable references.")
+  await assertArtifactScope(input)
+  return artifactView(await prisma.artifact.create({ data: { workspaceId: input.workspaceId, projectId: input.projectId, workstreamId: input.workstreamId, kind: input.kind as any ?? "external_reference", title: input.title, uri: input.uri, path: null, contentHash: input.contentHash, metadata: jsonObject(input.metadata), researchArtifactId: input.researchArtifactId, createdByAgentRunId: input.createdByAgentRunId } }))
+}
+
+export async function createArtifactFromPath(input: { workspaceId: string; projectId: string; workstreamId?: string; kind?: string; title: string; path: string; metadata?: unknown; createdByAgentRunId?: string; researchArtifactId?: string; mimeType?: string; expectedSha256?: string; contentHash?: string }) {
+  await assertArtifactScope(input)
+  const expectedSha256 = expectedHash(input)
+  const ingested = await ingestFile(input.path, input.workspaceId)
+  assertExpectedHash(expectedSha256, ingested.sha256)
+  return createArtifactRecord({ ...input, sourcePath: input.path, sourceType: "server_path", expectedSha256, ingested })
+}
+
+export async function createArtifactFromFile(input: { workspaceId: string; projectId: string; workstreamId?: string; kind?: string; title: string; file: ConnectorArtifactFile; metadata?: unknown; createdByAgentRunId?: string; researchArtifactId?: string; mimeType?: string; expectedSha256?: string; contentHash?: string }) {
+  await assertArtifactScope(input)
+  const expectedSha256 = expectedHash(input)
+  const file = connectorFileDetails(input.file)
+  const ingested = await ingestRemoteFile({ downloadUrl: file.downloadUrl, filename: file.filename, workspaceId: input.workspaceId })
+  assertExpectedHash(expectedSha256, ingested.sha256)
+  return createArtifactRecord({ ...input, sourcePath: null, sourceType: "connector_file", sourceFileId: file.fileId, mimeType: input.mimeType ?? file.suppliedMimeType, expectedSha256, ingested })
+}
+
+export async function getArtifact(workspaceId: string, artifactId: string) {
+  const artifact = await prisma.artifact.findFirst({ where: { workspaceId, id: artifactId }, include: { manuscriptLinks: true, researchArtifact: true } })
+  if (!artifact) throw Object.assign(new Error("Artifact not found"), { status: 404 })
+  return artifactView(artifact)
+}
+
+export async function listArtifacts(input: { workspaceId: string; projectId?: string; workstreamId?: string; manuscriptVersionId?: string; researchArtifactId?: string }) {
+  const artifacts = await prisma.artifact.findMany({
+    where: {
+      workspaceId: input.workspaceId, projectId: input.projectId, workstreamId: input.workstreamId, researchArtifactId: input.researchArtifactId,
+      manuscriptLinks: input.manuscriptVersionId ? { some: { manuscriptVersionId: input.manuscriptVersionId } } : undefined
+    },
+    include: { manuscriptLinks: true }, orderBy: { createdAt: "desc" }
+  })
+  return artifacts.map(artifactView)
+}
+
+export async function verifyArtifact(workspaceId: string, artifactId: string) {
+  const artifact = await prisma.artifact.findFirst({ where: { workspaceId, id: artifactId } })
+  if (!artifact?.storageKey || !artifact.sha256 || artifact.byteSize === null) throw new Error("Artifact has no Maff-managed bytes to verify.")
+  const verification = await verifyStoredFile(artifact.storageKey, artifact.sha256, artifact.byteSize)
+  const storageStatus = verification.ok ? "available" : verification.status === "missing" ? "missing" : "corrupt"
+  await prisma.artifact.update({ where: { id: artifact.id }, data: { storageStatus } })
+  return { artifact_id: artifact.id, expected_sha256: artifact.sha256, expected_byte_size: Number(artifact.byteSize), ...verification }
+}
+
+export async function downloadArtifactReference(workspaceId: string, artifactId: string) {
+  const artifact = await getArtifact(workspaceId, artifactId)
+  if (!artifact.storageKey || !artifact.sha256) throw new Error("Artifact is metadata-only and has no downloadable Maff-managed bytes.")
+  const verification = await verifyArtifact(workspaceId, artifactId)
+  if (!verification.ok) throw Object.assign(new Error(`Artifact bytes are ${verification.status}.`), { status: 409 })
+  return { artifact_id: artifact.id, name: artifact.originalFilename ?? artifact.title, mime_type: artifact.mimeType ?? "application/octet-stream", byte_size: artifact.byteSize, sha256: artifact.sha256, uri: `${config.publicBaseUrl}/api/artifacts/${artifact.id}/content?workspaceId=${workspaceId}` }
+}
+
+export async function listArtifactArchive(workspaceId: string, artifactId: string) {
+  const artifact = await prisma.artifact.findFirst({ where: { workspaceId, id: artifactId } })
+  if (!artifact?.storageKey) throw new Error("Artifact has no Maff-managed bytes.")
+  if (artifact.mimeType !== "application/zip" && !artifact.originalFilename?.toLowerCase().endsWith(".zip")) throw new Error("Artifact is not a ZIP archive.")
+  const verification = await verifyArtifact(workspaceId, artifactId)
+  if (!verification.ok) throw Object.assign(new Error(`Artifact bytes are ${verification.status}.`), { status: 409 })
+  return { artifact_id: artifact.id, entries: await listZipEntries(artifact.storageKey) }
+}
+
+export async function artifactArchiveEntryContent(workspaceId: string, artifactId: string, entryPath: string) {
+  const archive = await listArtifactArchive(workspaceId, artifactId)
+  const entry = archive.entries.find((candidate) => candidate.path === entryPath && !candidate.directory)
+  if (!entry) throw Object.assign(new Error("Archive entry not found."), { status: 404 })
+  const artifact = await prisma.artifact.findFirstOrThrow({ where: { workspaceId, id: artifactId, storageKey: { not: null } } })
+  const selected = await readZipEntryBytes(artifact.storageKey!, entryPath)
+  const mimeType = inferMimeType(entryPath)
+  const sha256 = createHash("sha256").update(selected.bytes).digest("hex")
+  const uri = `maff://artifacts/${artifactId}/archive/${encodeURIComponent(entryPath)}?sha256=${sha256}`
+  const downloadUri = `${config.publicBaseUrl}/api/artifacts/${artifactId}/archive-entry?workspaceId=${workspaceId}&path=${encodeURIComponent(entryPath)}`
+  const textMimeTypes = new Set(["application/json", "application/x-bibtex", "application/x-tex", "application/xml", "application/javascript"])
+  const isText = mimeType.startsWith("text/") || textMimeTypes.has(mimeType)
+  return {
+    artifact_id: artifactId,
+    entry_path: entryPath,
+    name: path.basename(entryPath),
+    mime_type: mimeType,
+    byte_size: selected.bytes.length,
+    sha256,
+    download_uri: downloadUri,
+    embedded_resource: isText
+      ? { uri, mime_type: mimeType, text: selected.bytes.toString("utf8") }
+      : { uri, mime_type: mimeType, blob: selected.bytes.toString("base64") }
+  }
+}
+
+export async function attachArtifactToManuscriptVersion(input: { workspaceId: string; artifactId: string; manuscriptVersionId: string; role: string }) {
+  const [artifact, manuscript] = await Promise.all([
+    prisma.artifact.findFirstOrThrow({ where: { workspaceId: input.workspaceId, id: input.artifactId, storageKey: { not: null } } }),
+    prisma.manuscriptVersion.findFirstOrThrow({ where: { workspaceId: input.workspaceId, id: input.manuscriptVersionId } })
+  ])
+  if (artifact.projectId !== manuscript.projectId) throw new Error("Artifact and ManuscriptVersion must belong to the same project.")
+  if (manuscript.isCanonical) throw new Error("A canonical ManuscriptVersion is immutable. Attach exact artifacts before promotion; changes require a new version.")
+  const verification = await verifyArtifact(input.workspaceId, artifact.id)
+  if (!verification.ok) throw Object.assign(new Error(`Artifact bytes are ${verification.status}.`), { status: 409 })
+  return prisma.$transaction(async (tx) => {
+    const link = await tx.artifactManuscriptVersion.create({ data: input })
+    const links = await tx.artifactManuscriptVersion.findMany({ where: { manuscriptVersionId: manuscript.id }, include: { artifact: true } })
+    const exactPhysicalManifest = links.map((item) => [item.role, item.artifact.sha256, item.artifact.byteSize?.toString()]).sort((a, b) => String(a[0]).localeCompare(String(b[0])))
+    await tx.manuscriptVersion.update({ where: { id: manuscript.id }, data: { contentHash: fingerprint(JSON.stringify({ semantic: manuscript.contentHash, physical: exactPhysicalManifest })) } })
+    return link
+  })
+}
+
+export async function exportPhysicalArtifacts(input: { workspaceId: string; workstreamId?: string; manuscriptVersionId?: string }) {
+  if (!input.workstreamId && !input.manuscriptVersionId) throw new Error("Export requires workstreamId or manuscriptVersionId.")
+  const artifacts = await listArtifacts(input)
+  const downloadable = []
+  for (const artifact of artifacts.filter((candidate) => Boolean(candidate.storageKey))) downloadable.push(await downloadArtifactReference(input.workspaceId, artifact.id))
+  return { scope: { workstream_id: input.workstreamId ?? null, manuscript_version_id: input.manuscriptVersionId ?? null }, physical_artifacts: downloadable }
+}
+
+export async function surfaceArtifact(workspaceId: string, artifactId: string) {
+  await prisma.artifact.update({ where: { id: artifactId, workspaceId }, data: { visibility: "user_requested" } })
+  return downloadArtifactReference(workspaceId, artifactId)
+}
+
+export async function getProjectImport(workspaceId: string, importId: string) {
+  return prisma.projectImport.findFirstOrThrow({ where: { workspaceId, id: importId } })
+}
+
+export async function getArtifactStorageFile(workspaceId: string, artifactId: string) {
+  const artifact = await prisma.artifact.findFirst({ where: { workspaceId, id: artifactId } })
+  if (!artifact?.storageKey) throw Object.assign(new Error("Artifact bytes not found."), { status: 404 })
+  const verification = await verifyArtifact(workspaceId, artifactId)
+  if (!verification.ok) throw Object.assign(new Error(`Artifact bytes are ${verification.status}.`), { status: 409 })
+  return { artifact: artifactView(artifact), file: storagePath(artifact.storageKey) }
 }
 
 export async function getReport(workspaceId: string, reportId: string) {
@@ -1105,7 +1483,7 @@ export async function listReviewRounds(workspaceId: string, workstreamId: string
 }
 
 export async function getProjectControlRoom(workspaceId: string, projectId: string) {
-  const [project, goals, workstreams, needsReview, blocked, recentAgentRuns, keyClaims, openGaps, reviews] = await Promise.all([
+  const [project, goals, workstreams, needsReview, blocked, recentAgentRuns, keyClaims, openGaps, reviews, latestOutcome, latestAudit, activeCampaign, latestImport] = await Promise.all([
     prisma.project.findFirstOrThrow({ where: { workspaceId, id: projectId } }),
     prisma.projectGoal.findMany({ where: { workspaceId, projectId }, orderBy: [{ priority: "desc" }, { updatedAt: "desc" }] }),
     prisma.workstream.findMany({ where: { workspaceId, projectId }, orderBy: [{ status: "asc" }, { priority: "desc" }, { updatedAt: "desc" }], take: 50 }),
@@ -1114,7 +1492,11 @@ export async function getProjectControlRoom(workspaceId: string, projectId: stri
     prisma.agentRun.findMany({ where: { workspaceId, projectId }, orderBy: { startedAt: "desc" }, take: 12 }),
     prisma.claim.findMany({ where: { workspaceId, projectId, status: { not: "archived" } }, orderBy: { updatedAt: "desc" }, take: 12 }),
     prisma.gap.findMany({ where: { workspaceId, projectId, status: { in: ["open", "assigned"] } }, orderBy: { updatedAt: "desc" }, take: 12 }),
-    prisma.reviewRound.findMany({ where: { workspaceId, projectId }, orderBy: { createdAt: "desc" }, take: 12 })
+    prisma.reviewRound.findMany({ where: { workspaceId, projectId }, orderBy: { createdAt: "desc" }, take: 12 }),
+    prisma.runOutcome.findFirst({ where: { workspaceId, projectId }, orderBy: { createdAt: "desc" } }),
+    prisma.projectAudit.findFirst({ where: { workspaceId, projectId }, orderBy: { createdAt: "desc" }, include: { findings: true } }),
+    prisma.repairCampaign.findFirst({ where: { workspaceId, projectId, status: { in: ["planned", "active", "awaiting_reaudit"] } }, orderBy: { updatedAt: "desc" }, include: { tasks: { orderBy: { priority: "desc" } } } }),
+    prisma.projectImport.findFirst({ where: { workspaceId, projectId }, orderBy: { createdAt: "desc" } })
   ])
   const dependencyStates = await Promise.all(workstreams.map(async (w) => ({ workstream: w, ...(await workstreamDependenciesSatisfied(workspaceId, w.id)) })))
   const readyWorkstreams = dependencyStates.filter((item) => item.satisfied && ["ready", "planned", "revision_required"].includes(item.workstream.status)).map((item) => item.workstream)
@@ -1139,7 +1521,8 @@ export async function getProjectControlRoom(workspaceId: string, projectId: stri
   const frontier = await getResearchFrontierSummary({ workspaceId, projectId })
   const readiness = await computeSubmissionReadiness(workspaceId, projectId)
   const projectHealth = await getProjectHealth(workspaceId, projectId)
-  return { project, canonical_working_paper: readiness.canonical_manuscript ?? null, readiness, project_health: projectHealth, workstream_dependency_states: dependencyStates.map((item) => ({ workstream_id: item.workstream.id, satisfied: item.satisfied, blocking_prerequisite_ids: item.dependencies.filter((d) => d.prerequisite.status !== "completed" || !d.prerequisite.reviews.some((r) => r.verdict === "approved")).map((d) => d.prerequisiteWorkstreamId) })), goals_by_status: groupedGoals, workstreams_by_status: groupedWorkstreams, needs_review: needsReview, blocked_or_escalated: blocked, recent_agent_runs: recentAgentRuns, key_claims: keyClaims, open_gaps: openGaps, recent_reviews: reviews.map((review) => ({ ...review, scoped_status: reviewScopedStatus(review) })), suggested_next_assignment: suggested, suggested_chat_prompts: suggestedPrompts, frontier }
+  const actionability = await ensureProjectActionable(workspaceId, projectId, false)
+  return { project, canonical_working_paper: readiness.canonical_manuscript ?? null, readiness, project_health: projectHealth, actionability, latest_run_outcome: latestOutcome, latest_audit: latestAudit, active_repair_campaign: activeCampaign, latest_import: latestImport, workstream_dependency_states: dependencyStates.map((item) => ({ workstream_id: item.workstream.id, satisfied: item.satisfied, blocking_prerequisite_ids: item.dependencies.filter((d) => d.prerequisite.status !== "completed" || !d.prerequisite.reviews.some((r) => r.verdict === "approved")).map((d) => d.prerequisiteWorkstreamId) })), goals_by_status: groupedGoals, workstreams_by_status: groupedWorkstreams, needs_review: needsReview, blocked_or_escalated: blocked, recent_agent_runs: recentAgentRuns, key_claims: keyClaims, open_gaps: openGaps, recent_reviews: reviews.map((review) => ({ ...review, scoped_status: reviewScopedStatus(review) })), suggested_next_assignment: suggested, suggested_chat_prompts: suggestedPrompts, frontier }
 }
 
 type FrontierListInput = { workspaceId: string; projectId?: string; status?: string; kind?: string; limit?: number }
@@ -1340,7 +1723,7 @@ export async function listResearchArtifacts(input: FrontierListInput) {
 }
 
 export async function getResearchArtifact(workspaceId: string, id: string) {
-  const artifact = await prisma.researchArtifact.findFirst({ where: { workspaceId, id } })
+  const artifact = await prisma.researchArtifact.findFirst({ where: { workspaceId, id }, include: { physicalArtifacts: { include: { manuscriptLinks: true } } } })
   if (!artifact) throw researchArtifactNotFound()
   return artifact
 }
@@ -1356,38 +1739,61 @@ export async function getResearchArtifactBundle(workspaceId: string, ids: unknow
   if (new Set(ids).size !== ids.length) {
     throw Object.assign(new Error("artifact_ids must not contain duplicates"), { status: 400 })
   }
-  const artifacts = await prisma.researchArtifact.findMany({ where: { workspaceId, id: { in: ids } } })
+  const artifacts = await prisma.researchArtifact.findMany({ where: { workspaceId, id: { in: ids } }, include: { physicalArtifacts: { include: { manuscriptLinks: true } } } })
   if (artifacts.length !== ids.length) throw researchArtifactNotFound()
   return artifacts.sort((a, b) => a.id.localeCompare(b.id))
 }
 
 export async function createResearchArtifact(input: FrontierWriteInput) {
-  return prisma.researchArtifact.create({ data: { workspaceId: input.workspaceId, projectId: input.projectId, title: input.title, slug: input.slug ? slugify(input.slug) : uniqueSlug(input.title), kind: input.kind ?? "other", status: input.status ?? "draft", descriptionMarkdown: input.descriptionMarkdown, contentMarkdown: input.contentMarkdown, filePath: input.filePath, url: input.url, createdByUserId: input.createdByUserId } })
+  const hasFilePath = Boolean(input.filePath)
+  return prisma.researchArtifact.create({ data: { workspaceId: input.workspaceId, projectId: input.projectId, title: input.title, slug: input.slug ? slugify(input.slug) : uniqueSlug(input.title), kind: input.kind ?? "other", status: input.status ?? "draft", descriptionMarkdown: input.descriptionMarkdown, contentMarkdown: input.contentMarkdown, filePath: input.filePath, fileStatus: hasFilePath ? "provenance_only" : "not_applicable", fileDiagnostic: hasFilePath ? "Local file paths are provenance only. ChatGPT clients must use create_artifact with file; trusted server jobs may use create_artifact_from_path server_path. Ingest bytes before claiming a physical artifact is registered." : undefined, url: input.url, createdByUserId: input.createdByUserId } })
 }
 
 function fingerprint(value: string) { return createHash("sha256").update(value).digest("hex") }
 
 /** Creates an unverified candidate. It can only become the canonical working paper after a non-empty exact ledger exists. */
-export async function createManuscriptVersion(input: { workspaceId: string; projectId: string; artifactId: string; parentArtifactIds?: string[]; claimIds?: string[]; theoremFingerprint?: string; citationFingerprint?: string }) {
+export async function createManuscriptVersion(input: { workspaceId: string; projectId: string; artifactId: string; parentArtifactIds?: string[]; claimIds?: string[]; theoremFingerprint?: string; citationFingerprint?: string; createdByAgentRunId?: string }) {
   const artifact = await prisma.researchArtifact.findFirstOrThrow({ where: { workspaceId: input.workspaceId, projectId: input.projectId, id: input.artifactId } })
   const contentHash = fingerprint(artifact.contentMarkdown ?? "")
+  const governingClaims = input.claimIds?.length ? await prisma.claim.findMany({ where: { workspaceId: input.workspaceId, projectId: input.projectId, id: { in: input.claimIds } }, orderBy: { id: "asc" } }) : []
+  const theoremFingerprint = fingerprint(JSON.stringify(governingClaims.map((claim) => ({ title: claim.title, statement: claim.statementMarkdown, kind: claim.kind, assumptions: (claim.metadata as any)?.assumptions ?? [], conclusion: (claim.metadata as any)?.conclusion ?? null }))))
+  const citationFingerprint = fingerprint((artifact.contentMarkdown ?? "").match(/\\[[^\]]+\]|\\cite\{[^}]+\}/g)?.sort().join("|") ?? "")
   return prisma.$transaction(async (tx) => {
     const existing = await tx.manuscriptVersion.findFirst({ where: { projectId: input.projectId, contentHash } })
     if (existing) return existing
     const latest = await tx.manuscriptVersion.findFirst({ where: { workspaceId: input.workspaceId, projectId: input.projectId }, orderBy: { version: "desc" } })
-    const version = await tx.manuscriptVersion.create({ data: { workspaceId: input.workspaceId, projectId: input.projectId, artifactId: artifact.id, version: (latest?.version ?? 0) + 1, contentHash, theoremFingerprint: input.theoremFingerprint ?? fingerprint(JSON.stringify(input.claimIds ?? [])), citationFingerprint: input.citationFingerprint ?? fingerprint((artifact.contentMarkdown ?? "").match(/\\[[^\]]+\]|\\cite\{[^}]+\}/g)?.join("|") ?? ""), isCanonical: false, verificationState: "unverified_candidate", freezeLevel: "none" } })
+    const version = await tx.manuscriptVersion.create({ data: { workspaceId: input.workspaceId, projectId: input.projectId, artifactId: artifact.id, version: (latest?.version ?? 0) + 1, contentHash, theoremFingerprint, citationFingerprint, isCanonical: false, verificationState: "unverified_candidate", freezeLevel: "none" } })
     if (input.parentArtifactIds?.length) await tx.researchLink.createMany({ data: [...new Set(input.parentArtifactIds)].map((targetId) => ({ workspaceId: input.workspaceId, projectId: input.projectId, sourceType: "ManuscriptVersion", sourceId: version.id, relationType: "derived_from", targetType: "ResearchArtifact", targetId })) })
     if (input.claimIds?.length) await tx.researchLink.createMany({ data: [...new Set(input.claimIds)].map((targetId) => ({ workspaceId: input.workspaceId, projectId: input.projectId, sourceType: "ManuscriptVersion", sourceId: version.id, relationType: "contribution_claim", targetType: "Claim", targetId })) })
+    if (input.createdByAgentRunId) await tx.objectContribution.create({ data: { workspaceId: input.workspaceId, projectId: input.projectId, agentRunId: input.createdByAgentRunId, objectType: "ManuscriptVersion", objectId: version.id, versionHash: version.contentHash, type: "integrated", metadata: { source_artifact_id: artifact.id } } })
     return version
   })
+}
+
+export async function getManuscriptVersion(workspaceId: string, manuscriptVersionId: string) {
+  const version = await prisma.manuscriptVersion.findFirst({
+    where: { workspaceId, id: manuscriptVersionId },
+    include: { artifact: true, physicalArtifacts: { include: { artifact: true } }, obligations: true }
+  })
+  if (!version) throw Object.assign(new Error("ManuscriptVersion not found"), { status: 404 })
+  return {
+    ...version,
+    physicalArtifacts: version.physicalArtifacts.map((link) => ({ ...link, artifact: artifactView(link.artifact) }))
+  }
 }
 
 /** Promotion is the ledger circuit breaker: a nontrivial canonical manuscript may not have zero obligations. */
 export async function promoteManuscriptVersion(input: { workspaceId: string; manuscriptVersionId: string }) {
   return prisma.$transaction(async (tx) => {
     const version = await tx.manuscriptVersion.findFirstOrThrow({ where: { workspaceId: input.workspaceId, id: input.manuscriptVersionId } })
-    const obligations = await tx.proofObligation.count({ where: { workspaceId: input.workspaceId, manuscriptVersionId: version.id, required: true } })
-    if (obligations === 0) throw new Error("A canonical manuscript requires at least one required proof obligation in its exact-version ledger.")
+    const obligations = await tx.proofObligation.findMany({ where: { workspaceId: input.workspaceId, manuscriptVersionId: version.id, required: true } })
+    if (obligations.length === 0) throw new Error("A canonical manuscript requires at least one required proof obligation in its exact-version ledger.")
+    if (obligations.some((obligation) => !Array.isArray(obligation.assumptions) || !Array.isArray(obligation.boundaryCases) || (!obligation.assumptions.length && !obligation.boundaryCases.length && !(Array.isArray(obligation.excludedRegimes) && obligation.excludedRegimes.length)))) throw new Error("Every required proof obligation must record assumptions, boundary cases, or excluded regimes before promotion.")
+    const physical = await tx.artifactManuscriptVersion.findMany({ where: { workspaceId: input.workspaceId, manuscriptVersionId: version.id }, include: { artifact: true } })
+    const healthyRole = (roles: string[]) => physical.some((link) => roles.includes(link.role) && link.artifact.storageStatus === "available" && Boolean(link.artifact.storageKey && link.artifact.sha256 && link.artifact.byteSize !== null))
+    if (!healthyRole(["source_bundle", "manuscript_source"]) || !healthyRole(["compiled_pdf", "final_pdf"])) throw new Error("Canonical promotion requires exact managed source and compiled PDF artifacts attached before promotion.")
+    const provenance = await tx.objectContribution.count({ where: { workspaceId: input.workspaceId, projectId: version.projectId, objectType: "ManuscriptVersion", objectId: version.id, type: { in: ["authored", "edited", "integrated", "repaired"] } } })
+    if (!provenance) throw new Error("Canonical promotion requires constructive AgentRun provenance for the exact ManuscriptVersion.")
     const prior = await tx.manuscriptVersion.findFirst({ where: { workspaceId: input.workspaceId, projectId: version.projectId, isCanonical: true } })
     if (prior && prior.id !== version.id) await tx.manuscriptVersion.update({ where: { id: prior.id }, data: { isCanonical: false, supersededAt: new Date() } })
     const promoted = await tx.manuscriptVersion.update({ where: { id: version.id }, data: { isCanonical: true, verificationState: "ledger_complete" } })
@@ -1417,16 +1823,20 @@ export async function importExternalReview(input: { workspaceId: string; project
   if (!allowed.includes(input.provenance)) throw new Error(`Invalid external-review provenance: ${input.provenance}`)
   return prisma.$transaction(async (tx) => {
     if (input.manuscriptVersionId) await tx.manuscriptVersion.findFirstOrThrow({ where: { workspaceId: input.workspaceId, projectId: input.projectId, id: input.manuscriptVersionId } })
-    const imported = await tx.externalReviewImport.create({ data: { ...input, provenance: input.provenance as any, verdict: asReviewVerdict(input.verdict), issues: jsonArray(input.issues), requiredChanges: jsonArray(input.requiredChanges) } })
+    const verdict = asReviewVerdict(input.verdict)
+    const imported = await tx.externalReviewImport.create({ data: { ...input, provenance: input.provenance as any, verdict, issues: jsonArray(input.issues), requiredChanges: jsonArray(input.requiredChanges), challengedAt: ["needs_revision", "rejected"].includes(verdict) ? new Date() : undefined } })
     await recordSubstantiveActionInTransaction(tx, { workspaceId: input.workspaceId, projectId: input.projectId, actionType: "external_review_imported", targetType: "ExternalReviewImport", targetId: imported.id, summary: input.reviewScope })
     return imported
   }, { isolationLevel: "Serializable" })
 }
 
-export async function createStrategicReviewRound(input: { workspaceId: string; projectId: string; verdict: string; reviewerIndependence: string; whatChangedMarkdown: string; loopDiagnosisMarkdown: string; blockerStructureMarkdown: string; alternativesMarkdown: string; branchAllocation?: unknown; nextMoves?: unknown; probabilityEstimates?: unknown; metrics?: unknown }) {
+export async function createStrategicReviewRound(input: { workspaceId: string; projectId: string; verdict: string; reviewerIndependence: string; whatChangedMarkdown: string; loopDiagnosisMarkdown: string; blockerStructureMarkdown: string; alternativesMarkdown: string; branchAllocation?: unknown; nextMoves?: unknown; probabilityEstimates?: unknown; metrics?: unknown; createdByAgentRunId?: string }) {
   const valid = ["continue", "continue_with_rebase", "split", "pivot", "pause", "terminate"]
   if (!valid.includes(input.verdict)) throw new Error(`Invalid strategic-review verdict: ${input.verdict}`)
-  if (!/independent/i.test(input.reviewerIndependence)) throw new Error("StrategicReviewer must declare independence from the current proof work.")
+  if (!input.createdByAgentRunId) throw new Error("Strategic review requires an attributable fresh AgentRun; a text declaration is insufficient.")
+  const reviewerRun = await prisma.agentRun.findFirstOrThrow({ where: { workspaceId: input.workspaceId, projectId: input.projectId, id: input.createdByAgentRunId } })
+  const constructiveWork = await prisma.objectContribution.count({ where: { workspaceId: input.workspaceId, projectId: input.projectId, agentRunId: reviewerRun.id, type: { in: ["created", "authored", "edited", "integrated", "repaired", "computed", "compiled"] } } })
+  if (constructiveWork) throw new Error("Strategic reviewer contributed constructive work in this context and is not independent. Start a fresh chat.")
   if (!Array.isArray(input.nextMoves) || input.nextMoves.length !== 3 || input.nextMoves.some((move) => !move || typeof move !== "object" || ["test", "information_gain", "success_condition", "kill_condition", "decision"].some((key) => typeof (move as Record<string, unknown>)[key] !== "string"))) throw new Error("A StrategicReviewRound requires exactly three structured next moves with test, information_gain, success_condition, kill_condition, and decision.")
   const requiredDimensions = new Set(["truth", "provable", "methods", "publishable_fallback", "next_epoch_progress"])
   const estimates = Array.isArray(input.probabilityEstimates) ? input.probabilityEstimates : []
@@ -1464,9 +1874,9 @@ export async function getProjectHealth(workspaceId: string, projectId: string) {
   return { epoch, strategic_reviews: reviews, branches, metrics: { frontier_delta_rate: actions.filter((a) => a.meaningfulDelta).length / Math.max(actionCount, 1), gap_reopen_rate: gaps.filter((g) => g.status === "open").length / Math.max(gaps.length, 1), blocked_workstream_fraction: workstreams.filter((w) => ["blocked", "escalated", "revision_required"].includes(w.status)).length / Math.max(workstreams.length, 1), review_debt: workstreams.filter((w) => w.status === "needs_review").length }, circuit_breakers: { strategic_review_queued: Boolean(epoch?.strategicReviewQueuedAt && !epoch?.strategicReviewCompletedAt), downstream_paused: Boolean(epoch?.downstreamPausedAt && !epoch?.strategicReviewCompletedAt) } }
 }
 
-export async function createProofObligation(input: { workspaceId: string; projectId: string; manuscriptVersionId: string; title: string; statementMarkdown: string; dependencies?: unknown; claimId?: string; sourceArtifactId?: string; proofLocation?: string; manuscriptLocation?: string; externalTheorems?: unknown; externalAssumptionsMatched?: boolean; exactManuscriptProofPresent?: boolean; required?: boolean }) {
+export async function createProofObligation(input: { workspaceId: string; projectId: string; manuscriptVersionId: string; title: string; statementMarkdown: string; dependencies?: unknown; claimId?: string; sourceArtifactId?: string; proofLocation?: string; manuscriptLocation?: string; externalTheorems?: unknown; externalAssumptionsMatched?: boolean; exactManuscriptProofPresent?: boolean; assumptions?: unknown; excludedRegimes?: unknown; boundaryCases?: unknown; semanticConsequences?: unknown; authorAssertion?: string; required?: boolean }) {
   const version = await prisma.manuscriptVersion.findFirstOrThrow({ where: { workspaceId: input.workspaceId, projectId: input.projectId, id: input.manuscriptVersionId } })
-  return prisma.proofObligation.create({ data: { workspaceId: input.workspaceId, projectId: input.projectId, manuscriptVersionId: version.id, title: input.title, statementMarkdown: input.statementMarkdown, dependencies: jsonArray(input.dependencies), claimId: input.claimId, sourceArtifactId: input.sourceArtifactId, proofLocation: input.proofLocation, manuscriptLocation: input.manuscriptLocation, externalTheorems: jsonArray(input.externalTheorems), externalAssumptionsMatched: input.externalAssumptionsMatched, exactManuscriptProofPresent: input.exactManuscriptProofPresent, required: input.required ?? true } })
+  return prisma.proofObligation.create({ data: { workspaceId: input.workspaceId, projectId: input.projectId, manuscriptVersionId: version.id, title: input.title, statementMarkdown: input.statementMarkdown, dependencies: jsonArray(input.dependencies), claimId: input.claimId, sourceArtifactId: input.sourceArtifactId, proofLocation: input.proofLocation, manuscriptLocation: input.manuscriptLocation, externalTheorems: jsonArray(input.externalTheorems), externalAssumptionsMatched: input.externalAssumptionsMatched, exactManuscriptProofPresent: input.exactManuscriptProofPresent, assumptions: jsonArray(input.assumptions), excludedRegimes: jsonArray(input.excludedRegimes), boundaryCases: jsonArray(input.boundaryCases), semanticConsequences: jsonArray(input.semanticConsequences), authorAssertion: input.authorAssertion, required: input.required ?? true } })
 }
 
 const scopedApprovalLabel: Record<string, string> = {
@@ -1511,7 +1921,12 @@ export async function computeProjectSubmissionReadiness(workspaceId: string, pro
 
 export async function updateResearchArtifact(input: { workspaceId: string; id: string; patch: Record<string, unknown> }) {
   const before = await prisma.researchArtifact.findFirstOrThrow({ where: { id: input.id, workspaceId: input.workspaceId } })
-  const artifact = await prisma.researchArtifact.update({ where: { id: input.id, workspaceId: input.workspaceId }, data: cleanPatch(input.patch, ["title", "kind", "status", "descriptionMarkdown", "contentMarkdown", "filePath", "url"]) as any })
+  const data = cleanPatch(input.patch, ["title", "kind", "status", "descriptionMarkdown", "contentMarkdown", "filePath", "url"]) as Record<string, unknown>
+  if (input.patch.filePath !== undefined && input.patch.filePath !== before.filePath) {
+    data.fileStatus = input.patch.filePath ? "provenance_only" : "not_applicable"
+    data.fileDiagnostic = input.patch.filePath ? "Local file paths are provenance only. ChatGPT clients must use create_artifact with file; trusted server jobs may use create_artifact_from_path server_path. Ingest bytes as a durable Artifact before making a physical-output claim." : null
+  }
+  const artifact = await prisma.researchArtifact.update({ where: { id: input.id, workspaceId: input.workspaceId }, data: data as any })
   if (input.patch.contentMarkdown !== undefined && artifact.contentMarkdown !== before.contentMarkdown && artifact.projectId) {
     const canonical = await prisma.manuscriptVersion.findFirst({ where: { workspaceId: input.workspaceId, projectId: artifact.projectId, artifactId: artifact.id, isCanonical: true } })
     if (canonical) {

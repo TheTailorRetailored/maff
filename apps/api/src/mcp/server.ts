@@ -19,6 +19,12 @@ const s = { type: "string" } as const
 const n = { type: "number" } as const
 const anyObj = { type: "object", additionalProperties: true } as const
 const strArray = { type: "array", items: s } as const
+const connectorFileSchema = objectSchema({
+  download_url: { type: "string", format: "uri" },
+  file_id: s,
+  mime_type: s,
+  file_name: s
+}, ["download_url", "file_id"])
 const objectOutputSchema: JsonSchema = { type: "object", additionalProperties: true }
 const searchKeys = ["claims", "routes", "gaps", "papers", "known_results", "research_deltas", "research_artifacts", "mechanisms", "spinout_candidates", "assumption_regimes", "theorem_contracts", "frontier_snapshots"]
 const searchOutputSchema: JsonSchema = objectSchema(Object.fromEntries(searchKeys.map((key) => [key, { type: "array", items: objectOutputSchema }])), searchKeys)
@@ -36,9 +42,10 @@ const listResultKeys: Record<string, string> = {
   list_spinout_candidates: "spinouts",
   list_assumption_regimes: "assumptions",
   list_theorem_contracts: "contracts",
-  list_frontier_snapshots: "snapshots"
+  list_frontier_snapshots: "snapshots",
+  list_artifacts: "physical_artifacts"
 }
-const readOnlyToolNames = new Set(["get_my_maff_context", "list_workspaces", "get_project", "list_projects", "get_project_control_room", "compute_submission_readiness", "get_integration_coverage", "list_project_goals", "list_workstreams", "get_workstream", "get_agent_briefing", "list_review_rounds", "get_report", "get_object_graph", "search_research_objects", "list_research_deltas", "list_mechanisms", "list_spinout_candidates", "list_assumption_regimes", "list_theorem_contracts", "list_frontier_snapshots", "get_latest_frontier_snapshot", "list_research_artifacts", "get_research_artifact", "export_research_artifact_bundle", "list_research_links", "get_quartz_site_status"])
+const readOnlyToolNames = new Set(["get_my_maff_context", "list_workspaces", "get_project", "list_projects", "get_project_control_room", "compute_submission_readiness", "get_integration_coverage", "list_project_goals", "list_workstreams", "get_workstream", "get_agent_briefing", "list_review_rounds", "get_report", "get_object_graph", "search_research_objects", "list_research_deltas", "list_mechanisms", "list_spinout_candidates", "list_assumption_regimes", "list_theorem_contracts", "list_frontier_snapshots", "get_latest_frontier_snapshot", "list_research_artifacts", "get_research_artifact", "export_research_artifact_bundle", "list_research_links", "get_quartz_site_status", "get_artifact", "download_artifact", "list_artifacts", "list_artifact_archive", "read_artifact_archive_file", "verify_artifact", "export_physical_artifacts", "get_manuscript_version"])
 const idempotentToolNames = new Set(["rebuild_quartz_site"])
 const outputSchemaFor = (name: string): JsonSchema => {
   const listKey = listResultKeys[name]
@@ -67,18 +74,19 @@ const reviewVerdict = {
   ]
 } as const
 
-type ToolDef = { name: string; description: string; scope: string; role: WorkspaceRole; inputSchema: JsonSchema; outputSchema: JsonSchema; annotations: JsonSchema }
-const tool = (name: string, description: string, role: WorkspaceRole, inputSchema: JsonSchema, scope: string = role === "viewer" ? scopes.maffRead : role === "admin" ? scopes.maffAdmin : scopes.maffWrite): ToolDef => ({
+type ToolDef = { name: string; description: string; scope: string; role: WorkspaceRole; inputSchema: JsonSchema; outputSchema: JsonSchema; annotations: JsonSchema; meta?: JsonSchema }
+const tool = (name: string, description: string, role: WorkspaceRole, inputSchema: JsonSchema, scope: string = role === "viewer" ? scopes.maffRead : role === "admin" ? scopes.maffAdmin : scopes.maffWrite, meta?: JsonSchema): ToolDef => ({
   name,
   description,
   scope,
   role,
   inputSchema,
   outputSchema: outputSchemaFor(name),
-  annotations: { readOnlyHint: readOnlyToolNames.has(name), openWorldHint: false, destructiveHint: false, idempotentHint: idempotentToolNames.has(name) }
+  annotations: { readOnlyHint: readOnlyToolNames.has(name), openWorldHint: false, destructiveHint: false, idempotentHint: idempotentToolNames.has(name) },
+  meta
 })
-export const mcpServerVersion = "0.5.0-nontransitive-review-gates"
-export const expectedMcpToolCount = 89
+export const mcpServerVersion = "1.0.0-research-integrity"
+export const expectedMcpToolCount = 112
 
 export const toolDefinitions: ToolDef[] = [
   tool("get_my_maff_context", "Recover where the user is up to. Infers the user's workspace, summarizes active projects, ready assignments, reports needing review, and suggested simple chat prompts.", "viewer", objectSchema({ workspace: s, project: s })),
@@ -113,7 +121,11 @@ export const toolDefinitions: ToolDef[] = [
   tool("create_or_update_workstream_report", "Create or update the primary report for a workstream.", "editor", objectSchema({ workspace_id: s, workstream_id: s, title: s, body_markdown: s, uncertainty_notes: strArray, linked_object_refs: strArray, artifact_refs: strArray }, ["workspace_id", "workstream_id", "title", "body_markdown"])),
   tool("submit_workstream_report", "Create/update a WorkstreamReport and submit it for mandatory review.", "editor", objectSchema({ workspace_id: s, workstream_id: s, title: s, body_markdown: s, uncertainty_notes: strArray, linked_object_refs: strArray, artifact_refs: strArray }, ["workspace_id", "workstream_id", "title", "body_markdown"])),
   tool("submit_report_for_review", "Submit an existing report for review. Pass report_id or workstream_id.", "editor", objectSchema({ workspace_id: s, report_id: s, workstream_id: s }, ["workspace_id"])),
-  tool("record_review_round", "Record a mandatory review verdict. Reviewer agents may create ReviewRound records only.", "editor", objectSchema({ workspace_id: s, workstream_id: s, report_id: s, target_object_type: s, target_object_id: s, reviewer_role: s, verdict: reviewVerdict, review_type: s, target_version: s, scope: anyObj, inspected_artifact_ids: strArray, checked_obligation_ids: strArray, parent_math_reopenable: { type: "boolean" }, prior_approvals_evidence_only: { type: "boolean" }, independence: s, obligation_checks: { type: "array", items: anyObj }, issues: strArray, required_changes: strArray, checked_refs: strArray, body_markdown: s, created_by_agent_run_id: s }, ["workspace_id", "workstream_id", "verdict", "body_markdown"]), scopes.maffReview),
+  tool("record_review_round", "Legacy/general review recording. Internal manuscript gates require the server-issued review_assignment_id, submission_token, active created_by_agent_run_id, and substantive evidence_sections. Independence is computed by Maff, never caller-selected.", "editor", objectSchema({ workspace_id: s, workstream_id: s, report_id: s, target_object_type: s, target_object_id: s, reviewer_role: s, verdict: reviewVerdict, review_type: s, target_version: s, scope: anyObj, inspected_artifact_ids: strArray, checked_obligation_ids: strArray, parent_math_reopenable: { type: "boolean" }, prior_approvals_evidence_only: { type: "boolean" }, obligation_checks: { type: "array", items: anyObj }, evidence_sections: { type: "array", items: anyObj }, issues: strArray, required_changes: strArray, checked_refs: strArray, body_markdown: s, created_by_agent_run_id: s, review_assignment_id: s, submission_token: s }, ["workspace_id", "workstream_id", "verdict", "body_markdown"]), scopes.maffReview),
+  tool("record_object_contribution", "Append provenance showing that an AgentRun created, authored, edited, integrated, repaired, computed, compiled, read, reviewed, or triaged an exact object.", "editor", objectSchema({ workspace_id: s, project_id: s, agent_run_id: s, object_type: s, object_id: s, version_hash: s, contribution_type: s, metadata: anyObj }, ["workspace_id", "project_id", "agent_run_id", "object_type", "object_id", "contribution_type"])),
+  tool("record_object_access", "Record verified evidence that a run actually opened or checked an exact object or Artifact. Required by locked manuscript reviews.", "editor", objectSchema({ workspace_id: s, project_id: s, agent_run_id: s, object_type: s, object_id: s, artifact_id: s, operation: s, content_hash: s, coverage: anyObj }, ["workspace_id", "project_id", "agent_run_id", "object_type", "object_id", "operation"])),
+  tool("submit_run_outcome", "Complete an AgentRun with the mandatory durable handoff, reconcile the active project frontier, and return whether to continue here or start a fresh chat.", "editor", objectSchema({ workspace_id: s, agent_run_id: s, completed_work: strArray, changed_objects: strArray, evidence_generated: strArray, checks_performed: strArray, problems_encountered: strArray, unresolved_uncertainty: strArray, gaps_created: strArray, gaps_resolved: strArray, next_action: anyObj }, ["workspace_id", "agent_run_id", "completed_work", "changed_objects", "evidence_generated", "checks_performed", "problems_encountered", "unresolved_uncertainty", "gaps_created", "gaps_resolved", "next_action"])),
+  tool("ensure_project_actionable", "Enforce that an active project has runnable work, pending review, an explicit waiting state, or a terminal justification; creates only an evidence-linked reconciliation task when necessary.", "editor", objectSchema({ workspace_id: s, project_id: s, create_if_missing: { type: "boolean" } }, ["workspace_id", "project_id"])),
   tool("list_review_rounds", "List ReviewRound records for a workstream.", "viewer", objectSchema({ workspace_id: s, workstream_id: s }, ["workspace_id", "workstream_id"])),
   tool("get_report", "Read a WorkstreamReport with review history.", "viewer", objectSchema({ workspace_id: s, report_id: s }, ["workspace_id", "report_id"])),
 
@@ -122,7 +134,7 @@ export const toolDefinitions: ToolDef[] = [
   tool("update_claim_status", "Update a typed Claim status, enforcing role restrictions such as ProofAttemptAgent cannot mark claims proved.", "editor", objectSchema({ workspace_id: s, claim_id: s, status: s, actor_role: s, reason: s }, ["workspace_id", "claim_id", "status"])),
   tool("create_proof_route", "Create a typed ProofRoute for a Claim.", "editor", objectSchema({ workspace_id: s, project_id: s, claim_id: s, title: s, strategy_markdown: s, required_lemmas: strArray, first_testable_step: s, kill_condition: s, status: s, created_by_workstream_id: s, workstream_id: s }, ["workspace_id", "project_id", "claim_id", "kill_condition"])),
   tool("create_proof_attempt", "Create a typed ProofAttempt object. Failed attempts are durable first-class records.", "editor", objectSchema({ workspace_id: s, project_id: s, claim_id: s, route_id: s, workstream_id: s, body_markdown: s, status: s, gap_summary: s }, ["workspace_id", "project_id", "claim_id", "body_markdown"])),
-  tool("create_gap", "Create a typed Gap object.", "editor", objectSchema({ workspace_id: s, project_id: s, claim_id: s, proof_attempt_id: s, route_id: s, title: s, description_markdown: s, severity: s, status: s, suggested_resolution: s }, ["workspace_id", "project_id", "severity"])),
+  tool("create_gap", "Create a typed Gap targeted to a claim, exact manuscript, proof obligation, artifact, external review, or audit finding so readiness cannot miss it.", "editor", objectSchema({ workspace_id: s, project_id: s, claim_id: s, proof_attempt_id: s, route_id: s, title: s, description_markdown: s, severity: s, status: s, suggested_resolution: s, target_object_type: s, target_object_id: s, external_review_id: s, audit_finding_id: s }, ["workspace_id", "project_id", "severity"])),
   tool("resolve_gap", "Resolve a typed Gap object.", "editor", objectSchema({ workspace_id: s, gap_id: s, suggested_resolution: s }, ["workspace_id", "gap_id"])),
   tool("create_counterexample", "Create a typed Counterexample object.", "editor", objectSchema({ workspace_id: s, project_id: s, claim_id: s, title: s, construction_markdown: s, status: s, verification_artifact_id: s }, ["workspace_id", "project_id", "claim_id", "title", "construction_markdown"])),
   tool("create_experiment", "Create a typed Experiment object.", "editor", objectSchema({ workspace_id: s, project_id: s, workstream_id: s, title: s, hypothesis_markdown: s, method_markdown: s, result_markdown: s, reproducibility: anyObj, status: s }, ["workspace_id", "project_id", "title", "hypothesis_markdown", "method_markdown"])),
@@ -134,7 +146,17 @@ export const toolDefinitions: ToolDef[] = [
   tool("link_objects", "Create a typed GraphEdge between mathematical or coordination objects.", "editor", objectSchema({ workspace_id: s, project_id: s, source_type: s, source_id: s, target_type: s, target_id: s, edge_type: s, metadata: anyObj }, ["workspace_id", "source_type", "source_id", "target_type", "target_id", "edge_type"])),
   tool("get_object_graph", "Read the typed mathematical object graph.", "viewer", objectSchema({ workspace_id: s, project_id: s, source_type: s, source_id: s }, ["workspace_id"])),
   tool("search_research_objects", "Search typed Maff research objects.", "viewer", objectSchema({ workspace_id: s, project_id: s, query: s, type: s }, ["workspace_id"])),
-  tool("create_artifact", "Register a durable artifact without arbitrary file writes.", "editor", objectSchema({ workspace_id: s, project_id: s, workstream_id: s, kind: s, title: s, uri: s, path: s, content_hash: s, metadata: anyObj, created_by_agent_run_id: s }, ["workspace_id", "project_id", "title"])),
+  tool("create_artifact", "Upload a connector file into immutable Maff storage, or register an external durable URI. For ChatGPT-generated /mnt/data outputs, pass the file parameter; Maff downloads the bytes, recomputes SHA-256, compares expected_sha256 when supplied, and returns a durable Artifact ID.", "editor", objectSchema({ workspace_id: s, project_id: s, workstream_id: s, research_artifact_id: s, kind: s, title: s, uri: s, file: connectorFileSchema, expected_sha256: s, mime_type: s, metadata: anyObj, created_by_agent_run_id: s }, ["workspace_id", "project_id", "title"]), undefined, { "openai/fileParams": ["file"] }),
+  tool("create_artifact_from_path", "Trusted server-side ingestion only: ingest a file that already exists on the Maff server under configured ingestion roots. ChatGPT clients must use create_artifact with file instead of passing /mnt/data paths.", "editor", objectSchema({ workspace_id: s, project_id: s, workstream_id: s, research_artifact_id: s, server_path: s, path: s, title: s, kind: s, expected_sha256: s, mime_type: s, metadata: anyObj, created_by_agent_run_id: s }, ["workspace_id", "project_id", "server_path", "title"])),
+  tool("get_artifact", "Fetch immutable physical Artifact metadata and direct ResearchArtifact/ManuscriptVersion links.", "viewer", objectSchema({ workspace_id: s, artifact_id: s }, ["workspace_id", "artifact_id"])),
+  tool("download_artifact", "Return an authorised connector-style file reference for streaming exact Artifact bytes; bytes are never embedded as JSON/base64.", "viewer", objectSchema({ workspace_id: s, artifact_id: s }, ["workspace_id", "artifact_id"])),
+  tool("list_artifacts", "List physical Artifacts by project, workstream, ResearchArtifact, or ManuscriptVersion.", "viewer", objectSchema({ workspace_id: s, project_id: s, workstream_id: s, research_artifact_id: s, manuscript_version_id: s }, ["workspace_id"])),
+  tool("list_artifact_archive", "List entries in an ingested ZIP Artifact after integrity verification.", "viewer", objectSchema({ workspace_id: s, artifact_id: s }, ["workspace_id", "artifact_id"])),
+  tool("read_artifact_archive_file", "Read one selected file from an ingested ZIP Artifact inside the authorised tool call. Text is returned directly; PDF, image, and other binary content is returned as an embedded MCP resource, so no second authenticated fetch is required.", "viewer", objectSchema({ workspace_id: s, artifact_id: s, path: s }, ["workspace_id", "artifact_id", "path"])),
+  tool("verify_artifact", "Recompute stored Artifact SHA-256 and byte size, failing explicitly for missing or corrupt managed data.", "viewer", objectSchema({ workspace_id: s, artifact_id: s }, ["workspace_id", "artifact_id"])),
+  tool("attach_artifact_to_manuscript_version", "Immutably link an ingested physical Artifact to an exact ManuscriptVersion with a role such as source_bundle or compiled_pdf.", "editor", objectSchema({ workspace_id: s, artifact_id: s, manuscript_version_id: s, role: s }, ["workspace_id", "artifact_id", "manuscript_version_id", "role"])),
+  tool("export_physical_artifacts", "Export authorised streaming references for all physical Artifacts linked to a workstream or exact ManuscriptVersion.", "viewer", objectSchema({ workspace_id: s, workstream_id: s, manuscript_version_id: s }, ["workspace_id"])),
+  tool("get_manuscript_version", "Read an exact ManuscriptVersion with its directly linked immutable physical Artifacts and proof obligations.", "viewer", objectSchema({ workspace_id: s, manuscript_version_id: s }, ["workspace_id", "manuscript_version_id"])),
 
   tool("create_research_delta", "Capture a compact research delta: what changed, portable value, blockers, and next move. Low-friction by design.", "editor", objectSchema({ workspace_id: s, project_id: s, source_type: s, source_id: s, title: s, summary_markdown: s, what_changed_markdown: s, mainline_effect_markdown: s, reusable_ideas_markdown: s, blockers_markdown: s, next_move_markdown: s, confidence: s }, ["workspace_id", "title"])),
   tool("list_research_deltas", "List compact research deltas by workspace/project/source.", "viewer", objectSchema({ workspace_id: s, project_id: s, source_type: s, source_id: s, limit: n }, ["workspace_id"])),
@@ -152,16 +174,17 @@ export const toolDefinitions: ToolDef[] = [
   tool("list_frontier_snapshots", "List compressed frontier snapshots.", "viewer", objectSchema({ workspace_id: s, project_id: s, source: s, limit: n }, ["workspace_id"])),
   tool("get_latest_frontier_snapshot", "Read the latest compressed frontier snapshot.", "viewer", objectSchema({ workspace_id: s, project_id: s }, ["workspace_id"])),
   tool("create_research_artifact", "Register a durable research output such as a proof skeleton, memo, theorem map, or migration report.", "editor", objectSchema({ workspace_id: s, project_id: s, title: s, slug: s, kind: s, status: s, description_markdown: s, content_markdown: s, file_path: s, url: s }, ["workspace_id", "title"])),
-  tool("create_manuscript_version", "Create an unverified manuscript candidate. It cannot become canonical until its exact proof-obligation ledger is non-empty.", "editor", objectSchema({ workspace_id: s, project_id: s, artifact_id: s, parent_artifact_ids: strArray, claim_ids: strArray, theorem_fingerprint: s, citation_fingerprint: s }, ["workspace_id", "project_id", "artifact_id"])),
-  tool("create_proof_obligation", "Record an exact-version proof obligation and its dependency/source ledger.", "editor", objectSchema({ workspace_id: s, project_id: s, manuscript_version_id: s, title: s, statement_markdown: s, dependencies: { type: "array", items: anyObj }, claim_id: s, source_artifact_id: s, proof_location: s, manuscript_location: s, external_theorems: { type: "array", items: anyObj }, external_assumptions_matched: { type: "boolean" }, exact_manuscript_proof_present: { type: "boolean" }, required: { type: "boolean" } }, ["workspace_id", "project_id", "manuscript_version_id", "title", "statement_markdown"])),
+  tool("create_manuscript_version", "Create an unverified manuscript candidate with mandatory constructive AgentRun provenance. Fingerprints are derived by Maff; caller-supplied labels cannot preserve stale approval.", "editor", objectSchema({ workspace_id: s, project_id: s, artifact_id: s, parent_artifact_ids: strArray, claim_ids: strArray, created_by_agent_run_id: s }, ["workspace_id", "project_id", "artifact_id", "created_by_agent_run_id"])),
+  tool("create_proof_obligation", "Record an atomic exact-version proof obligation including assumptions, excluded regimes, boundary cases, semantic consequences, dependency/source ledger, and the author's non-verifying assertion.", "editor", objectSchema({ workspace_id: s, project_id: s, manuscript_version_id: s, title: s, statement_markdown: s, dependencies: { type: "array", items: anyObj }, claim_id: s, source_artifact_id: s, proof_location: s, manuscript_location: s, external_theorems: { type: "array", items: anyObj }, external_assumptions_matched: { type: "boolean" }, exact_manuscript_proof_present: { type: "boolean" }, assumptions: strArray, excluded_regimes: strArray, boundary_cases: strArray, semantic_consequences: strArray, author_assertion: s, required: { type: "boolean" } }, ["workspace_id", "project_id", "manuscript_version_id", "title", "statement_markdown", "assumptions", "boundary_cases"])),
   tool("promote_manuscript_version", "Promote a ledger-complete manuscript candidate to canonical; rejects zero-obligation manuscripts.", "editor", objectSchema({ workspace_id: s, manuscript_version_id: s }, ["workspace_id", "manuscript_version_id"]), scopes.maffReview),
   tool("set_manuscript_freeze", "Set lexical, interface, or mathematical freeze. Only a mathematically ready exact version can receive mathematical freeze.", "editor", objectSchema({ workspace_id: s, manuscript_version_id: s, level: s }, ["workspace_id", "manuscript_version_id", "level"]), scopes.maffReview),
   tool("import_external_review", "Immutable import of an externally performed review; it is not represented as a Maff AgentRun.", "editor", objectSchema({ workspace_id: s, project_id: s, manuscript_version_id: s, theorem_or_artifact_ref: s, original_review_text: s, original_review_uri: s, provenance: s, reviewer_identity: s, independence_statement: s, review_scope: s, verdict: reviewVerdict, issues: strArray, required_changes: strArray }, ["workspace_id", "project_id", "theorem_or_artifact_ref", "original_review_text", "provenance", "independence_statement", "review_scope", "verdict"]), scopes.maffReview),
-  tool("create_strategic_review", "Record an independent StrategicReviewer assessment with required frontier, blocker, branch, next-move, and probability fields.", "editor", objectSchema({ workspace_id: s, project_id: s, verdict: s, reviewer_independence: s, what_changed_markdown: s, loop_diagnosis_markdown: s, blocker_structure_markdown: s, alternatives_markdown: s, branch_allocation: { type: "array", items: anyObj }, next_moves: { type: "array", items: anyObj }, probability_estimates: { type: "array", items: anyObj }, metrics: anyObj }, ["workspace_id", "project_id", "verdict", "reviewer_independence", "what_changed_markdown", "loop_diagnosis_markdown", "blocker_structure_markdown", "alternatives_markdown"]), scopes.maffReview),
+  tool("triage_external_review", "In a fresh non-author context, disposition every finding in an imported negative review, create targeted blocking gaps, and clear only the untriaged-challenge state.", "editor", objectSchema({ workspace_id: s, project_id: s, external_review_id: s, agent_run_id: s, dispositions: { type: "array", items: anyObj } }, ["workspace_id", "project_id", "external_review_id", "agent_run_id", "dispositions"]), scopes.maffReview),
+  tool("create_strategic_review", "Record an attributable fresh-context strategic assessment with required frontier, blocker, branch, next-move, and probability fields. Independence is verified from AgentRun provenance.", "editor", objectSchema({ workspace_id: s, project_id: s, verdict: s, reviewer_independence: s, what_changed_markdown: s, loop_diagnosis_markdown: s, blocker_structure_markdown: s, alternatives_markdown: s, branch_allocation: { type: "array", items: anyObj }, next_moves: { type: "array", items: anyObj }, probability_estimates: { type: "array", items: anyObj }, metrics: anyObj, created_by_agent_run_id: s }, ["workspace_id", "project_id", "verdict", "what_changed_markdown", "loop_diagnosis_markdown", "blocker_structure_markdown", "alternatives_markdown", "created_by_agent_run_id"]), scopes.maffReview),
   tool("get_project_health", "Read strategic-review epoch, warning metrics, branches, and circuit-breaker state.", "viewer", objectSchema({ workspace_id: s, project_id: s }, ["workspace_id", "project_id"])),
   tool("create_project_branch", "Create an explicit mainline/exploratory/paused/killed/spinout branch state.", "editor", objectSchema({ workspace_id: s, project_id: s, title: s, state: s, rationale_markdown: s, target_object_type: s, target_object_id: s }, ["workspace_id", "project_id", "title"])),
   tool("get_integration_coverage", "Return source-to-manuscript proof-obligation coverage for one manuscript version.", "viewer", objectSchema({ workspace_id: s, manuscript_version_id: s }, ["workspace_id", "manuscript_version_id"])),
-  tool("compute_submission_readiness", "Compute version-aware manuscript gates, stale reviews, relevant gap closure, and blocking paths.", "viewer", objectSchema({ workspace_id: s, project_id: s }, ["workspace_id", "project_id"])),
+  tool("compute_submission_readiness", "Return the single release-candidate gate plan: accepted and rejected evidence with exact reasons, fingerprint-safe novelty/bibliography reuse, obligation coverage, the one next action, and an anti-loop circuit breaker.", "viewer", objectSchema({ workspace_id: s, project_id: s }, ["workspace_id", "project_id"])),
   tool("list_research_artifacts", "List durable research artifacts.", "viewer", objectSchema({ workspace_id: s, project_id: s, kind: s, status: s, limit: n }, ["workspace_id"])),
   tool("get_research_artifact", "Read the complete stored body and metadata for one research artifact.", "viewer", objectSchema({ workspace_id: s, artifact_id: s }, ["workspace_id", "artifact_id"])),
   tool("export_research_artifact_bundle", "Export a deterministic, complete bundle of requested research artifacts. Fails if any requested artifact is unavailable.", "viewer", objectSchema({ workspace_id: s, artifact_ids: strArray }, ["workspace_id", "artifact_ids"])),
@@ -169,6 +192,15 @@ export const toolDefinitions: ToolDef[] = [
   tool("list_research_links", "List generic research links by source, target, project, or workspace.", "viewer", objectSchema({ workspace_id: s, project_id: s, source_type: s, source_id: s, target_type: s, target_id: s, limit: n }, ["workspace_id"])),
   tool("run_legacy_distillation_preview", "Preview non-destructive legacy distillation into frontier objects. Writes an artifact file, not DB rows.", "editor", objectSchema({ workspace_id: s, output_path: s }, ["workspace_id"])),
   tool("run_legacy_distillation_apply", "Apply the idempotent legacy distillation seed layer into the database.", "editor", objectSchema({ workspace_id: s }, ["workspace_id"])),
+
+  tool("begin_project_import", "Begin a staged immutable import for an existing non-Maff paper or research project.", "editor", objectSchema({ workspace_id: s, project_id: s, title: s, provenance: anyObj }, ["workspace_id", "title", "provenance"])),
+  tool("analyze_project_import", "Store the previewed extraction map for a staged import without promoting assertions to verified state.", "editor", objectSchema({ workspace_id: s, import_id: s, artifact_ids: strArray, proposed_map: anyObj }, ["workspace_id", "import_id", "proposed_map"])),
+  tool("preview_project_import", "Read the staged import map before transactional commit.", "viewer", objectSchema({ workspace_id: s, import_id: s }, ["workspace_id", "import_id"])),
+  tool("commit_project_import", "Commit an analyzed import as imported_unverified and seed a fresh baseline-audit assignment.", "editor", objectSchema({ workspace_id: s, import_id: s, user_corrections: anyObj }, ["workspace_id", "import_id"])),
+  tool("run_project_graph_audit", "Run an append-only invariant, release, migration, or forensic graph audit. It records an immutable report and makes no project mutations.", "editor", objectSchema({ workspace_id: s, project_id: s, mode: s, auditor_run_id: s }, ["workspace_id", "project_id", "mode"]), scopes.maffReview),
+  tool("begin_repair_from_audit", "In a fresh repair chat, accept the latest audit's major findings, materialize linked gaps, and create the ordered repair campaign.", "editor", objectSchema({ workspace_id: s, project_id: s, audit_id: s }, ["workspace_id", "project_id"])),
+  tool("publish_manuscript_package", "Release the final exact source/PDF package only after reconstructed publication-candidate readiness and integrity verification.", "editor", objectSchema({ workspace_id: s, project_id: s, manuscript_version_id: s, source_artifact_id: s, pdf_artifact_id: s, supplementary_artifact_ids: strArray, build_manifest: anyObj }, ["workspace_id", "project_id", "manuscript_version_id", "source_artifact_id", "pdf_artifact_id", "build_manifest"]), scopes.maffReview),
+  tool("surface_artifact", "Explicitly surface one stored Artifact to the user. Intermediate ingestion never surfaces a file automatically.", "viewer", objectSchema({ workspace_id: s, artifact_id: s }, ["workspace_id", "artifact_id"])),
 
   tool("create_lean_project", "Create a Lean project.", "editor", objectSchema({ workspace_id: s, project_name: s }, ["workspace_id", "project_name"])),
   tool("create_lean_stub", "Create a Lean theorem file and LeanTheorem record.", "editor", objectSchema({ workspace_id: s, formalization_target_id: s, theorem_statement: s, imports: strArray }, ["workspace_id", "formalization_target_id", "theorem_statement"])),
@@ -238,7 +270,11 @@ export async function callTool(toolName: string, args: any, ctx: ToolContext) {
     case "approve_workstream": return runtime.approveWorkstream({ workspaceId, workstreamId: args.workstream_id })
     case "complete_workstream": return runtime.completeWorkstream({ workspaceId, workstreamId: args.workstream_id })
     case "submit_report_for_review": return runtime.submitReportForReview({ workspaceId, reportId: args.report_id, workstreamId: args.workstream_id })
-    case "record_review_round": return runtime.recordReviewRound({ workspaceId, workstreamId: args.workstream_id, reportId: args.report_id, targetObjectType: args.target_object_type, targetObjectId: args.target_object_id, reviewerRole: args.reviewer_role, verdict: args.verdict, reviewType: args.review_type, targetVersion: args.target_version, scope: args.scope, inspectedArtifactIds: args.inspected_artifact_ids, checkedObligationIds: args.checked_obligation_ids, parentMathReopenable: args.parent_math_reopenable, priorApprovalsEvidenceOnly: args.prior_approvals_evidence_only, independence: args.independence, obligationChecks: args.obligation_checks, issues: args.issues, requiredChanges: args.required_changes, checkedRefs: args.checked_refs, bodyMarkdown: args.body_markdown, createdByAgentRunId: args.created_by_agent_run_id })
+    case "record_review_round": return runtime.recordReviewRound({ workspaceId, workstreamId: args.workstream_id, reportId: args.report_id, targetObjectType: args.target_object_type, targetObjectId: args.target_object_id, reviewerRole: args.reviewer_role, verdict: args.verdict, reviewType: args.review_type, targetVersion: args.target_version, scope: args.scope, inspectedArtifactIds: args.inspected_artifact_ids, checkedObligationIds: args.checked_obligation_ids, parentMathReopenable: args.parent_math_reopenable, priorApprovalsEvidenceOnly: args.prior_approvals_evidence_only, obligationChecks: args.obligation_checks, evidenceSections: args.evidence_sections, issues: args.issues, requiredChanges: args.required_changes, checkedRefs: args.checked_refs, bodyMarkdown: args.body_markdown, createdByAgentRunId: args.created_by_agent_run_id, reviewAssignmentId: args.review_assignment_id, submissionToken: args.submission_token })
+    case "record_object_contribution": return runtime.recordObjectContribution({ workspaceId, projectId: args.project_id, agentRunId: args.agent_run_id, objectType: args.object_type, objectId: args.object_id, versionHash: args.version_hash, type: args.contribution_type, metadata: args.metadata })
+    case "record_object_access": return runtime.recordObjectAccess({ workspaceId, projectId: args.project_id, agentRunId: args.agent_run_id, objectType: args.object_type, objectId: args.object_id, artifactId: args.artifact_id, operation: args.operation, contentHash: args.content_hash, coverage: args.coverage })
+    case "submit_run_outcome": return runtime.submitRunOutcome({ workspaceId, agentRunId: args.agent_run_id, completedWork: args.completed_work, changedObjects: args.changed_objects, evidenceGenerated: args.evidence_generated, checksPerformed: args.checks_performed, problemsEncountered: args.problems_encountered, unresolvedUncertainty: args.unresolved_uncertainty, gapsCreated: args.gaps_created, gapsResolved: args.gaps_resolved, nextAction: args.next_action })
+    case "ensure_project_actionable": return runtime.ensureProjectActionable(workspaceId, args.project_id, args.create_if_missing !== false)
     case "list_review_rounds": return runtime.listReviewRounds(workspaceId, args.workstream_id)
     case "get_report": return runtime.getReport(workspaceId, args.report_id)
     case "create_math_object": return runtime.createMathObject({ workspaceId, projectId: args.project_id, type: args.type, title: args.title, statementMarkdown: args.statement_markdown, status: args.status, metadata: args.metadata })
@@ -246,7 +282,7 @@ export async function callTool(toolName: string, args: any, ctx: ToolContext) {
     case "update_claim_status": return runtime.updateClaimStatus({ workspaceId, claimId: args.claim_id, status: args.status, actorRole: args.actor_role, reason: args.reason })
     case "create_proof_route": return runtime.createProofRoute({ workspaceId, projectId: args.project_id, claimId: args.claim_id, title: args.title, strategyMarkdown: args.strategy_markdown, requiredLemmas: args.required_lemmas, firstTestableStep: args.first_testable_step, killCondition: args.kill_condition, status: args.status, createdByWorkstreamId: args.created_by_workstream_id ?? args.workstream_id })
     case "create_proof_attempt": return runtime.createProofAttempt({ workspaceId, projectId: args.project_id, claimId: args.claim_id, routeId: args.route_id, workstreamId: args.workstream_id, bodyMarkdown: args.body_markdown, status: args.status, gapSummary: args.gap_summary })
-    case "create_gap": return runtime.createGap({ workspaceId, projectId: args.project_id, claimId: args.claim_id, proofAttemptId: args.proof_attempt_id, routeId: args.route_id, title: args.title, descriptionMarkdown: args.description_markdown, severity: args.severity, status: args.status, suggestedResolution: args.suggested_resolution })
+    case "create_gap": return runtime.createGap({ workspaceId, projectId: args.project_id, claimId: args.claim_id, proofAttemptId: args.proof_attempt_id, routeId: args.route_id, title: args.title, descriptionMarkdown: args.description_markdown, severity: args.severity, status: args.status, suggestedResolution: args.suggested_resolution, targetObjectType: args.target_object_type, targetObjectId: args.target_object_id, externalReviewId: args.external_review_id, auditFindingId: args.audit_finding_id })
     case "resolve_gap": return runtime.resolveGap({ workspaceId, gapId: args.gap_id, suggestedResolution: args.suggested_resolution })
     case "create_counterexample": return runtime.createCounterexample({ workspaceId, projectId: args.project_id, claimId: args.claim_id, title: args.title, constructionMarkdown: args.construction_markdown, status: args.status, verificationArtifactId: args.verification_artifact_id })
     case "create_experiment": return runtime.createExperiment({ workspaceId, projectId: args.project_id, workstreamId: args.workstream_id, title: args.title, hypothesisMarkdown: args.hypothesis_markdown, methodMarkdown: args.method_markdown, resultMarkdown: args.result_markdown, reproducibility: args.reproducibility, status: args.status })
@@ -258,7 +294,21 @@ export async function callTool(toolName: string, args: any, ctx: ToolContext) {
     case "link_objects": return runtime.linkObjects({ workspaceId, projectId: args.project_id, sourceType: args.source_type, sourceId: args.source_id, targetType: args.target_type, targetId: args.target_id, edgeType: args.edge_type, metadata: args.metadata })
     case "get_object_graph": return runtime.getObjectGraph({ workspaceId, projectId: args.project_id, sourceType: args.source_type, sourceId: args.source_id })
     case "search_research_objects": return runtime.searchResearchObjects({ workspaceId, projectId: args.project_id, query: args.query, type: args.type })
-    case "create_artifact": return runtime.createArtifact({ workspaceId, projectId: args.project_id, workstreamId: args.workstream_id, kind: args.kind, title: args.title, uri: args.uri, path: args.path, contentHash: args.content_hash, metadata: args.metadata, createdByAgentRunId: args.created_by_agent_run_id })
+    case "create_artifact": return runtime.createArtifact({ workspaceId, projectId: args.project_id, workstreamId: args.workstream_id, researchArtifactId: args.research_artifact_id, kind: args.kind, title: args.title, uri: args.uri, file: args.file, expectedSha256: args.expected_sha256, mimeType: args.mime_type, metadata: args.metadata, createdByAgentRunId: args.created_by_agent_run_id })
+    case "create_artifact_from_path": {
+      const serverPath = args.server_path ?? args.path
+      if (!serverPath) throw Object.assign(new Error("create_artifact_from_path requires server_path. ChatGPT-generated files must be uploaded with create_artifact file, not passed as /mnt/data path strings."), { status: 400 })
+      return runtime.createArtifactFromPath({ workspaceId, projectId: args.project_id, workstreamId: args.workstream_id, researchArtifactId: args.research_artifact_id, path: serverPath, title: args.title, kind: args.kind, expectedSha256: args.expected_sha256, mimeType: args.mime_type, metadata: args.metadata, createdByAgentRunId: args.created_by_agent_run_id })
+    }
+    case "get_artifact": return runtime.getArtifact(workspaceId, args.artifact_id)
+    case "download_artifact": return runtime.downloadArtifactReference(workspaceId, args.artifact_id)
+    case "list_artifacts": return runtime.listArtifacts({ workspaceId, projectId: args.project_id, workstreamId: args.workstream_id, researchArtifactId: args.research_artifact_id, manuscriptVersionId: args.manuscript_version_id })
+    case "list_artifact_archive": return runtime.listArtifactArchive(workspaceId, args.artifact_id)
+    case "read_artifact_archive_file": return runtime.artifactArchiveEntryContent(workspaceId, args.artifact_id, args.path)
+    case "verify_artifact": return runtime.verifyArtifact(workspaceId, args.artifact_id)
+    case "attach_artifact_to_manuscript_version": return runtime.attachArtifactToManuscriptVersion({ workspaceId, artifactId: args.artifact_id, manuscriptVersionId: args.manuscript_version_id, role: args.role })
+    case "export_physical_artifacts": return runtime.exportPhysicalArtifacts({ workspaceId, workstreamId: args.workstream_id, manuscriptVersionId: args.manuscript_version_id })
+    case "get_manuscript_version": return runtime.getManuscriptVersion(workspaceId, args.manuscript_version_id)
     case "create_research_delta": return runtime.createResearchDelta({ workspaceId, projectId: args.project_id, sourceType: args.source_type, sourceId: args.source_id, title: args.title, summaryMarkdown: args.summary_markdown, whatChangedMarkdown: args.what_changed_markdown, mainlineEffectMarkdown: args.mainline_effect_markdown, reusableIdeasMarkdown: args.reusable_ideas_markdown, blockersMarkdown: args.blockers_markdown, nextMoveMarkdown: args.next_move_markdown, confidence: args.confidence, createdByUserId: userId })
     case "list_research_deltas": return runtime.listResearchDeltas({ workspaceId, projectId: args.project_id, sourceType: args.source_type, sourceId: args.source_id, limit: args.limit })
     case "create_mechanism": return runtime.createMechanism({ workspaceId, projectId: args.project_id, title: args.title, slug: args.slug, status: args.status, maturity: args.maturity, descriptionMarkdown: args.description_markdown, coreIdeaMarkdown: args.core_idea_markdown, whereItWorkedMarkdown: args.where_it_worked_markdown, whereItFailedMarkdown: args.where_it_failed_markdown, possibleTransfersMarkdown: args.possible_transfers_markdown, killConditionsMarkdown: args.kill_conditions_markdown, centralityScore: args.centrality_score, portabilityScore: args.portability_score, tractabilityScore: args.tractability_score, noveltyScore: args.novelty_score, loadBearingScore: args.load_bearing_score, createdByUserId: userId })
@@ -275,14 +325,15 @@ export async function callTool(toolName: string, args: any, ctx: ToolContext) {
     case "list_frontier_snapshots": return runtime.listFrontierSnapshots({ workspaceId, projectId: args.project_id, source: args.source, limit: args.limit })
     case "get_latest_frontier_snapshot": return runtime.getLatestFrontierSnapshot({ workspaceId, projectId: args.project_id })
     case "create_research_artifact": return runtime.createResearchArtifact({ workspaceId, projectId: args.project_id, title: args.title, slug: args.slug, kind: args.kind, status: args.status, descriptionMarkdown: args.description_markdown, contentMarkdown: args.content_markdown, filePath: args.file_path, url: args.url, createdByUserId: userId })
-    case "create_manuscript_version": return runtime.createManuscriptVersion({ workspaceId, projectId: args.project_id, artifactId: args.artifact_id, parentArtifactIds: args.parent_artifact_ids, claimIds: args.claim_ids, theoremFingerprint: args.theorem_fingerprint, citationFingerprint: args.citation_fingerprint })
+    case "create_manuscript_version": return runtime.createManuscriptVersion({ workspaceId, projectId: args.project_id, artifactId: args.artifact_id, parentArtifactIds: args.parent_artifact_ids, claimIds: args.claim_ids, createdByAgentRunId: args.created_by_agent_run_id })
     case "promote_manuscript_version": return runtime.promoteManuscriptVersion({ workspaceId, manuscriptVersionId: args.manuscript_version_id })
     case "set_manuscript_freeze": return runtime.setManuscriptFreeze({ workspaceId, manuscriptVersionId: args.manuscript_version_id, level: args.level })
     case "import_external_review": return runtime.importExternalReview({ workspaceId, projectId: args.project_id, manuscriptVersionId: args.manuscript_version_id, theoremOrArtifactRef: args.theorem_or_artifact_ref, originalReviewText: args.original_review_text, originalReviewUri: args.original_review_uri, provenance: args.provenance, reviewerIdentity: args.reviewer_identity, independenceStatement: args.independence_statement, reviewScope: args.review_scope, verdict: args.verdict, issues: args.issues, requiredChanges: args.required_changes })
-    case "create_strategic_review": return runtime.createStrategicReviewRound({ workspaceId, projectId: args.project_id, verdict: args.verdict, reviewerIndependence: args.reviewer_independence, whatChangedMarkdown: args.what_changed_markdown, loopDiagnosisMarkdown: args.loop_diagnosis_markdown, blockerStructureMarkdown: args.blocker_structure_markdown, alternativesMarkdown: args.alternatives_markdown, branchAllocation: args.branch_allocation, nextMoves: args.next_moves, probabilityEstimates: args.probability_estimates, metrics: args.metrics })
+    case "triage_external_review": return runtime.triageExternalReview({ workspaceId, projectId: args.project_id, externalReviewId: args.external_review_id, agentRunId: args.agent_run_id, dispositions: args.dispositions })
+    case "create_strategic_review": return runtime.createStrategicReviewRound({ workspaceId, projectId: args.project_id, verdict: args.verdict, reviewerIndependence: args.reviewer_independence ?? "computed from AgentRun provenance", whatChangedMarkdown: args.what_changed_markdown, loopDiagnosisMarkdown: args.loop_diagnosis_markdown, blockerStructureMarkdown: args.blocker_structure_markdown, alternativesMarkdown: args.alternatives_markdown, branchAllocation: args.branch_allocation, nextMoves: args.next_moves, probabilityEstimates: args.probability_estimates, metrics: args.metrics, createdByAgentRunId: args.created_by_agent_run_id })
     case "get_project_health": return runtime.getProjectHealth(workspaceId, args.project_id)
     case "create_project_branch": return runtime.createProjectBranch({ workspaceId, projectId: args.project_id, title: args.title, state: args.state, rationaleMarkdown: args.rationale_markdown, targetObjectType: args.target_object_type, targetObjectId: args.target_object_id })
-    case "create_proof_obligation": return runtime.createProofObligation({ workspaceId, projectId: args.project_id, manuscriptVersionId: args.manuscript_version_id, title: args.title, statementMarkdown: args.statement_markdown, dependencies: args.dependencies, claimId: args.claim_id, sourceArtifactId: args.source_artifact_id, proofLocation: args.proof_location, manuscriptLocation: args.manuscript_location, externalTheorems: args.external_theorems, externalAssumptionsMatched: args.external_assumptions_matched, exactManuscriptProofPresent: args.exact_manuscript_proof_present, required: args.required })
+    case "create_proof_obligation": return runtime.createProofObligation({ workspaceId, projectId: args.project_id, manuscriptVersionId: args.manuscript_version_id, title: args.title, statementMarkdown: args.statement_markdown, dependencies: args.dependencies, claimId: args.claim_id, sourceArtifactId: args.source_artifact_id, proofLocation: args.proof_location, manuscriptLocation: args.manuscript_location, externalTheorems: args.external_theorems, externalAssumptionsMatched: args.external_assumptions_matched, exactManuscriptProofPresent: args.exact_manuscript_proof_present, assumptions: args.assumptions, excludedRegimes: args.excluded_regimes, boundaryCases: args.boundary_cases, semanticConsequences: args.semantic_consequences, authorAssertion: args.author_assertion, required: args.required })
     case "get_integration_coverage": return runtime.getIntegrationCoverage(workspaceId, args.manuscript_version_id)
     case "compute_submission_readiness": return runtime.computeProjectSubmissionReadiness(workspaceId, args.project_id)
     case "list_research_artifacts": return runtime.listResearchArtifacts({ workspaceId, projectId: args.project_id, kind: args.kind, status: args.status, limit: args.limit })
@@ -292,6 +343,17 @@ export async function callTool(toolName: string, args: any, ctx: ToolContext) {
     case "list_research_links": return runtime.listResearchLinks({ workspaceId, projectId: args.project_id, sourceType: args.source_type, sourceId: args.source_id, targetType: args.target_type, targetId: args.target_id, limit: args.limit })
     case "run_legacy_distillation_preview": return runtime.runLegacyDistillationPreview({ workspaceId, outputPath: args.output_path })
     case "run_legacy_distillation_apply": return runtime.runLegacyDistillationApply({ workspaceId, userId })
+    case "begin_project_import": return runtime.beginProjectImport({ workspaceId, projectId: args.project_id, title: args.title, provenance: args.provenance })
+    case "analyze_project_import": return runtime.analyzeProjectImport({ workspaceId, importId: args.import_id, artifactIds: args.artifact_ids, proposedMap: args.proposed_map })
+    case "preview_project_import": return runtime.getProjectImport(workspaceId, args.import_id)
+    case "commit_project_import": return runtime.commitProjectImport({ workspaceId, importId: args.import_id, userCorrections: args.user_corrections })
+    case "run_project_graph_audit": return runtime.runProjectGraphAudit({ workspaceId, projectId: args.project_id, mode: args.mode, auditorRunId: args.auditor_run_id })
+    case "begin_repair_from_audit": return runtime.beginRepairFromAudit({ workspaceId, projectId: args.project_id, auditId: args.audit_id })
+    case "publish_manuscript_package": {
+      const publication = await runtime.createPublicationPackage({ workspaceId, projectId: args.project_id, manuscriptVersionId: args.manuscript_version_id, sourceArtifactId: args.source_artifact_id, pdfArtifactId: args.pdf_artifact_id, supplementaryArtifactIds: args.supplementary_artifact_ids, buildManifest: args.build_manifest })
+      return { publication, final_pdf: await runtime.surfaceArtifact(workspaceId, args.pdf_artifact_id) }
+    }
+    case "surface_artifact": return runtime.surfaceArtifact(workspaceId, args.artifact_id)
     case "create_lean_project": return createLeanProject({ workspaceId, projectName: args.project_name })
     case "create_lean_stub": return createLeanStub({ workspaceId, formalizationTargetId: args.formalization_target_id, theoremStatement: args.theorem_statement, imports: args.imports, userId })
     case "lean_check": return leanCheck({ workspaceId, leanTheoremId: args.lean_theorem_id, userId })
@@ -315,6 +377,38 @@ export function structuredContentForTool(toolName: string, value: unknown): Json
 
 export function contentResult(toolName: string, value: unknown) {
   const structuredContent = structuredContentForTool(toolName, value)
+  const embeddedResource = (structuredContent as any).embedded_resource
+  if (toolName === "read_artifact_archive_file" && embeddedResource && typeof embeddedResource.uri === "string") {
+    const metadata = { ...structuredContent } as any
+    delete metadata.embedded_resource
+    const resource = {
+      uri: embeddedResource.uri,
+      mimeType: embeddedResource.mime_type ?? metadata.mime_type ?? "application/octet-stream",
+      ...(typeof embeddedResource.text === "string" ? { text: embeddedResource.text } : { blob: embeddedResource.blob })
+    }
+    return {
+      structuredContent: metadata,
+      content: [
+        { type: "resource", resource },
+        ...(typeof embeddedResource.text === "string" ? [{ type: "text", text: embeddedResource.text }] : []),
+        { type: "text", text: JSON.stringify(metadata, null, 2) }
+      ]
+    }
+  }
+  const directUri = (structuredContent as any).uri
+  const finalPdf = (structuredContent as any).final_pdf
+  if (toolName === "publish_manuscript_package" && typeof finalPdf?.uri === "string") {
+    return { structuredContent, content: [{ type: "resource_link", uri: finalPdf.uri, name: finalPdf.name ?? "final-manuscript.pdf", mimeType: finalPdf.mime_type ?? "application/pdf" }, { type: "text", text: JSON.stringify(structuredContent, null, 2) }] }
+  }
+  if (["download_artifact", "surface_artifact"].includes(toolName) && typeof directUri === "string") {
+    return {
+      structuredContent,
+      content: [
+        { type: "resource_link", uri: directUri, name: (structuredContent as any).name ?? (structuredContent as any).entry_path ?? "artifact", mimeType: (structuredContent as any).mime_type ?? "application/octet-stream" },
+        { type: "text", text: JSON.stringify(structuredContent, null, 2) }
+      ]
+    }
+  }
   return {
     structuredContent,
     content: [{ type: "text", text: JSON.stringify(structuredContent, null, 2) }]
@@ -342,6 +436,9 @@ export function formatResearchArtifact(artifact: any) {
     description_markdown: artifact.descriptionMarkdown ?? null,
     content_markdown: contentMarkdown,
     file_path: artifact.filePath ?? null,
+    file_status: artifact.fileStatus ?? (artifact.filePath ? "provenance_only" : "not_applicable"),
+    file_diagnostic: artifact.fileDiagnostic ?? null,
+    physical_artifacts: Array.isArray(artifact.physicalArtifacts) ? artifact.physicalArtifacts.map((physical: any) => ({ id: physical.id, original_filename: physical.originalFilename, mime_type: physical.mimeType, byte_size: physical.byteSize === null ? null : Number(physical.byteSize), sha256: physical.sha256, storage_status: physical.storageStatus, workstream_id: physical.workstreamId, manuscript_version_ids: (physical.manuscriptLinks ?? []).map((link: any) => link.manuscriptVersionId) })) : [],
     url: artifact.url ?? null,
     created_at: isoTimestamp(artifact.createdAt),
     updated_at: isoTimestamp(artifact.updatedAt),
@@ -352,7 +449,7 @@ export function formatResearchArtifact(artifact: any) {
 function formatResearchArtifactBundle(artifacts: any[]) {
   const orderedArtifacts = artifacts.map(formatResearchArtifact).sort((a, b) => a.id.localeCompare(b.id))
   const manifest = orderedArtifacts.map(({ id, content_hash }) => ({ id, content_hash }))
-  return { artifacts: orderedArtifacts, manifest_hash: sha256(JSON.stringify(manifest)) }
+  return { export_type: "research_metadata_with_linked_physical_artifact_references", note: "ResearchArtifact content is metadata/report content. Physical bytes must be retrieved through download_artifact or export_physical_artifacts.", artifacts: orderedArtifacts, manifest_hash: sha256(JSON.stringify(manifest)) }
 }
 
 function clip(text: unknown, max = 280) {
@@ -520,7 +617,16 @@ function compactArtifact(artifact: any) {
     kind: artifact.kind,
     title: artifact.title,
     uri: artifact.uri,
-    path: artifact.path,
+    original_filename: artifact.originalFilename,
+    mime_type: artifact.mimeType,
+    byte_size: artifact.byteSize === null || artifact.byteSize === undefined ? null : Number(artifact.byteSize),
+    sha256: artifact.sha256,
+    storage_status: artifact.storageStatus,
+    verification: artifact.verification,
+    download: artifact.download,
+    workstream_id: artifact.workstreamId,
+    research_artifact_id: artifact.researchArtifactId,
+    source_path_provenance: artifact.path,
     created_at: artifact.createdAt
   }
 }
@@ -790,6 +896,7 @@ function resourceResult(uri: string, value: unknown) {
 
 function toolForList(definition: ToolDef) {
   const securitySchemes = [{ type: "oauth2", scopes: [definition.scope] }]
+  const meta = { securitySchemes, ...(definition.meta ?? {}) }
   return {
     name: definition.name,
     description: definition.description,
@@ -798,7 +905,7 @@ function toolForList(definition: ToolDef) {
     outputSchema: definition.outputSchema,
     annotations: definition.annotations,
     securitySchemes,
-    _meta: { securitySchemes }
+    _meta: meta
   }
 }
 
