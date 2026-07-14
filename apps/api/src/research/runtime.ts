@@ -819,6 +819,20 @@ export async function submitReportForReview(input: { workspaceId: string; report
     : await prisma.workstreamReport.findFirstOrThrow({ where: { workspaceId: input.workspaceId, workstreamId: input.workstreamId }, orderBy: { updatedAt: "desc" } })
   await assertDurablePhysicalOutputs(input.workspaceId, report.workstreamId, report.id)
   const submitted = await prisma.workstreamReport.update({ where: { id: report.id, workspaceId: input.workspaceId }, data: { status: "submitted", submittedAt: new Date() } })
+  const currentWorkstream = await prisma.workstream.findFirstOrThrow({ where: { id: submitted.workstreamId, workspaceId: input.workspaceId } })
+  const currentPolicy = jsonObject(currentWorkstream.reviewPolicy) as any
+  if (currentPolicy.bounded_audit_repair === true && Number(currentPolicy.min_approved_rounds ?? 0) === 0) {
+    if (Number(currentPolicy.phase) === 2) {
+      const children = await prisma.workstream.findMany({ where: { workspaceId: input.workspaceId, parentWorkstreamId: currentWorkstream.id } })
+      const remediationChildren = children.filter((child) => (jsonObject(child.reviewPolicy) as any).remediation === true)
+      if (remediationChildren.length) {
+        const waiting = await prisma.workstream.update({ where: { id: currentWorkstream.id }, data: { status: "blocked", reportId: submitted.id, escalationMessage: "Waiting for the exact-candidate remediation review assignments to finish." } })
+        return { ok: true, report_id: submitted.id, workstream_id: submitted.workstreamId, report_status: submitted.status, submitted_at: submitted.submittedAt, workstream_status: waiting.status, auto_advance: "waiting_for_remediation_reviews", remediation_workstream_count: remediationChildren.length }
+      }
+    }
+    const completed = await completeWorkstream({ workspaceId: input.workspaceId, workstreamId: currentWorkstream.id })
+    return { ok: true, report_id: submitted.id, workstream_id: submitted.workstreamId, report_status: submitted.status, submitted_at: submitted.submittedAt, workstream_status: completed.status, auto_advance: "bounded_phase_completed" }
+  }
   const workstream = await prisma.workstream.update({ where: { id: submitted.workstreamId, workspaceId: input.workspaceId }, data: { status: "needs_review", reportId: submitted.id } })
   return {
     ok: true,
@@ -996,6 +1010,15 @@ export async function recordReviewRound(input: {
     return review
   })
   await recordSubstantiveAction({ workspaceId: input.workspaceId, projectId: workstream.projectId, actionType: "review_recorded", targetType: "ReviewRound", targetId: recordedReview.id, summary: `${reviewType}:${recordedReview.verdict}` })
+  if (verdict === "approved" && workstream.parentWorkstreamId) {
+    const parent = await prisma.workstream.findFirst({ where: { workspaceId: input.workspaceId, id: workstream.parentWorkstreamId } })
+    const parentPolicy = parent ? jsonObject(parent.reviewPolicy) as any : null
+    if (parent && parentPolicy?.bounded_audit_repair === true && Number(parentPolicy.phase) === 2) {
+      const children = await prisma.workstream.findMany({ where: { workspaceId: input.workspaceId, parentWorkstreamId: parent.id } })
+      const remediationChildren = children.filter((child) => (jsonObject(child.reviewPolicy) as any).remediation === true)
+      if (remediationChildren.length && remediationChildren.every((child) => ["approved", "completed"].includes(child.status))) await completeWorkstream({ workspaceId: input.workspaceId, workstreamId: parent.id })
+    }
+  }
   return recordedReview
 }
 
