@@ -41,6 +41,7 @@ const workspace = await prisma.workspace.create({ data: { slug: `smoke-v2-${suff
 await prisma.workspaceMember.create({ data: { workspaceId: workspace.id, userId: user.id, role: "owner" } })
 
 const project = await runtime.createProject({ workspaceId: workspace.id, title: "Maff v2 vertical slice", area: "smoke", statement: "Check project-goal-workstream-agent-report-review gates.", userId: user.id })
+await prisma.project.update({ where: { id: project.id }, data: { strategicReviewInterval: 1, strategicReviewHardLimit: 100 } })
 const proposedGoal = await runtime.proposeProjectGoal({ workspaceId: workspace.id, projectId: project.id, title: "Find proof routes", statement: "Produce multiple candidate routes.", successCriteria: ["Two routes", "Review passed"] })
 const goal = await runtime.approveProjectGoal({ workspaceId: workspace.id, goalId: proposedGoal.id, userId: user.id })
 assert.equal(goal.status, "approved")
@@ -161,7 +162,7 @@ await assert.rejects(
   /proof obligation/i
 )
   await assert.rejects(
-    () => runtime.recordReviewRound({ workspaceId: workspace.id, workstreamId: workstream.id, verdict: "approved", reviewType: "compile", targetVersion: ledgerlessVersion.id, targetObjectType: "ResearchArtifact", targetObjectId: ledgerless.id, bodyMarkdown: "Compile clean.", issues: [], requiredChanges: [], checkedRefs: [] }),
+    () => runtime.recordReviewRound({ workspaceId: workspace.id, workstreamId: workstream.id, verdict: "approved", reviewType: "compile", targetVersion: ledgerlessVersion.id, targetObjectType: "ManuscriptVersion", targetObjectId: ledgerlessVersion.id, bodyMarkdown: "Compile clean.", issues: [], requiredChanges: [], checkedRefs: [] }),
     /ReviewAssignment/i
   )
 

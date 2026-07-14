@@ -928,6 +928,7 @@ model AgentRun {
   reviewAssignments ReviewAssignment[]
   runOutcome RunOutcome?
   projectAudits ProjectAudit[]
+  strategicReviews StrategicReviewRound[]
 
   @@index([workspaceId, workstreamId, status])
   @@index([workspaceId, projectId, startedAt])
@@ -1188,6 +1189,7 @@ model StrategicReviewRound {
   workspaceId              String                 @db.Uuid
   projectId                String                 @db.Uuid
   projectEpochId           String?                @db.Uuid
+  reviewerRunId            String?                @db.Uuid
   verdict                  StrategicReviewVerdict
   reviewerIndependence     String
   whatChangedMarkdown      String
@@ -1203,8 +1205,10 @@ model StrategicReviewRound {
   workspace Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   project   Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
   epoch     ProjectEpoch? @relation(fields: [projectEpochId], references: [id], onDelete: SetNull)
+  reviewerRun AgentRun?   @relation(fields: [reviewerRunId], references: [id], onDelete: SetNull)
 
   @@index([workspaceId, projectId, createdAt])
+  @@index([reviewerRunId])
 }
 
 model ProjectBranch {

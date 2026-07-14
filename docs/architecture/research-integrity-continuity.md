@@ -31,6 +31,8 @@ An audit distinguishes corrupted or falsely claimed evidence from work that is s
 
 Evidence gates validate structured content, not verbosity. Review sections require a conclusion and concrete evidence, proof-obligation checks require specific evidence, and end-to-end review records actual attack categories. Arbitrary character counts and fixed category quotas are not evidence.
 
+Strategic review likewise records a real reviewer AgentRun and at least one decision-relevant next move. It does not require exactly three moves or a fixed menu of probability estimates; irrelevant estimates are spurious precision, not rigor.
+
 `ensure_project_actionable` is the reconciliation/watchdog surface. It creates a task only when tied to a blocker or to the structural defect of an unexplained empty frontier.
 
 ## Imports
