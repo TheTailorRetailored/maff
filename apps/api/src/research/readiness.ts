@@ -76,7 +76,7 @@ export async function computeSubmissionReadiness(workspaceId: string, projectId:
   const diagnostics = Object.fromEntries(REQUIRED_MANUSCRIPT_GATES.map((type) => [type, diagnosticsFor(type)])) as Record<RequiredGate, Array<{ review: any; accepted: boolean; basis: string | null; reason: string | null }>>
   const adverseExactReviews = reviews.filter((review) => ["needs_revision", "rejected"].includes(review.verdict) && REQUIRED_MANUSCRIPT_GATES.includes(review.reviewType as RequiredGate)).filter((review) => {
     const match = reviewEvidenceMatch(review, version, versions, review.reviewType as RequiredGate)
-    return match.accepted && review.evidenceStatus === "assigned_valid" && review.reviewAssignment?.status === "submitted" && review.reviewAssignment.reviewerRun.status === "completed"
+    return match.accepted && review.evidenceStatus === "assigned_valid" && review.reviewAssignment?.status === "submitted" && ["submitted", "completed"].includes(review.reviewAssignment.reviewerRun.status)
   })
   const gateReviews = (type: RequiredGate) => diagnostics[type].filter((item) => item.accepted).map((item) => item.review)
   const obligationChecks = await prisma.reviewObligationCheck.findMany({ where: { workspaceId, proofObligationId: { in: version.obligations.map((o) => o.id) } }, include: { reviewRound: true } })
