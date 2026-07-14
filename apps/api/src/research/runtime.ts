@@ -633,6 +633,14 @@ export async function claimNextAssignment(input: {
     include: { project: true, goal: true },
     orderBy: [{ priority: "desc" }, { updatedAt: "asc" }]
   })
+  const pendingReview = await prisma.workstream.findFirst({
+    where: { workspaceId: workspace.id, projectId: project?.id, status: "needs_review" },
+    orderBy: [{ priority: "desc" }, { updatedAt: "asc" }]
+  })
+  const explicitlyRequestedReview = role === "HostileReviewer" || kind === "hostile_review"
+  if (pendingReview && (explicitlyRequestedReview || !workstream || pendingReview.priority >= workstream.priority)) {
+    return claimNextReview({ userId: input.userId, workspaceRef: workspace.id, project: project?.id, sessionId, model: input.model, leaseMinutes: input.leaseMinutes, startRun: input.startRun })
+  }
   if (!workstream) {
     const available = await prisma.workstream.findMany({
       where: { workspaceId: workspace.id, projectId: project?.id, status: { in: ["ready", "planned", "revision_required", "needs_review", "blocked", "escalated"] } },
