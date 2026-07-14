@@ -9,7 +9,6 @@ import yazl from "yazl"
 import { prisma } from "./db/prisma.js"
 import { requireWorkspaceRole } from "./auth/permissions.js"
 import * as runtime from "./research/runtime.js"
-import { createReviewAssignment } from "./research/integrity.js"
 import { callTool } from "./mcp/server.js"
 import { storagePath } from "./artifacts/storage.js"
 import { config } from "./config.js"
@@ -56,10 +55,7 @@ assert.equal(context.suggested_chat_prompts.same_chat, "continue")
 const ergonomicClaim = await runtime.claimNextAssignment({ userId: user.id, project: "vertical slice", role: "ProofRouteAgent", sessionId: `session-${suffix}`, model: "smoke" })
 assert.equal(ergonomicClaim.assignment?.id, workstream.id)
 assert.equal(ergonomicClaim.agent_run?.role, "ProofRouteAgent")
-const assignment = await runtime.claimAgentAssignment({ workspaceId: workspace.id, projectId: project.id, workstreamId: workstream.id, sessionId: `session-${suffix}-direct`, userId: user.id })
-assert.equal(assignment.briefing.role, "ProofRouteAgent")
-const run = await runtime.startAgentRun({ workspaceId: workspace.id, workstreamId: workstream.id, sessionId: `session-${suffix}-direct`, model: "smoke" })
-assert.equal(run.agentRun.role, "ProofRouteAgent")
+await assert.rejects(() => runtime.claimAgentAssignment({ workspaceId: workspace.id, projectId: project.id, workstreamId: workstream.id, sessionId: `session-${suffix}-direct`, userId: user.id }), /already owned/i)
 
 const claim = await runtime.createClaim({ workspaceId: workspace.id, projectId: project.id, title: "Smoke claim", statementMarkdown: "Every smoke test has a review gate.", kind: "conjecture", actorRole: "ProofRouteAgent" })
 const routeA = await runtime.createProofRoute({ workspaceId: workspace.id, projectId: project.id, claimId: claim.id, title: "Direct route", strategyMarkdown: "Prove by inspecting the runtime.", requiredLemmas: ["Gate lemma"], firstTestableStep: "Create report", killCondition: "Review rejects", createdByWorkstreamId: workstream.id })
@@ -273,9 +269,18 @@ assert.equal(submittedPhysical.report_status, "submitted")
 
 // A fresh reviewer receives a locked target and must prove access to exact bytes before
 // substantive evidence can close the gate. The one-use assignment completes with the run.
-const lockedReviewWorkstream = await runtime.createWorkstream({ workspaceId: workspace.id, projectId: project.id, goalId: goal.id, title: "Locked proof integration review", kind: "hostile_review", instructions: "Attack the exact proof integration without editing it.", coordinatorRole: "HostileReviewer", reviewPolicy: { min_approved_rounds: 1, review_type: "proof_integration" } })
-const reviewerRun = await runtime.startAgentRun({ workspaceId: workspace.id, workstreamId: lockedReviewWorkstream.id, sessionId: `fresh-review-session-${suffix}`, model: "smoke" })
-const lockedReview = await createReviewAssignment({ workspaceId: workspace.id, projectId: project.id, workstreamId: lockedReviewWorkstream.id, reviewerRunId: reviewerRun.agentRun.id, reviewType: "proof_integration", targetObjectType: "ManuscriptVersion", targetObjectId: manuscriptVersion.id, targetHash: canonicalManuscript.contentHash, manuscriptVersionId: manuscriptVersion.id, permittedArtifactIds: [durableArtifact.id, compiledPdf.id], briefing: { prior_approvals_hidden: true, exact_target: manuscriptVersion.id }, leaseExpiresAt: new Date(Date.now() + 60_000) })
+const lockedReviewWorkstream = await runtime.createWorkstream({ workspaceId: workspace.id, projectId: project.id, goalId: goal.id, title: "Locked proof integration review", kind: "hostile_review", instructions: "Attack the exact proof integration without editing it.", coordinatorRole: "HostileReviewer", priority: 100, targetObjectType: "ManuscriptVersion", targetObjectId: manuscriptVersion.id, reviewPolicy: { min_approved_rounds: 1, review_type: "proof_integration", locked_assignment_required: true, remediation: true } })
+await assert.rejects(() => runtime.startAgentRun({ workspaceId: workspace.id, workstreamId: lockedReviewWorkstream.id, sessionId: `invalid-review-session-${suffix}`, model: "smoke" }), /claim_next_review/i)
+await assert.rejects(() => runtime.claimAgentAssignment({ workspaceId: workspace.id, projectId: project.id, workstreamId: lockedReviewWorkstream.id, sessionId: `invalid-review-session-${suffix}`, userId: user.id }), /claim_next_review/i)
+await prisma.workstream.update({ where: { id: lockedReviewWorkstream.id }, data: { status: "needs_review" } })
+const claimedReview = await runtime.claimNextReview({ userId: user.id, workspaceRef: workspace.id, project: project.id, sessionId: `fresh-review-session-${suffix}`, model: "smoke" })
+assert.equal(claimedReview.assignment?.id, lockedReviewWorkstream.id)
+assert.ok(claimedReview.agent_run)
+assert.ok(claimedReview.review_assignment)
+const reviewerRun = { agentRun: claimedReview.agent_run! }
+const lockedReview = claimedReview.review_assignment!
+await assert.rejects(() => runtime.claimAgentAssignment({ workspaceId: workspace.id, projectId: project.id, workstreamId: lockedReviewWorkstream.id, sessionId: `duplicate-review-session-${suffix}`, userId: user.id }), /claim_next_review/i)
+await assert.rejects(() => runtime.submitRunOutcome({ workspaceId: workspace.id, agentRunId: reviewerRun.agentRun.id, completedWork: ["Narrative only."], changedObjects: [], evidenceGenerated: [], checksPerformed: [], problemsEncountered: [], unresolvedUncertainty: [], gapsCreated: [], gapsResolved: [], nextAction: { kind: "review", role: "HostileReviewer" } }), /Submit the assigned ReviewRound/i)
 await runtime.recordObjectAccess({ workspaceId: workspace.id, projectId: project.id, agentRunId: reviewerRun.agentRun.id, objectType: "Artifact", objectId: durableArtifact.id, artifactId: durableArtifact.id, operation: "download_and_inspect", contentHash: durableArtifact.sha256, coverage: { entries: ["main.tex", "main.pdf", "references.bib"] } })
 const integrationEvidence = "I inspected the exact source bundle and traced the moving-start majorant from its assumptions through the boundary case to the manuscript statement. The preserved argument matches the locked manuscript version and no unsupported transitive approval was used."
 const integrationReview = await runtime.recordReviewRound({ workspaceId: workspace.id, workstreamId: lockedReviewWorkstream.id, verdict: "approved", reviewType: "proof_integration", targetVersion: manuscriptVersion.id, bodyMarkdown: integrationEvidence, issues: [], requiredChanges: [], checkedRefs: [sourceA.id, durableArtifact.id], obligationChecks: [{ proofObligationId: obligation.id, status: "preserved", evidenceMarkdown: "The exact source proof, hypotheses, excluded endpoint regime, and manuscript Lemma 4.1 were compared line by line." }], createdByAgentRunId: reviewerRun.agentRun.id, reviewAssignmentId: lockedReview.assignment.id, submissionToken: lockedReview.submission_token, evidenceSections: [{ sectionType: "proof_integration", conclusion: "approved", evidenceMarkdown: integrationEvidence, checkedRefs: [sourceA.id, durableArtifact.id] }] })
@@ -287,6 +292,24 @@ const reviewerOutcome = await runtime.submitRunOutcome({ workspaceId: workspace.
 assert.equal(reviewerOutcome.continuation.mode, "same_chat")
 assert.equal(reviewerOutcome.continuation.prompt, 'Say "continue".')
 assert.equal((await prisma.agentRun.findUniqueOrThrow({ where: { id: reviewerRun.agentRun.id } })).status, "completed")
+
+// A locked needs-revision verdict closes the reviewer assignment and creates one
+// bounded author repair. It must not send the same review workstream around again.
+const boundedReviewWorkstream = await runtime.createWorkstream({ workspaceId: workspace.id, projectId: project.id, goalId: goal.id, title: "Bounded end-to-end review", kind: "hostile_review", instructions: "Check the exact theorem interface.", coordinatorRole: "HostileReviewer", priority: 101, targetObjectType: "ManuscriptVersion", targetObjectId: manuscriptVersion.id, reviewPolicy: { min_approved_rounds: 1, review_type: "end_to_end_mathematical", locked_assignment_required: true, remediation: true } })
+assert.equal(boundedReviewWorkstream.status, "needs_review")
+const boundedClaim = await runtime.claimNextAssignment({ userId: user.id, workspaceRef: workspace.id, project: project.id, role: "HostileReviewer", sessionId: `bounded-review-session-${suffix}`, model: "smoke" }) as any
+assert.equal(boundedClaim.assignment?.id, boundedReviewWorkstream.id, "generic next-step routing should transparently use the locked review entrypoint")
+assert.ok(boundedClaim.agent_run && boundedClaim.review_assignment)
+await runtime.recordObjectAccess({ workspaceId: workspace.id, projectId: project.id, agentRunId: boundedClaim.agent_run!.id, objectType: "Artifact", objectId: durableArtifact.id, artifactId: durableArtifact.id, operation: "download_and_attack", contentHash: durableArtifact.sha256, coverage: { exact_version: manuscriptVersion.id } })
+const boundedEvidence = "The exact manuscript and source archive were attacked for undefined finite-n normalizations. The theorem interface leaves a positive-probability exceptional event undefined, while the remaining reviewed mathematics is unaffected."
+const boundedVerdict = await runtime.recordReviewRound({ workspaceId: workspace.id, workstreamId: boundedReviewWorkstream.id, verdict: "needs_revision", reviewType: "end_to_end_mathematical", targetVersion: manuscriptVersion.id, bodyMarkdown: boundedEvidence, issues: ["A finite-n normalization is undefined on an exceptional event."], requiredChanges: ["Define the normalization on the exceptional event without changing the limiting claim."], checkedRefs: [durableArtifact.id], createdByAgentRunId: boundedClaim.agent_run!.id, reviewAssignmentId: boundedClaim.review_assignment!.assignment.id, submissionToken: boundedClaim.review_assignment!.submission_token, evidenceSections: [{ sectionType: "end_to_end_mathematical", conclusion: "needs_revision", evidenceMarkdown: boundedEvidence, checkedRefs: [durableArtifact.id], attackCategories: ["finite-n totality"] }] })
+assert.equal(boundedVerdict.evidenceStatus, "assigned_valid")
+assert.equal((await prisma.workstream.findUniqueOrThrow({ where: { id: boundedReviewWorkstream.id } })).status, "completed")
+const boundedRepair = await prisma.workstream.findFirstOrThrow({ where: { parentWorkstreamId: boundedReviewWorkstream.id, status: "ready" } })
+assert.equal(boundedRepair.coordinatorRole, "PaperWriter")
+assert.match(boundedRepair.instructions, /Define the normalization/)
+const boundedOutcome = await runtime.submitRunOutcome({ workspaceId: workspace.id, agentRunId: boundedClaim.agent_run!.id, completedWork: ["Recorded the bounded exact-version verdict."], changedObjects: [`ReviewRound:${boundedVerdict.id}`, `Workstream:${boundedRepair.id}`], evidenceGenerated: ["Exact artifact access"], checksPerformed: ["Finite-n totality attack"], problemsEncountered: [], unresolvedUncertainty: [], gapsCreated: [], gapsResolved: [], nextAction: { kind: "paper_synthesis", role: "PaperWriter" } })
+assert.equal(boundedOutcome.continuation.mode, "fresh_chat_required")
 
 const projectBeforeAudit = await prisma.project.findUniqueOrThrow({ where: { id: project.id } })
 const frontierBeforeAudit = await prisma.workstream.count({ where: { workspaceId: workspace.id, projectId: project.id } })

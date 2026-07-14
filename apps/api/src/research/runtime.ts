@@ -49,6 +49,13 @@ const roleByKind: Record<WorkstreamKind, AgentRole> = {
 
 const kindByRole = Object.fromEntries(Object.entries(roleByKind).map(([kind, role]) => [role, kind])) as Partial<Record<AgentRole, WorkstreamKind>>
 
+const lockedManuscriptReviewTypes = new Set(["proof_integration", "end_to_end_mathematical", "novelty", "bibliography", "compile", "editorial", "source_fidelity"])
+
+function isLockedReviewWorkstream(workstream: { coordinatorRole: AgentRole; reviewPolicy: unknown }) {
+  const policy = jsonObject(workstream.reviewPolicy) as Record<string, unknown>
+  return workstream.coordinatorRole === "HostileReviewer" && (policy.locked_assignment_required === true || lockedManuscriptReviewTypes.has(String(policy.review_type ?? "")))
+}
+
 const allowedWritesByRole: Record<AgentRole, string[]> = {
   ProjectCoordinator: ["Project", "ProjectGoal", "Workstream", "AgentMessage"],
   WorkstreamCoordinator: ["Workstream", "WorkstreamReport", "AgentMessage"],
@@ -394,6 +401,8 @@ export async function createWorkstream(input: {
   await requireRunnableGoal(input.workspaceId, input.goalId, input.kind)
   if (!["project_coordination", "triage", "hostile_review"].includes(input.kind)) await assertProjectAllowsDownstreamWork(input.workspaceId, input.projectId)
   const role = input.coordinatorRole ?? roleByKind[input.kind]
+  const reviewPolicy = input.reviewPolicy !== undefined ? jsonObject(input.reviewPolicy) : defaultReviewPolicy(input.kind)
+  const initialStatus = isLockedReviewWorkstream({ coordinatorRole: role, reviewPolicy }) ? "needs_review" : "ready"
   const prerequisites = [...new Set(input.dependencyWorkstreamIds ?? [])].filter(Boolean)
   if (prerequisites.length) {
     const count = await prisma.workstream.count({ where: { workspaceId: input.workspaceId, projectId: input.projectId, id: { in: prerequisites } } })
@@ -409,7 +418,7 @@ export async function createWorkstream(input: {
       title: input.title,
       kind: input.kind,
       coordinatorRole: role,
-      status: "ready",
+      status: initialStatus,
       priority: input.priority ?? 0,
       targetObjectType: input.targetObjectType,
       targetObjectId: input.targetObjectId,
@@ -417,7 +426,7 @@ export async function createWorkstream(input: {
       allowedWrites: input.allowedWrites !== undefined ? jsonArray(input.allowedWrites) : allowedWritesByRole[role],
       forbiddenActions: input.forbiddenActions !== undefined ? jsonArray(input.forbiddenActions) : forbiddenActions(role),
       successCriteria: input.successCriteria !== undefined ? jsonArray(input.successCriteria) : ["Submit a report with linked evidence or project-object references when applicable, plus unresolved uncertainties.", ...(defaultNoReviewKinds.has(input.kind) ? [] : ["Pass the configured review policy."])],
-      reviewPolicy: input.reviewPolicy !== undefined ? jsonObject(input.reviewPolicy) : defaultReviewPolicy(input.kind)
+      reviewPolicy
       }
     })
     if (prerequisites.length) await tx.workstreamDependency.createMany({ data: prerequisites.map((prerequisiteWorkstreamId) => ({ workspaceId: input.workspaceId, dependentWorkstreamId: workstream.id, prerequisiteWorkstreamId })) })
@@ -534,15 +543,18 @@ export async function claimAgentAssignment(input: { workspaceId: string; project
       orderBy: [{ priority: "desc" }, { updatedAt: "asc" }]
     })
   const dependencyState = await workstreamDependenciesSatisfied(input.workspaceId, workstream.id)
+  if (isLockedReviewWorkstream(workstream)) throw new Error("Locked manuscript reviews must be claimed with claim_next_review so Maff can issue the reviewer run, exact target, and one-use submission token atomically.")
   if (!["project_coordination", "triage", "hostile_review"].includes(workstream.kind)) await assertProjectAllowsDownstreamWork(input.workspaceId, workstream.projectId)
   if (!dependencyState.satisfied) {
     const blocked = dependencyState.dependencies.filter((d) => d.prerequisite.status !== "completed" || !d.prerequisite.reviews.some((r) => r.verdict === "approved")).map((d) => d.prerequisiteWorkstreamId)
     throw new Error(`Workstream is blocked by incomplete prerequisite workstreams: ${blocked.join(", ")}`)
   }
-  const claimed = await prisma.workstream.update({
-    where: { id: workstream.id, workspaceId: input.workspaceId },
+  const claimedCount = await prisma.workstream.updateMany({
+    where: { id: workstream.id, workspaceId: input.workspaceId, status: { in: ["ready", "planned", "revision_required"] } },
     data: { status: "claimed", claimedSessionId: input.sessionId, assignedToUserId: input.userId, leaseExpiresAt }
   })
+  if (claimedCount.count !== 1) throw new Error("Workstream is not available for claim; it is already owned, awaiting review, or no longer runnable. Resume its owning chat or ask Maff for the next assignment.")
+  const claimed = await prisma.workstream.findFirstOrThrow({ where: { id: workstream.id, workspaceId: input.workspaceId } })
   return { assignment: claimed, briefing: await getAgentBriefing(input.workspaceId, claimed.id) }
 }
 
@@ -637,6 +649,10 @@ export async function claimNextAssignment(input: {
       available_workstreams: available
     }
   }
+  if (isLockedReviewWorkstream(workstream)) {
+    await prisma.workstream.updateMany({ where: { id: workstream.id, workspaceId: workspace.id, status: { in: ["ready", "planned", "revision_required"] } }, data: { status: "needs_review" } })
+    return claimNextReview({ userId: input.userId, workspaceRef: workspace.id, project: project?.id, sessionId, model: input.model, leaseMinutes: input.leaseMinutes, startRun: input.startRun })
+  }
   const claimed = await claimAgentAssignment({ workspaceId: workspace.id, projectId: project?.id, workstreamId: workstream.id, sessionId, userId: input.userId, leaseMinutes: input.leaseMinutes })
   const agentRun = input.startRun === false ? null : await startAgentRun({ workspaceId: workspace.id, workstreamId: claimed.assignment.id, sessionId, model: input.model })
   return {
@@ -651,6 +667,7 @@ export async function claimNextAssignment(input: {
 }
 
 export async function claimNextReview(input: { userId: string; workspaceRef?: string; project?: string; sessionId?: string; model?: string; leaseMinutes?: number; startRun?: boolean }) {
+  if (input.startRun === false) throw new Error("claim_next_review must start its reviewer run atomically; dry or deferred claims are not supported.")
   const workspace = await resolveWorkspaceForUser(input.userId, input.workspaceRef)
   await requireWorkspaceRole(input.userId, workspace.id, "editor")
   const sessionId = input.sessionId ?? `maff-${randomUUID()}`
@@ -709,10 +726,11 @@ export async function claimNextReview(input: { userId: string; workspaceRef?: st
       message: "No report currently needs review for that scope."
     }
   }
-  await prisma.workstream.update({
-    where: { id: workstream.id, workspaceId: workspace.id },
-    data: { claimedSessionId: sessionId, assignedToUserId: input.userId, leaseExpiresAt }
+  const claimedCount = await prisma.workstream.updateMany({
+    where: { id: workstream.id, workspaceId: workspace.id, status: "needs_review" },
+    data: { status: "claimed", claimedSessionId: sessionId, assignedToUserId: input.userId, leaseExpiresAt }
   })
+  if (claimedCount.count !== 1) throw new Error("This review was claimed by another session. Ask Maff for the next review; do not start a generic reviewer run.")
   const baseBriefing = await getAgentBriefing(workspace.id, workstream.id)
   const reviewPolicy = jsonObject(workstream.reviewPolicy) as any
   const reviewType = String(reviewPolicy.review_type ?? (readiness as any)?.next_required_action?.gate ?? "other")
@@ -738,22 +756,32 @@ export async function claimNextReview(input: { userId: string; workspaceRef?: st
     },
     completion_options: ["record_review_round"]
   }
-  const agentRun = input.startRun === false ? null : await prisma.agentRun.create({
-    data: {
-      workspaceId: workspace.id,
-      projectId: workstream.projectId,
-      workstreamId: workstream.id,
-      role: "HostileReviewer",
-      status: "running",
-      model: input.model,
-      sessionId,
-      inputBriefing: briefing as Prisma.InputJsonValue,
-      toolCalls: [],
-      createdObjectRefs: [],
-      updatedObjectRefs: []
-    }
-  })
-  const locked = agentRun ? await createReviewAssignment({ workspaceId: workspace.id, projectId: workstream.projectId, workstreamId: workstream.id, reviewerRunId: agentRun.id, reviewType, targetObjectType, targetObjectId, targetHash: manuscript?.contentHash, manuscriptVersionId: manuscript?.id, permittedArtifactIds: manuscript?.physicalArtifacts.map((link) => link.artifactId) ?? [], briefing, leaseExpiresAt }) : null
+  let agentRun: Prisma.AgentRunGetPayload<Record<string, never>> | null = null
+  let locked: Awaited<ReturnType<typeof createReviewAssignment>> | null = null
+  try {
+    agentRun = await prisma.agentRun.create({
+      data: {
+        workspaceId: workspace.id,
+        projectId: workstream.projectId,
+        workstreamId: workstream.id,
+        role: "HostileReviewer",
+        status: "running",
+        model: input.model,
+        sessionId,
+        inputBriefing: briefing as Prisma.InputJsonValue,
+        toolCalls: [],
+        createdObjectRefs: [],
+        updatedObjectRefs: []
+      }
+    })
+    locked = agentRun ? await createReviewAssignment({ workspaceId: workspace.id, projectId: workstream.projectId, workstreamId: workstream.id, reviewerRunId: agentRun.id, reviewType, targetObjectType, targetObjectId, targetHash: manuscript?.contentHash, manuscriptVersionId: manuscript?.id, permittedArtifactIds: manuscript?.physicalArtifacts.map((link) => link.artifactId) ?? [], briefing, leaseExpiresAt }) : null
+  } catch (error) {
+    await prisma.$transaction(async (tx) => {
+      if (agentRun) await tx.agentRun.deleteMany({ where: { id: agentRun.id, workspaceId: workspace.id } })
+      await tx.workstream.updateMany({ where: { id: workstream.id, workspaceId: workspace.id, claimedSessionId: sessionId, status: "claimed" }, data: { status: "needs_review", claimedSessionId: null, assignedToUserId: null, leaseExpiresAt: null } })
+    })
+    throw error
+  }
   return {
     workspace,
     project: workstream.project,
@@ -768,6 +796,7 @@ export async function claimNextReview(input: { userId: string; workspaceRef?: st
 
 export async function startAgentRun(input: { workspaceId: string; workstreamId: string; sessionId: string; model?: string }) {
   const briefing = await getAgentBriefing(input.workspaceId, input.workstreamId)
+  if (isLockedReviewWorkstream(briefing.workstream)) throw new Error("Locked manuscript reviewer runs can only be started by claim_next_review. That operation atomically issues the exact target and submission token.")
   const run = await prisma.agentRun.create({
     data: {
       workspaceId: input.workspaceId,
@@ -1017,10 +1046,39 @@ export async function recordReviewRound(input: {
       await tx.agentRun.update({ where: { id: input.createdByAgentRunId }, data: { status: "submitted" } })
       if (evidenceSections.length) await tx.reviewEvidenceSection.createMany({ data: evidenceSections.map((raw) => { const section = jsonObject(raw) as Record<string, any>; return { workspaceId: input.workspaceId, projectId: workstream.projectId, reviewRoundId: review.id, sectionType: String(section.sectionType ?? section.section_type), conclusion: String(section.conclusion ?? ""), evidenceMarkdown: String(section.evidenceMarkdown ?? section.evidence_markdown ?? ""), checkedRefs: jsonArray(section.checkedRefs ?? section.checked_refs), externalSources: jsonArray(section.externalSources ?? section.external_sources), attackCategories: jsonArray(section.attackCategories ?? section.attack_categories) } }) })
     }
-    const workstreamStatus = verdict === "approved" ? "approved" : verdict === "needs_revision" || verdict === "rejected" ? "revision_required" : verdict === "escalate" ? "escalated" : "blocked"
+    const assignedRevision = Boolean(lockedAssignment && (verdict === "needs_revision" || verdict === "rejected"))
+    const workstreamStatus = verdict === "approved" ? "approved" : assignedRevision ? "completed" : verdict === "needs_revision" || verdict === "rejected" ? "revision_required" : verdict === "escalate" ? "escalated" : "blocked"
     const reportStatus = verdict === "approved" ? "reviewed_approved" : "reviewed_needs_revision"
-    await tx.workstream.update({ where: { id: input.workstreamId, workspaceId: input.workspaceId }, data: { status: workstreamStatus as any } })
+    await tx.workstream.update({ where: { id: input.workstreamId, workspaceId: input.workspaceId }, data: { status: workstreamStatus as any, completedAt: assignedRevision ? new Date() : undefined, claimedSessionId: null, assignedToUserId: null, leaseExpiresAt: null } })
     if (review.reportId) await tx.workstreamReport.update({ where: { id: review.reportId, workspaceId: input.workspaceId }, data: { status: reportStatus } })
+    if (assignedRevision && manuscriptTarget) {
+      const requiredChanges = normalizeLines(input.requiredChanges)
+      const issues = normalizeLines(input.issues)
+      const literatureRepair = ["novelty", "bibliography"].includes(reviewType)
+      const compileRepair = reviewType === "compile"
+      const repairKind: WorkstreamKind = literatureRepair ? "literature_review" : compileRepair ? "computation" : "paper_synthesis"
+      const repairRole: AgentRole = literatureRepair ? "LiteratureAgent" : compileRepair ? "CodingAgent" : "PaperWriter"
+      await tx.workstream.create({
+        data: {
+          workspaceId: input.workspaceId,
+          projectId: workstream.projectId,
+          goalId: workstream.goalId,
+          parentWorkstreamId: input.workstreamId,
+          title: `Repair ${reviewType.replace(/_/g, " ")} findings for exact manuscript version`,
+          kind: repairKind,
+          coordinatorRole: repairRole,
+          status: "ready",
+          priority: Math.max(workstream.priority, 100),
+          targetObjectType: "ManuscriptVersion",
+          targetObjectId: manuscriptTarget.id,
+          instructions: `Apply only the bounded changes required by ReviewRound ${review.id}.\n\nRequired changes:\n${requiredChanges.map((change) => `- ${change}`).join("\n") || "- Resolve the recorded review issues."}\n\nIssues:\n${issues.map((issue) => `- ${issue}`).join("\n") || "- See the linked ReviewRound evidence."}`,
+          allowedWrites: ["ManuscriptVersion", "Artifact", "ProofObligation", "WorkstreamReport", "RunOutcome"],
+          forbiddenActions: ["Do not reopen unaffected approved mathematics.", "Do not perform or self-approve the follow-up independent review."],
+          successCriteria: ["Every required change in the linked ReviewRound is addressed against an exact new manuscript version.", "The revised exact bytes and affected proof-obligation mappings are durably recorded.", "Submit one concise revision report for the next independent gate."],
+          reviewPolicy: { min_approved_rounds: 1, review_type: reviewType, source_review_round_id: review.id, bounded_revision: true }
+        }
+      })
+    }
     return review
   })
   await recordSubstantiveAction({ workspaceId: input.workspaceId, projectId: workstream.projectId, actionType: "review_recorded", targetType: "ReviewRound", targetId: recordedReview.id, summary: `${reviewType}:${recordedReview.verdict}` })
