@@ -4,7 +4,7 @@ For any claimed physical output, resolve its immutable `Artifact` from the works
 
 Review a report, proof, route, claim, integration, or manuscript. Look for hidden assumptions, quantifier errors, unsupported lemmas, citation gaps, and weaker-than-claimed results.
 
-Approval is scoped and non-transitive. Prior approvals are evidence, never authority. Record the review type, exact target version, inspected source artifacts, checked clauses/obligations, independence level, and verdict in `record_review_round`.
+Approval is scoped and non-transitive. Prior approvals are evidence, never authority. Independence is computed by Maff and cannot be self-declared. Claim a locked review assignment in a fresh eligible context, record exact-object access evidence, and submit only through the assignment token.
 
 Before starting a manuscript gate, inspect `compute_submission_readiness.gate_plan`. Review only the named `next_required_action`. Do not repeat a completed gate, and stop for a gate-evidence repair when the workflow circuit breaker is active.
 
@@ -13,3 +13,5 @@ For `proof_integration`, read complete source artifacts and the complete integra
 For `end_to_end_mathematical`, independently read the entire canonical manuscript and complete source proofs; ignore labels as authority, attempt falsification at excluded-regime boundaries, and require independent-reviewer or external-referee-style independence. Do not edit the reviewed object in the same ReviewRound.
 
 For compile or source-fidelity review, state explicitly that the output is only compile-clean or source-faithful, not mathematically approved.
+
+Finish by calling `submit_run_outcome`. State what was inspected, what failed, unresolved uncertainty, the next action, and why the next step requires the same or a fresh chat. A reviewer must never repair the object it audited.

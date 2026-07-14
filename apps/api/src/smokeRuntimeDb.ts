@@ -9,6 +9,7 @@ import yazl from "yazl"
 import { prisma } from "./db/prisma.js"
 import { requireWorkspaceRole } from "./auth/permissions.js"
 import * as runtime from "./research/runtime.js"
+import { createReviewAssignment } from "./research/integrity.js"
 import { callTool } from "./mcp/server.js"
 import { storagePath } from "./artifacts/storage.js"
 
@@ -106,42 +107,25 @@ await assert.rejects(
 const controlRoom = await runtime.getProjectControlRoom(workspace.id, project.id)
 assert.ok(controlRoom.workstreams_by_status.completed?.some((item) => item.id === workstream.id))
 
-// Regression: approved ingredients and a compile-clean PDF never transitively approve a manuscript.
-const sourceA = await runtime.createResearchArtifact({ workspaceId: workspace.id, projectId: project.id, title: "Detailed uniform majorant", kind: "proof_skeleton", contentMarkdown: "Full uniform moving-start majorant proof." })
-const manuscript = await runtime.createResearchArtifact({ workspaceId: workspace.id, projectId: project.id, title: "Integrated manuscript", kind: "paper_draft", contentMarkdown: "The bound is standard." })
-const manuscriptVersion = await runtime.createManuscriptVersion({ workspaceId: workspace.id, projectId: project.id, artifactId: manuscript.id, parentArtifactIds: [sourceA.id], claimIds: [claim.id] })
-const obligation = await runtime.createProofObligation({ workspaceId: workspace.id, projectId: project.id, manuscriptVersionId: manuscriptVersion.id, claimId: claim.id, sourceArtifactId: sourceA.id, title: "Uniform moving-start majorant", statementMarkdown: "Uniform majorant on the stated domain.", manuscriptLocation: "Lemma 4.1" })
-const canonicalManuscript = await runtime.promoteManuscriptVersion({ workspaceId: workspace.id, manuscriptVersionId: manuscriptVersion.id })
-assert.equal(canonicalManuscript.isCanonical, true)
-assert.equal(canonicalManuscript.verificationState, "ledger_complete")
-await runtime.recordReviewRound({ workspaceId: workspace.id, workstreamId: workstream.id, verdict: "approved", reviewType: "ingredient_correctness", targetVersion: sourceA.id, bodyMarkdown: "Source proof correct.", issues: [], requiredChanges: [], checkedRefs: [sourceA.id] })
-await runtime.recordReviewRound({ workspaceId: workspace.id, workstreamId: workstream.id, verdict: "approved", reviewType: "compile", targetVersion: manuscriptVersion.id, bodyMarkdown: "PDF compiled.", issues: [], requiredChanges: [], checkedRefs: [manuscript.id] })
-let readiness = await runtime.computeProjectSubmissionReadiness(workspace.id, project.id)
-assert.equal(readiness.submission_ready, false)
-assert.equal((readiness.gates as any).proof_integration.satisfied, false)
-const preservationGap = await runtime.createGap({ workspaceId: workspace.id, projectId: project.id, claimId: claim.id, title: "Uniform majorant omitted during integration", descriptionMarkdown: "Vague assertion replaced detailed proof.", severity: "major" })
-readiness = await runtime.computeProjectSubmissionReadiness(workspace.id, project.id)
-assert.ok(readiness.reasons.some((reason) => reason.includes(preservationGap.id)))
-await runtime.resolveGap({ workspaceId: workspace.id, gapId: preservationGap.id, suggestedResolution: "Restore the argument." })
-await assert.rejects(
-  () => runtime.recordReviewRound({ workspaceId: workspace.id, workstreamId: workstream.id, verdict: "approved", reviewType: "proof_integration", targetVersion: manuscriptVersion.id, bodyMarkdown: "Incomplete integration approval.", issues: [], requiredChanges: [], checkedRefs: [sourceA.id, manuscript.id] }),
-  /must preserve every required exact-version obligation/i
-)
-const integrationReview = await runtime.recordReviewRound({ workspaceId: workspace.id, workstreamId: workstream.id, verdict: "approved", reviewType: "proof_integration", targetVersion: String(manuscriptVersion.version), bodyMarkdown: "Obligation restored and checked.", issues: [], requiredChanges: [], checkedRefs: [sourceA.id, manuscript.id], checkedObligationIds: [obligation.id] })
-assert.equal(integrationReview.targetVersion, manuscriptVersion.id)
-const materializedCheck = await prisma.reviewObligationCheck.findUniqueOrThrow({ where: { reviewRoundId_proofObligationId: { reviewRoundId: integrationReview.id, proofObligationId: obligation.id } } })
-assert.equal(materializedCheck.status, "preserved")
-await runtime.recordReviewRound({ workspaceId: workspace.id, workstreamId: workstream.id, verdict: "approved", reviewType: "novelty", targetVersion: manuscriptVersion.id, scope: { claim_ids: [claim.id] }, bodyMarkdown: "No exact counterpart found; terminology limitations recorded.", issues: [], requiredChanges: [], checkedRefs: [] })
-await runtime.recordReviewRound({ workspaceId: workspace.id, workstreamId: workstream.id, verdict: "approved", reviewType: "bibliography", targetVersion: manuscriptVersion.id, bodyMarkdown: "References audited.", issues: [], requiredChanges: [], checkedRefs: [] })
-readiness = await runtime.computeProjectSubmissionReadiness(workspace.id, project.id)
-assert.equal(readiness.submission_ready, false)
-assert.equal((readiness.gates as any).end_to_end_mathematical.satisfied, false)
-await runtime.recordReviewRound({ workspaceId: workspace.id, workstreamId: workstream.id, verdict: "approved", reviewType: "end_to_end_mathematical", targetVersion: manuscriptVersion.id, independence: "independent_reviewer", bodyMarkdown: "Independent complete manuscript and source proof check.", issues: [], requiredChanges: [], checkedRefs: [sourceA.id, manuscript.id] })
-readiness = await runtime.computeProjectSubmissionReadiness(workspace.id, project.id)
-assert.equal(readiness.submission_ready, true)
-await runtime.updateResearchArtifact({ workspaceId: workspace.id, id: manuscript.id, patch: { contentMarkdown: "A substantively changed manuscript." } })
-readiness = await runtime.computeProjectSubmissionReadiness(workspace.id, project.id)
-assert.equal(readiness.submission_ready, false)
+  // Regression: manuscript readiness requires exact provenance, an atomic ledger, physical
+  // bytes, and server-assigned review evidence. Legacy/direct approvals cannot close gates.
+  const sourceA = await runtime.createResearchArtifact({ workspaceId: workspace.id, projectId: project.id, title: "Detailed uniform majorant", kind: "proof_skeleton", contentMarkdown: "Full uniform moving-start majorant proof." })
+  const manuscript = await runtime.createResearchArtifact({ workspaceId: workspace.id, projectId: project.id, title: "Integrated manuscript", kind: "paper_draft", contentMarkdown: "The bound is standard." })
+  const authorWorkstream = await runtime.createWorkstream({ workspaceId: workspace.id, projectId: project.id, goalId: goal.id, title: "Integrate exact manuscript", kind: "paper_synthesis", instructions: "Integrate the proof and record exact provenance.", coordinatorRole: "PaperWriter" })
+  const authorRun = await runtime.startAgentRun({ workspaceId: workspace.id, workstreamId: authorWorkstream.id, sessionId: `author-session-${suffix}`, model: "smoke" })
+  const manuscriptVersion = await runtime.createManuscriptVersion({ workspaceId: workspace.id, projectId: project.id, artifactId: manuscript.id, parentArtifactIds: [sourceA.id], claimIds: [claim.id], createdByAgentRunId: authorRun.agentRun.id })
+  const obligation = await runtime.createProofObligation({ workspaceId: workspace.id, projectId: project.id, manuscriptVersionId: manuscriptVersion.id, claimId: claim.id, sourceArtifactId: sourceA.id, title: "Uniform moving-start majorant", statementMarkdown: "Uniform majorant on the stated domain.", manuscriptLocation: "Lemma 4.1", assumptions: ["The stated domain hypotheses hold."], excludedRegimes: ["Degenerate endpoints are excluded."], boundaryCases: ["The moving start equals the left endpoint."], semanticConsequences: ["The theorem is uniform over admissible starts."], authorAssertion: "The detailed source proof is integrated at Lemma 4.1." })
+  await assert.rejects(() => runtime.promoteManuscriptVersion({ workspaceId: workspace.id, manuscriptVersionId: manuscriptVersion.id }), /exact managed source and compiled PDF/i)
+  await assert.rejects(
+    () => runtime.recordReviewRound({ workspaceId: workspace.id, workstreamId: workstream.id, verdict: "approved", reviewType: "proof_integration", targetVersion: manuscriptVersion.id, bodyMarkdown: "A direct typed approval must not count.", issues: [], requiredChanges: [], checkedRefs: [sourceA.id] }),
+    /server-issued ReviewAssignment/i
+  )
+  let readiness = await runtime.computeProjectSubmissionReadiness(workspace.id, project.id)
+  assert.equal(readiness.submission_ready, false)
+  const preservationGap = await runtime.createGap({ workspaceId: workspace.id, projectId: project.id, claimId: claim.id, title: "Uniform majorant omitted during integration", descriptionMarkdown: "Vague assertion replaced detailed proof.", severity: "major" })
+  readiness = await runtime.computeProjectSubmissionReadiness(workspace.id, project.id)
+  assert.ok(readiness.reasons.some((reason) => reason.includes(preservationGap.id)))
+  await runtime.resolveGap({ workspaceId: workspace.id, gapId: preservationGap.id, suggestedResolution: "Restore the argument." })
 
 // Robustness regression: a substantial manuscript without an exact proof-obligation ledger
 // remains an unverified candidate; it cannot become canonical or receive manuscript gates.
@@ -153,10 +137,10 @@ await assert.rejects(
   () => runtime.promoteManuscriptVersion({ workspaceId: workspace.id, manuscriptVersionId: ledgerlessVersion.id }),
   /proof obligation/i
 )
-await assert.rejects(
-  () => runtime.recordReviewRound({ workspaceId: workspace.id, workstreamId: workstream.id, verdict: "approved", reviewType: "compile", targetVersion: ledgerlessVersion.id, targetObjectType: "ResearchArtifact", targetObjectId: ledgerless.id, bodyMarkdown: "Compile clean.", issues: [], requiredChanges: [], checkedRefs: [] }),
-  /targetObject/i
-)
+  await assert.rejects(
+    () => runtime.recordReviewRound({ workspaceId: workspace.id, workstreamId: workstream.id, verdict: "approved", reviewType: "compile", targetVersion: ledgerlessVersion.id, targetObjectType: "ResearchArtifact", targetObjectId: ledgerless.id, bodyMarkdown: "Compile clean.", issues: [], requiredChanges: [], checkedRefs: [] }),
+    /ReviewAssignment/i
+  )
 
 // MMRW replay-shaped safety case: an external referee is immutable evidence, not a Maff
 // AgentRun; strategic debt queues a review and an independent strategic verdict clears it.
@@ -164,7 +148,9 @@ const externalReferee = await runtime.importExternalReview({ workspaceId: worksp
 assert.equal((externalReferee as any).createdByAgentRunId, undefined)
 const healthBeforeStrategic = await runtime.getProjectHealth(workspace.id, project.id)
 assert.equal(healthBeforeStrategic.circuit_breakers.strategic_review_queued, true)
-const strategic = await runtime.createStrategicReviewRound({ workspaceId: workspace.id, projectId: project.id, verdict: "continue_with_rebase", reviewerIndependence: "independent StrategicReviewer with no current proof assignment", whatChangedMarkdown: "The replay isolated the missing bilateral residue obligation and governance dependency.", loopDiagnosisMarkdown: "Repeated manuscript repair without an exact ledger would loop.", blockerStructureMarkdown: "The bilateral residue and governance gaps are structural but separately repairable.", alternativesMarkdown: "Considered immediate submission, weaker theorem, and two-stream repair; selected two-stream repair.", branchAllocation: [{ branch: "main", state: "mainline" }, { branch: "weaker-result", state: "exploratory" }], nextMoves: [{ test: "Check bilateral residue", information_gain: "high", prerequisites: [], success_condition: "proof closes", kill_condition: "counterexample", decision: "promote or weaken" }, { test: "Repair governance gap", information_gain: "high", prerequisites: [], success_condition: "dependency graph closes", kill_condition: "dependency fails", decision: "rebase" }, { test: "End-to-end re-review", information_gain: "medium", prerequisites: ["two repairs"], success_condition: "independent approval", kill_condition: "major revision", decision: "submit or pivot" }], probabilityEstimates: [{ dimension: "truth", range: "60-80%" }, { dimension: "provable", range: "40-60%" }, { dimension: "methods", range: "35-55%" }, { dimension: "publishable_fallback", range: "70-85%" }, { dimension: "next_epoch_progress", range: "60-75%" }] })
+  const strategicWorkstream = await runtime.createWorkstream({ workspaceId: workspace.id, projectId: project.id, goalId: goal.id, title: "Fresh strategic review", kind: "hostile_review", instructions: "Review project direction without editing its mathematics.", coordinatorRole: "HostileReviewer" })
+  const strategicRun = await runtime.startAgentRun({ workspaceId: workspace.id, workstreamId: strategicWorkstream.id, sessionId: `strategic-session-${suffix}`, model: "smoke" })
+  const strategic = await runtime.createStrategicReviewRound({ workspaceId: workspace.id, projectId: project.id, createdByAgentRunId: strategicRun.agentRun.id, verdict: "continue_with_rebase", reviewerIndependence: "independent StrategicReviewer with no current proof assignment", whatChangedMarkdown: "The replay isolated the missing bilateral residue obligation and governance dependency.", loopDiagnosisMarkdown: "Repeated manuscript repair without an exact ledger would loop.", blockerStructureMarkdown: "The bilateral residue and governance gaps are structural but separately repairable.", alternativesMarkdown: "Considered immediate submission, weaker theorem, and two-stream repair; selected two-stream repair.", branchAllocation: [{ branch: "main", state: "mainline" }, { branch: "weaker-result", state: "exploratory" }], nextMoves: [{ test: "Check bilateral residue", information_gain: "high", prerequisites: [], success_condition: "proof closes", kill_condition: "counterexample", decision: "promote or weaken" }, { test: "Repair governance gap", information_gain: "high", prerequisites: [], success_condition: "dependency graph closes", kill_condition: "dependency fails", decision: "rebase" }, { test: "End-to-end re-review", information_gain: "medium", prerequisites: ["two repairs"], success_condition: "independent approval", kill_condition: "major revision", decision: "submit or pivot" }], probabilityEstimates: [{ dimension: "truth", range: "60-80%" }, { dimension: "provable", range: "40-60%" }, { dimension: "methods", range: "35-55%" }, { dimension: "publishable_fallback", range: "70-85%" }, { dimension: "next_epoch_progress", range: "60-75%" }] })
 assert.equal(strategic.verdict, "continue_with_rebase")
 const healthAfterStrategic = await runtime.getProjectHealth(workspace.id, project.id)
 assert.equal(healthAfterStrategic.circuit_breakers.downstream_paused, false)
@@ -177,7 +163,10 @@ const draftPhysicalSubmission = await runtime.createOrUpdateWorkstreamReport({ w
 await assert.rejects(() => runtime.submitReportForReview({ workspaceId: workspace.id, reportId: draftPhysicalSubmission.id }), /no ingested durable Artifact/i)
 
 const tempDir = await mkdtemp(path.join(os.tmpdir(), "maff-artifact-smoke-"))
-const zipPath = path.join(tempDir, "exact-bundle.zip")
+  const zipPath = path.join(tempDir, "exact-bundle.zip")
+  const pdfPath = path.join(tempDir, "main.pdf")
+  const pdfBytes = Buffer.from("%PDF-1.4\n% synthetic exact smoke PDF\n")
+  await writeFile(pdfPath, pdfBytes)
 const zip = new yazl.ZipFile()
 zip.addBuffer(Buffer.from("\\documentclass{article}\\begin{document}Exact\\end{document}\n"), "main.tex")
 zip.addBuffer(Buffer.from("%PDF-1.4\n% synthetic exact smoke PDF\n"), "main.pdf")
@@ -214,9 +203,15 @@ try {
 } finally {
   globalThis.fetch = oldFetch
 }
-assert.equal(durableArtifact.sha256, originalHash)
-assert.equal(durableArtifact.byteSize, originalBytes.length)
-await runtime.attachArtifactToManuscriptVersion({ workspaceId: workspace.id, artifactId: durableArtifact.id, manuscriptVersionId: manuscriptVersion.id, role: "source_bundle" })
+  assert.equal(durableArtifact.sha256, originalHash)
+  assert.equal(durableArtifact.byteSize, originalBytes.length)
+  await runtime.attachArtifactToManuscriptVersion({ workspaceId: workspace.id, artifactId: durableArtifact.id, manuscriptVersionId: manuscriptVersion.id, role: "source_bundle" })
+  const compiledPdf = await runtime.createArtifactFromPath({ workspaceId: workspace.id, projectId: project.id, workstreamId: physicalWorkstream.id, path: pdfPath, title: "Exact compiled manuscript PDF", kind: "pdf" })
+  await runtime.attachArtifactToManuscriptVersion({ workspaceId: workspace.id, artifactId: compiledPdf.id, manuscriptVersionId: manuscriptVersion.id, role: "compiled_pdf" })
+  const canonicalManuscript = await runtime.promoteManuscriptVersion({ workspaceId: workspace.id, manuscriptVersionId: manuscriptVersion.id })
+  assert.equal(canonicalManuscript.isCanonical, true)
+  assert.equal(canonicalManuscript.verificationState, "ledger_complete")
+  await assert.rejects(() => runtime.claimNextReview({ userId: user.id, workspaceRef: workspace.id, project: project.id, sessionId: `author-session-${suffix}`, model: "smoke" }), /Start a fresh chat/i)
 await writeFile(zipPath, "mutated after ingestion")
 const replacement = await runtime.createArtifactFromPath({ workspaceId: workspace.id, projectId: project.id, workstreamId: physicalWorkstream.id, path: zipPath, title: "Mutated replacement candidate", kind: "other" })
 assert.notEqual(replacement.id, durableArtifact.id)
@@ -243,6 +238,31 @@ const metadataExport = await runtime.getResearchArtifactBundle(workspace.id, [ph
 assert.equal(metadataExport[0].physicalArtifacts[0].id, durableArtifact.id)
 const submittedPhysical = await runtime.submitReportForReview({ workspaceId: workspace.id, reportId: draftPhysicalSubmission.id })
 assert.equal(submittedPhysical.report_status, "submitted")
+
+// A fresh reviewer receives a locked target and must prove access to exact bytes before
+// substantive evidence can close the gate. The one-use assignment completes with the run.
+const lockedReviewWorkstream = await runtime.createWorkstream({ workspaceId: workspace.id, projectId: project.id, goalId: goal.id, title: "Locked proof integration review", kind: "hostile_review", instructions: "Attack the exact proof integration without editing it.", coordinatorRole: "HostileReviewer", reviewPolicy: { min_approved_rounds: 1, review_type: "proof_integration" } })
+const reviewerRun = await runtime.startAgentRun({ workspaceId: workspace.id, workstreamId: lockedReviewWorkstream.id, sessionId: `fresh-review-session-${suffix}`, model: "smoke" })
+const lockedReview = await createReviewAssignment({ workspaceId: workspace.id, projectId: project.id, workstreamId: lockedReviewWorkstream.id, reviewerRunId: reviewerRun.agentRun.id, reviewType: "proof_integration", targetObjectType: "ManuscriptVersion", targetObjectId: manuscriptVersion.id, targetHash: canonicalManuscript.contentHash, manuscriptVersionId: manuscriptVersion.id, permittedArtifactIds: [durableArtifact.id, compiledPdf.id], briefing: { prior_approvals_hidden: true, exact_target: manuscriptVersion.id }, leaseExpiresAt: new Date(Date.now() + 60_000) })
+await runtime.recordObjectAccess({ workspaceId: workspace.id, projectId: project.id, agentRunId: reviewerRun.agentRun.id, objectType: "Artifact", objectId: durableArtifact.id, artifactId: durableArtifact.id, operation: "download_and_inspect", contentHash: durableArtifact.sha256, coverage: { entries: ["main.tex", "main.pdf", "references.bib"] } })
+const integrationEvidence = "I inspected the exact source bundle and traced the moving-start majorant from its assumptions through the boundary case to the manuscript statement. The preserved argument matches the locked manuscript version and no unsupported transitive approval was used."
+const integrationReview = await runtime.recordReviewRound({ workspaceId: workspace.id, workstreamId: lockedReviewWorkstream.id, verdict: "approved", reviewType: "proof_integration", targetVersion: manuscriptVersion.id, bodyMarkdown: integrationEvidence, issues: [], requiredChanges: [], checkedRefs: [sourceA.id, durableArtifact.id], obligationChecks: [{ proofObligationId: obligation.id, status: "preserved", evidenceMarkdown: "The exact source proof, hypotheses, excluded endpoint regime, and manuscript Lemma 4.1 were compared line by line." }], createdByAgentRunId: reviewerRun.agentRun.id, reviewAssignmentId: lockedReview.assignment.id, submissionToken: lockedReview.submission_token, evidenceSections: [{ sectionType: "proof_integration", conclusion: "approved", evidenceMarkdown: integrationEvidence, checkedRefs: [sourceA.id, durableArtifact.id] }] })
+assert.equal(integrationReview.evidenceStatus, "assigned_valid")
+assert.equal((await prisma.agentRun.findUniqueOrThrow({ where: { id: reviewerRun.agentRun.id } })).status, "submitted")
+assert.equal(await prisma.reviewEvidenceSection.count({ where: { reviewRoundId: integrationReview.id } }), 1)
+await assert.rejects(() => runtime.recordReviewRound({ workspaceId: workspace.id, workstreamId: lockedReviewWorkstream.id, verdict: "approved", reviewType: "proof_integration", targetVersion: manuscriptVersion.id, bodyMarkdown: integrationEvidence, issues: [], requiredChanges: [], checkedRefs: [sourceA.id], obligationChecks: [{ proofObligationId: obligation.id, status: "preserved", evidenceMarkdown: integrationEvidence }], createdByAgentRunId: reviewerRun.agentRun.id, reviewAssignmentId: lockedReview.assignment.id, submissionToken: lockedReview.submission_token, evidenceSections: [{ sectionType: "proof_integration", conclusion: "approved", evidenceMarkdown: integrationEvidence }] }), /no longer active/i)
+const reviewerOutcome = await runtime.submitRunOutcome({ workspaceId: workspace.id, agentRunId: reviewerRun.agentRun.id, completedWork: ["Completed locked proof-integration review."], changedObjects: [`ReviewRound:${integrationReview.id}`], evidenceGenerated: ["Exact source access evidence", "Proof obligation evidence"], checksPerformed: ["Compared exact source and manuscript"], problemsEncountered: [], unresolvedUncertainty: [], gapsCreated: [], gapsResolved: [], nextAction: { title: "Run the next independent manuscript gate", kind: "review", role: "HostileReviewer" } })
+assert.equal(reviewerOutcome.continuation.mode, "fresh_chat_required")
+assert.equal((await prisma.agentRun.findUniqueOrThrow({ where: { id: reviewerRun.agentRun.id } })).status, "completed")
+
+const projectBeforeAudit = await prisma.project.findUniqueOrThrow({ where: { id: project.id } })
+const frontierBeforeAudit = await prisma.workstream.count({ where: { workspaceId: workspace.id, projectId: project.id } })
+const gapsBeforeAudit = await prisma.gap.count({ where: { workspaceId: workspace.id, projectId: project.id } })
+const immutableAudit = await runtime.runProjectGraphAudit({ workspaceId: workspace.id, projectId: project.id, mode: "invariant_check" })
+assert.equal(immutableAudit.project_mutated, false)
+assert.equal((await prisma.project.findUniqueOrThrow({ where: { id: project.id } })).updatedAt.getTime(), projectBeforeAudit.updatedAt.getTime())
+assert.equal(await prisma.workstream.count({ where: { workspaceId: workspace.id, projectId: project.id } }), frontierBeforeAudit)
+assert.equal(await prisma.gap.count({ where: { workspaceId: workspace.id, projectId: project.id } }), gapsBeforeAudit)
 
 // Missing managed data is an explicit integrity failure, never metadata-only success.
 await rm(storagePath(replacement.storageKey!), { force: true })

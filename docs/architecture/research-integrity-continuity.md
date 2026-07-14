@@ -1,0 +1,41 @@
+# Research Integrity and Continuity
+
+## Invariants
+
+1. An active project always has runnable work, pending review, an explicit waiting condition, or a terminal justification.
+2. Internal manuscript reviews count only when issued through a locked `ReviewAssignment`, submitted by its active AgentRun, and closed atomically with substantive evidence.
+3. Reviewer independence is computed from append-only `ObjectContribution` provenance; callers cannot self-declare it.
+4. Readiness is reconstructed from exact versions, physical artifacts, evidence contracts, open targeted gaps, and external challenges.
+5. Audit reports are append-only and do not mutate the audited project. Repair begins in a fresh chat through a separate campaign.
+6. Artifact ingestion, reviewer inspection, user surfacing, and publication are distinct operations.
+
+## Lifecycle
+
+The derived manuscript stages are `imported_unverified`, `draft`, `build_reproducible`, `proof_integration_checked`, `internally_refereed`, `external_challenge_resolved`, `publication_candidate`, and `publication_package_released`.
+
+`publication_candidate` means that the configured evidence program has no known blocker. It is not an assertion of absolute mathematical truth or journal acceptance.
+
+## Review integrity
+
+`claim_next_review` creates a server-issued assignment bound to the exact target, reviewer run, computed independence class, sealed briefing, permitted artifacts, lease, and single-use token. Typed manuscript review creation without that assignment is rejected. Bare obligation ids are inventory only and never become preserved proof evidence.
+
+The reviewer records exact access through `record_object_access`, submits structured `ReviewEvidenceSection` records, and finishes with `submit_run_outcome`. Construction-to-review transitions require a fresh chat.
+
+## Continuity
+
+Every AgentRun closes through `submit_run_outcome`, which records completed work, changes, evidence, checks, problems, uncertainty, gap deltas, and one next action. Maff returns `same_chat`, `fresh_chat_required`, a waiting state, or a terminal state plus a user-facing prompt.
+
+`ensure_project_actionable` is the reconciliation/watchdog surface. It creates a task only when tied to a blocker or to the structural defect of an unexplained empty frontier.
+
+## Imports
+
+Existing projects use staged import: begin, ingest exact artifacts, analyze and preview the proposed graph, commit as `imported_unverified`, then run a fresh baseline audit. Imported assertions and historical reviews remain provenance-aware evidence, not Maff verification.
+
+## Audits and repair
+
+`run_project_graph_audit` supports invariant, release, migration, and forensic modes. Full modes require a fresh `GraphAuditor` run. The audit records a snapshot hash and proposed findings without changing project state. `begin_repair_from_audit` in a fresh chat accepts findings, creates targeted gaps, and starts an ordered repair campaign. A fresh auditor rechecks the result.
+
+## Artifacts and publication
+
+`create_artifact` ingests managed bytes but returns metadata only. `surface_artifact` is explicit. `publish_manuscript_package` is the only default user-visible publication path and requires reconstructed publication-candidate readiness plus verified source and PDF bytes.
+

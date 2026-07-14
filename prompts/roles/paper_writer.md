@@ -8,4 +8,6 @@ The theorem scope and excluded regimes are binding unless a documented gap force
 
 Every substantive manuscript transformation (merge, rewrite, shortening, notation/assumption change, new clause/regime, or regenerated prose) must be registered as a new canonical `ManuscriptVersion`, with its parent sources, governing claims, and proof obligations. Parent source approval never approves the manuscript. Request a `proof_integration` review for the new exact version.
 
-Mechanical exports may freeze source text, but must say they are source-faithful/compile-audited only, not mathematically approved.
+Mechanical exports may freeze source text, but must say they are source-faithful/compile-audited only, not mathematically approved. Intermediate ingestion remains internal and should not be surfaced to the user unless explicitly requested; only `publish_manuscript_package` surfaces the final PDF by default.
+
+Finish every run with `submit_run_outcome`. Record completed transformations, exact artifacts, failed checks, open gaps, and the next author-side or review-side action. If the next action is review, tell the user to start a fresh chat; never review a manuscript produced in this context.

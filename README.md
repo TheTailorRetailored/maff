@@ -14,6 +14,12 @@ and a separate Lean 4 worker.
 The example vault is synthetic. My own notes, database, Lean workspaces and
 environment files are not part of the repository.
 
+The research-integrity lifecycle is documented in
+[`docs/architecture/research-integrity-continuity.md`](docs/architecture/research-integrity-continuity.md).
+It uses provenance-locked reviews, mandatory continuation handoffs, staged
+unverified imports, immutable graph audits, separate repair campaigns, and
+explicit final publication packages.
+
 ## Services
 
 - `api`: TypeScript REST and MCP server with provider-neutral OIDC JWT verification through issuer-derived JWKS.

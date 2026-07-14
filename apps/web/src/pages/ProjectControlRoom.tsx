@@ -81,8 +81,12 @@ export function ProjectControlRoom({ workspaceId, setWorkspaceId, projectId, onO
           <section className="panel">
             <h2>{room.project.title}</h2>
             <p>{room.project.coordinatorSummary || room.project.statement}</p>
+            <p><strong>Lifecycle:</strong> {room.readiness?.lifecycle_stage ?? room.readiness?.status ?? "unverified"} · <strong>Frontier:</strong> {room.actionability?.state ?? "unknown"}</p>
             {room.suggested_next_assignment && <button onClick={() => onOpenWorkstream(room.suggested_next_assignment!.id)}>Suggested: {room.suggested_next_assignment.title}</button>}
           </section>
+          {room.latest_run_outcome && <section className="panel"><h2>Latest handoff</h2><p>{room.latest_run_outcome.continuationReason}</p><p><strong>{room.latest_run_outcome.userPrompt}</strong></p></section>}
+          {room.latest_audit && <section className="panel"><h2>Latest immutable audit</h2><p>{room.latest_audit.summaryMarkdown}</p><div className="stack">{room.latest_audit.findings.slice(0, 8).map((finding) => <div className="task-card" key={finding.id}><strong>{finding.title}</strong><StatusBadge status={finding.status === "proposed" ? finding.severity : finding.status} /></div>)}</div></section>}
+          {room.active_repair_campaign && <section className="panel"><h2>{room.active_repair_campaign.title}</h2><div className="stack">{room.active_repair_campaign.tasks.map((task) => <div className="task-card" key={task.id}><strong>{task.title}</strong><StatusBadge status={task.status} /></div>)}</div></section>}
           <section className="panel frontier-hero">
             <div>
               <h2>{room.frontier?.latestSnapshot?.title ?? "Research Frontier"}</h2>

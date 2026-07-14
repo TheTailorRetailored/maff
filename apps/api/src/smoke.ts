@@ -143,7 +143,7 @@ for (const prop of ["report_id", "workstream_id"]) {
   assert.ok(submitReportProps[prop], `submit_report_for_review schema must advertise ${prop}`)
 }
 
-assert.equal(mcpServerVersion, "0.7.0-release-gate-plan")
+assert.equal(mcpServerVersion, "1.0.0-research-integrity")
 assert.equal(normalizedObligationCheckStatus("passed"), "preserved")
 assert.equal(normalizedObligationCheckStatus("preserved"), "preserved")
 assert.equal(normalizedObligationCheckStatus("failed"), "failed")
@@ -168,6 +168,9 @@ for (const listedTool of toolsList.tools) {
 
 for (const name of ["get_research_artifact", "export_research_artifact_bundle", "create_manuscript_version", "create_proof_obligation", "get_integration_coverage", "compute_submission_readiness"]) {
   assert.ok(toolsListNames.has(name), `tools/list missing ${name}`)
+}
+for (const name of ["record_object_contribution", "record_object_access", "submit_run_outcome", "ensure_project_actionable", "begin_project_import", "analyze_project_import", "preview_project_import", "commit_project_import", "run_project_graph_audit", "begin_repair_from_audit", "publish_manuscript_package", "surface_artifact"]) {
+  assert.ok(toolsListNames.has(name), `tools/list missing integrity tool ${name}`)
 }
 for (const name of ["create_artifact_from_path", "get_artifact", "download_artifact", "list_artifacts", "list_artifact_archive", "read_artifact_archive_file", "verify_artifact", "attach_artifact_to_manuscript_version", "export_physical_artifacts", "get_manuscript_version"]) {
   assert.ok(toolDefinitions.some((tool) => tool.name === name), `missing durable artifact tool ${name}`)
@@ -196,7 +199,11 @@ const createdArtifactResult = contentResult("create_artifact", compactToolResult
 }))
 assert.equal((createdArtifactResult.structuredContent as any).verification.ok, true)
 assert.equal((createdArtifactResult.structuredContent as any).download.uri.includes("/api/artifacts/artifact-1/content"), true)
-assert.equal(createdArtifactResult.content[0].type, "resource_link")
+assert.equal(createdArtifactResult.content[0].type, "text", "intermediate ingestion must not surface a user-visible file link")
+const surfacedArtifactResult = contentResult("surface_artifact", { uri: "https://maff.example/api/artifacts/artifact-1/content", name: "bundle.zip", mime_type: "application/zip" })
+assert.equal(surfacedArtifactResult.content[0].type, "resource_link", "explicit artifact surfacing must return a user-visible file link")
+const publicationResult = contentResult("publish_manuscript_package", { package_id: "package-1", final_pdf: { uri: "https://maff.example/api/artifacts/final/content", name: "paper.pdf", mime_type: "application/pdf" } })
+assert.equal(publicationResult.content[0].type, "resource_link", "the final publication package must surface its PDF")
 const archiveTextResult = contentResult("read_artifact_archive_file", {
   artifact_id: "artifact-1",
   entry_path: "main.tex",
