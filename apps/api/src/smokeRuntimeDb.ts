@@ -12,6 +12,7 @@ import * as runtime from "./research/runtime.js"
 import { createReviewAssignment } from "./research/integrity.js"
 import { callTool } from "./mcp/server.js"
 import { storagePath } from "./artifacts/storage.js"
+import { config } from "./config.js"
 
 if (!process.env.DATABASE_URL) {
   console.log("Skipping Maff v2 database smoke checks: DATABASE_URL is not set.")
@@ -19,6 +20,7 @@ if (!process.env.DATABASE_URL) {
 }
 
 const suffix = randomUUID().slice(0, 8)
+const resourceAccess = (roles: string[]) => ({ [config.oidc.roleClientId || "maff"]: { roles } })
 const user = await prisma.user.create({ data: { auth0Sub: `smoke|${suffix}`, email: `smoke-${suffix}@maff.local` } })
 const stableUserId = user.id
 const keycloakIssuer = "https://auth.lachlanbridges.com/realms/bridges"
@@ -122,7 +124,7 @@ assert.equal(await prisma.reviewRound.count({ where: { workspaceId: workspace.id
 const outsider = await prisma.user.create({ data: { auth0Sub: `smoke-outsider|${suffix}`, email: `smoke-outsider-${suffix}@maff.local` } })
 await assert.rejects(() => requireWorkspaceRole(outsider.id, workspace.id, "viewer"), /Workspace permission denied/)
 await assert.rejects(
-  () => callTool("get_project", { workspace_id: workspace.id, project_id: project.id }, { userId: outsider.id, claimsScope: "maff:read", resourceAccess: { maff: { roles: ["reader"] } } }),
+  () => callTool("get_project", { workspace_id: workspace.id, project_id: project.id }, { userId: outsider.id, claimsScope: "maff:read", resourceAccess: resourceAccess(["reader"]) }),
   /Workspace permission denied/
 )
 
@@ -213,7 +215,7 @@ try {
     file: { download_url: "https://files.example.test/mmrw/exact-bundle.zip", file_id: `exact-bundle-${suffix}`, mime_type: "application/zip", file_name: "exact-bundle.zip" },
     expected_sha256: originalHash,
     metadata: { required_files: ["main.tex", "main.pdf", "references.bib"] }
-  }, { userId: user.id, claimsScope: "maff:write", resourceAccess: { maff: { roles: ["editor"] } }, sub: `upload-agent-${suffix}` }) as any
+  }, { userId: user.id, claimsScope: "maff:write", resourceAccess: resourceAccess(["contributor"]), sub: `upload-agent-${suffix}` }) as any
   const beforeMismatchCount = await prisma.artifact.count({ where: { workspaceId: workspace.id } })
   await assert.rejects(() => callTool("create_artifact", {
     workspace_id: workspace.id,
@@ -222,7 +224,7 @@ try {
     title: "Bad expected hash bundle",
     file: { download_url: "https://files.example.test/mmrw/exact-bundle.zip", file_id: `bad-hash-${suffix}`, mime_type: "application/zip", file_name: "exact-bundle.zip" },
     expected_sha256: "0".repeat(64)
-  }, { userId: user.id, claimsScope: "maff:write", resourceAccess: { maff: { roles: ["editor"] } }, sub: `upload-agent-${suffix}` }), /hash mismatch/i)
+  }, { userId: user.id, claimsScope: "maff:write", resourceAccess: resourceAccess(["contributor"]), sub: `upload-agent-${suffix}` }), /hash mismatch/i)
   assert.equal(await prisma.artifact.count({ where: { workspaceId: workspace.id } }), beforeMismatchCount)
 } finally {
   globalThis.fetch = oldFetch
@@ -250,14 +252,14 @@ assert.ok(archive.entries.some((entry) => entry.path === "main.tex"))
 assert.ok(archive.entries.some((entry) => entry.path === "main.pdf"))
 const exactStored = await runtime.getArtifactStorageFile(workspace.id, durableArtifact.id)
 assert.deepEqual(await readFile(exactStored.file), originalBytes)
-const freshReviewerDownload = await callTool("download_artifact", { workspace_id: workspace.id, artifact_id: durableArtifact.id }, { userId: user.id, claimsScope: "maff:read", resourceAccess: { maff: { roles: ["reader"] } }, sub: `fresh-reviewer-${suffix}` }) as any
+const freshReviewerDownload = await callTool("download_artifact", { workspace_id: workspace.id, artifact_id: durableArtifact.id }, { userId: user.id, claimsScope: "maff:read", resourceAccess: resourceAccess(["reader"]), sub: `fresh-reviewer-${suffix}` }) as any
 assert.match(freshReviewerDownload.uri, new RegExp(`/api/artifacts/${durableArtifact.id}/content`))
 assert.equal(freshReviewerDownload.sha256, originalHash)
 const workstreamWithArtifact = await runtime.getWorkstream(workspace.id, physicalWorkstream.id)
 assert.ok(workstreamWithArtifact.artifacts.some((candidate) => candidate.id === durableArtifact.id))
 assert.ok((await runtime.listArtifacts({ workspaceId: workspace.id, manuscriptVersionId: manuscriptVersion.id })).some((candidate) => candidate.id === durableArtifact.id))
 await assert.rejects(() => runtime.getArtifact(randomUUID(), durableArtifact.id), /not found/i)
-await assert.rejects(() => callTool("get_artifact", { workspace_id: workspace.id, artifact_id: durableArtifact.id }, { userId: outsider.id, claimsScope: "maff:read", resourceAccess: { maff: { roles: ["reader"] } } }), /Workspace permission denied/)
+await assert.rejects(() => callTool("get_artifact", { workspace_id: workspace.id, artifact_id: durableArtifact.id }, { userId: outsider.id, claimsScope: "maff:read", resourceAccess: resourceAccess(["reader"]) }), /Workspace permission denied/)
 const metadataExport = await runtime.getResearchArtifactBundle(workspace.id, [physicalReport.id])
 assert.equal(metadataExport[0].physicalArtifacts[0].id, durableArtifact.id)
 const submittedPhysical = await runtime.submitReportForReview({ workspaceId: workspace.id, reportId: draftPhysicalSubmission.id })
