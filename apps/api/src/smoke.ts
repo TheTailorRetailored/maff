@@ -303,9 +303,16 @@ const compactReviewClaim = compactToolResult("claim_next_review", {
     project: { id: "p", slug: "proj", title: "Project", area: "math", statement: "Long statement", status: "active", coordinatorSummary: "Long summary" },
     workstream: { id: "ws", title: "review", kind: "literature_review", status: "needs_review", priority: 1, coordinatorRole: "LiteratureAgent", reportId: "r", instructions: "Long instructions" },
     report: { id: "r", title: "Report", status: "submitted", bodyMarkdown: "Very long body", linkedObjectRefs: ["a"], artifactRefs: [], uncertaintyNotes: [] },
+    review_assignment_policy: { review_type: "proof_integration", target_object_id: "mv" },
+    manuscript_inspection: { tool: "inspect_manuscript_build", build_id: "build", manuscript_version_id: "mv" },
     related_known_results: [{ id: "k1" }, { id: "k2" }]
   },
   agent_run: { id: "run", role: "HostileReviewer", status: "running", model: "gpt", sessionId: "sess", startedAt: "now" },
+  review_assignment: {
+    assignment: { id: "ra", workstreamId: "ws", reviewerRunId: "run", reviewType: "proof_integration", targetObjectType: "ManuscriptVersion", targetObjectId: "mv", targetHash: "hash", manuscriptVersionId: "mv", independence: "author_disjoint", permittedArtifactIds: ["artifact"], status: "claimed", leaseExpiresAt: "later", tokenHash: "must-not-leak" },
+    submission_token: "one-use-token",
+    eligibility: { eligible: true, independence: "author_disjoint" }
+  },
   session_id: "sess"
 }) as Record<string, any>
 assert.equal(compactReviewClaim.assignment.report_id, "r")
@@ -314,6 +321,10 @@ assert.equal(compactReviewClaim.briefing.report.body_markdown, "Very long body")
 assert.deepEqual(compactReviewClaim.briefing.report.linked_object_refs, ["a"])
 assert.equal(compactReviewClaim.briefing.related_known_result_count, 2)
 assert.deepEqual(compactReviewClaim.briefing.related_known_results.map((item: any) => item.id), ["k1", "k2"])
+assert.equal(compactReviewClaim.briefing.manuscript_inspection.build_id, "build")
+assert.equal(compactReviewClaim.review_assignment.assignment.id, "ra")
+assert.equal(compactReviewClaim.review_assignment.submission_token, "one-use-token")
+assert.equal(compactReviewClaim.review_assignment.assignment.tokenHash, undefined)
 
 const compactReport = compactToolResult("get_report", {
   id: "r",

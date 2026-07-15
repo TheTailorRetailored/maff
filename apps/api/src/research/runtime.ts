@@ -807,6 +807,12 @@ export async function claimNextReview(input: { userId: string; workspaceRef?: st
   const manuscript = manuscriptGate && (readiness as any)?.canonical_manuscript?.id
     ? await prisma.manuscriptVersion.findFirst({ where: { workspaceId: workspace.id, id: (readiness as any).canonical_manuscript.id }, include: { physicalArtifacts: true } })
     : null
+  const paperBuild = manuscript
+    ? await prisma.paperBuild.findFirst({
+        where: { workspaceId: workspace.id, projectId: workstream.projectId, manuscriptVersionId: manuscript.id, status: "succeeded" },
+        orderBy: { completedAt: "desc" }
+      })
+    : null
   const targetObjectType = manuscript ? "ManuscriptVersion" : workstream.targetObjectType ?? (workstream.reports[0] ? "WorkstreamReport" : "Workstream")
   const targetObjectId = manuscript?.id ?? workstream.targetObjectId ?? workstream.reports[0]?.id ?? workstream.id
   const briefing = {
@@ -817,10 +823,21 @@ export async function claimNextReview(input: { userId: string; workspaceRef?: st
     forbidden_actions: [
       "Do not edit the report or reviewed mathematical objects.",
       "Do not approve your own work from the same AgentRun.",
-      "Do not approve a physical-output claim until get_artifact/verify_artifact and download_artifact or archive retrieval resolve the exact bytes.",
+      "Do not infer mathematical approval from artifact hashes or compilation alone. Read the complete assigned manuscript through inspect_manuscript_build.",
       "Do not complete the Workstream directly."
     ],
     review_assignment_policy: { review_type: reviewType, target_object_type: targetObjectType, target_object_id: targetObjectId, prior_approvals_hidden_initially: true, independence_computed_by_server: true },
+    manuscript_inspection: paperBuild ? {
+      tool: "inspect_manuscript_build",
+      build_id: paperBuild.id,
+      manuscript_version_id: manuscript?.id,
+      instruction: "Read normalized_manuscript_markdown and, where relevant, generated TeX and bibliography before recording the verdict. No file download or surfacing is required."
+    } : manuscript ? {
+      tool: "inspect_manuscript_build",
+      build_id: null,
+      manuscript_version_id: manuscript.id,
+      instruction: "No successful exact PaperBuild is available. Do not perform a hash-only review; return the manuscript to PaperWriter for build repair."
+    } : null,
     workflow_circuit_breaker_bypass: remediationWorkstream?.id === workstream.id ? { active: true, reason: "Explicit exact-candidate remediation review", scope: reviewType } : null,
     output_contract: {
       required_sections: ["Verdict", "Major issues", "Required changes", "Checked references", "Attack categories", "Evidence"],
@@ -846,7 +863,24 @@ export async function claimNextReview(input: { userId: string; workspaceRef?: st
         updatedObjectRefs: []
       }
     })
-    locked = agentRun ? await createReviewAssignment({ workspaceId: workspace.id, projectId: workstream.projectId, workstreamId: workstream.id, reviewerRunId: agentRun.id, reviewType, targetObjectType, targetObjectId, targetHash: manuscript?.contentHash, manuscriptVersionId: manuscript?.id, permittedArtifactIds: manuscript?.physicalArtifacts.map((link) => link.artifactId) ?? [], briefing, leaseExpiresAt }) : null
+    locked = agentRun ? await createReviewAssignment({
+      workspaceId: workspace.id,
+      projectId: workstream.projectId,
+      workstreamId: workstream.id,
+      reviewerRunId: agentRun.id,
+      reviewType,
+      targetObjectType,
+      targetObjectId,
+      targetHash: manuscript?.contentHash,
+      manuscriptVersionId: manuscript?.id,
+      permittedArtifactIds: [...new Set([
+        ...(manuscript?.physicalArtifacts.map((link) => link.artifactId) ?? []),
+        ...(paperBuild?.sourceArtifactId ? [paperBuild.sourceArtifactId] : []),
+        ...(paperBuild?.pdfArtifactId ? [paperBuild.pdfArtifactId] : [])
+      ])],
+      briefing,
+      leaseExpiresAt
+    }) : null
   } catch (error) {
     await prisma.$transaction(async (tx) => {
       if (agentRun) await tx.agentRun.deleteMany({ where: { id: agentRun.id, workspaceId: workspace.id } })

@@ -584,10 +584,34 @@ function compactBriefing(briefing: any) {
     forbidden_actions: briefing.forbidden_actions,
     success_criteria: briefing.success_criteria,
     output_contract: briefing.output_contract,
+    review_assignment_policy: briefing.review_assignment_policy,
+    manuscript_inspection: briefing.manuscript_inspection,
     execution_start_rule: briefing.execution_start_rule,
     completion_options: briefing.completion_options,
     related_known_result_count: Array.isArray(briefing.related_known_results) ? briefing.related_known_results.length : undefined,
     related_known_results: Array.isArray(briefing.related_known_results) ? takeList(briefing.related_known_results, 8, compactResearchObject) : undefined
+  }
+}
+
+function compactReviewAssignment(value: any) {
+  if (!value?.assignment) return value
+  return {
+    assignment: {
+      id: value.assignment.id,
+      workstream_id: value.assignment.workstreamId,
+      reviewer_run_id: value.assignment.reviewerRunId,
+      review_type: value.assignment.reviewType,
+      target_object_type: value.assignment.targetObjectType,
+      target_object_id: value.assignment.targetObjectId,
+      target_hash: value.assignment.targetHash,
+      manuscript_version_id: value.assignment.manuscriptVersionId,
+      independence: value.assignment.independence,
+      permitted_artifact_ids: value.assignment.permittedArtifactIds,
+      status: value.assignment.status,
+      lease_expires_at: value.assignment.leaseExpiresAt
+    },
+    submission_token: value.submission_token,
+    eligibility: value.eligibility
   }
 }
 
@@ -819,6 +843,7 @@ function compactClaimResponse(value: any) {
     assignment: compactWorkstream(value.assignment),
     briefing: compactBriefing(value.briefing),
     agent_run: compactAgentRun(value.agent_run),
+    review_assignment: compactReviewAssignment(value.review_assignment),
     session_id: value.session_id,
     prompt_to_agent: value.prompt_to_agent,
     message: value.message ?? undefined,
