@@ -85,7 +85,7 @@ const tool = (name: string, description: string, role: WorkspaceRole, inputSchem
   annotations: { readOnlyHint: readOnlyToolNames.has(name), openWorldHint: false, destructiveHint: false, idempotentHint: idempotentToolNames.has(name) },
   meta
 })
-export const mcpServerVersion = "1.5.0-source-preserving"
+export const mcpServerVersion = "1.5.1-biber-validated"
 export const expectedMcpToolCount = 108
 
 export const toolDefinitions: ToolDef[] = [

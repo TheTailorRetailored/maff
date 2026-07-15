@@ -8,7 +8,7 @@ import { leanClient } from "../lean/leanClient.js"
 import { requireWorkspaceRole } from "../auth/permissions.js"
 import { computeSubmissionReadiness, normalizedObligationCheckStatus, workstreamDependenciesSatisfied } from "./readiness.js"
 import { inferMimeType, ingestFile, ingestRemoteFile, listZipEntries, readZipEntryBytes, storagePath, verifyStoredFile } from "../artifacts/storage.js"
-import { analyzeProjectImport, beginProjectImport, beginRepairFromAudit, commitProjectImport, createPublicationPackage, createReviewAssignment, ensureProjectActionable, recordObjectAccess, recordObjectContribution, runProjectGraphAudit, submitRunOutcome, triageExternalReview, validateReviewAssignment, validateReviewEvidence } from "./integrity.js"
+import { analyzeProjectImport, beginProjectImport, beginRepairFromAudit, commitProjectImport, createPublicationPackage, createReviewAssignment, ensureProjectActionable, recordObjectAccess, recordObjectContribution, retireResolvedGapWorkstreams, runProjectGraphAudit, submitRunOutcome, triageExternalReview, validateReviewAssignment, validateReviewEvidence } from "./integrity.js"
 import { citationKey, executePaperBuild, executeSourcePreservingBuild, inspectPaperBuild, renderPaper } from "./paperBuilder.js"
 
 export { analyzeProjectImport, beginProjectImport, beginRepairFromAudit, commitProjectImport, createPublicationPackage, ensureProjectActionable, recordObjectAccess, recordObjectContribution, runProjectGraphAudit, submitRunOutcome, triageExternalReview }
@@ -624,6 +624,7 @@ export async function claimNextAssignment(input: {
   const role = asAgentRole(input.role)
   const kind = asWorkstreamKind(input.kind)
   const project = await resolveProject(workspace.id, input.project)
+  await retireResolvedGapWorkstreams(workspace.id, project?.id)
   const filters = workstreamWhereForRole(role, kind)
 
   // "Continue" in the owning chat must resume the durable run instead of
@@ -746,6 +747,7 @@ export async function claimNextReview(input: { userId: string; workspaceRef?: st
   await requireWorkspaceRole(input.userId, workspace.id, "editor")
   const sessionId = input.sessionId ?? `maff-${randomUUID()}`
   const project = await resolveProject(workspace.id, input.project)
+  await retireResolvedGapWorkstreams(workspace.id, project?.id)
   const readiness = project ? await computeSubmissionReadiness(workspace.id, project.id) : null
   const foundReviewCandidates = await prisma.workstream.findMany({
     where: { workspaceId: workspace.id, projectId: project?.id, status: "needs_review" },

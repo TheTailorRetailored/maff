@@ -13,6 +13,29 @@ export const PAPER_BUILDER_VERSION = "1.0.0-tectonic"
 const run = promisify(execFile)
 const sha256 = (value: string | Buffer) => createHash("sha256").update(value).digest("hex")
 const strings = (value: unknown): string[] => Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : []
+const generatedLatexExtensions = [".aux", ".bbl", ".bcf", ".blg", ".fdb_latexmk", ".fls", ".log", ".out", ".run.xml", ".synctex.gz", ".toc"]
+
+export function sourcePreservingCompilationFiles(files: Record<string, Buffer>) {
+  return Object.fromEntries(Object.entries(files).filter(([name]) => {
+    const lower = name.replace(/\\/g, "/").toLowerCase()
+    if (lower === "latexmkrc" || lower === ".latexmkrc" || lower.startsWith("build/")) return false
+    return !generatedLatexExtensions.some((extension) => lower.endsWith(extension)) && lower !== "main.pdf" && lower !== "build-manifest.json"
+  }))
+}
+
+export function validateSourcePreservingBuildLog(log: string) {
+  const failures: Array<[RegExp, string]> = [
+    [/LaTeX Warning: (?:Citation|Reference) .+ undefined/i, "unresolved citation or reference"],
+    [/LaTeX Warning: There were undefined (?:citations|references)/i, "unresolved citations or references"],
+    [/LaTeX Warning: Empty bibliography/i, "empty bibliography"],
+    [/Package biblatex Warning: Empty bibliography/i, "empty bibliography"],
+    [/Package biblatex Warning: Please \(re\)run Biber/i, "Biber rerun required"],
+    [/(?:incompatible|wrong) .*\.bbl|\.bbl.*(?:incompatible|wrong format)/i, "incompatible bibliography output"]
+  ]
+  const found = failures.filter(([pattern]) => pattern.test(log)).map(([, description]) => description)
+  if (found.length) throw new Error(`Source-preserving build final-log validation failed: ${[...new Set(found)].join(", ")}.`)
+  return { ok: true }
+}
 
 function escapeLatexText(value: string) {
   return value.replace(/([#$%&_{}])/g, "\\$1").replace(/~/g, "\\textasciitilde{}").replace(/\^/g, "\\textasciicircum{}")
@@ -200,7 +223,7 @@ export async function executeSourcePreservingBuild(input: { workspaceId: string;
   if (safeEntries.length !== Object.keys(input.files).length || !input.files["main.tex"] || !input.files["references.bib"]) throw new Error("Source-preserving builds require safe archive paths with root main.tex and references.bib.")
   const sourceInputs = safeEntries.filter(([name]) => !["main.pdf", "main.log", "build-manifest.json"].includes(name)).sort(([a], [b]) => a.localeCompare(b))
   const sourceHash = sha256(Buffer.concat(sourceInputs.flatMap(([name, bytes]) => [Buffer.from(`${name}\0${bytes.length}\0`), bytes])))
-  const builderVersion = "1.1.0-source-preserving"
+  const builderVersion = "1.1.1-biber-validated"
   const existing = await prisma.paperBuild.findUnique({ where: { manuscriptVersionId_builderVersion_sourceHash: { manuscriptVersionId: input.manuscriptVersionId, builderVersion, sourceHash } } })
   if (existing?.status === "succeeded") return existing
   const build = existing
@@ -208,7 +231,9 @@ export async function executeSourcePreservingBuild(input: { workspaceId: string;
     : await prisma.paperBuild.create({ data: { workspaceId: input.workspaceId, projectId: input.projectId, manuscriptVersionId: input.manuscriptVersionId, status: "running", builderVersion, sourceHash, buildManifest: input.manifest as Prisma.InputJsonValue } })
   const temp = await mkdtemp(path.join(os.tmpdir(), "maff-source-successor-"))
   try {
-    for (const [name, bytes] of safeEntries) {
+    const compilationFiles = sourcePreservingCompilationFiles(Object.fromEntries(safeEntries))
+    const ignoredCompilationInputs = safeEntries.map(([name]) => name).filter((name) => !Object.hasOwn(compilationFiles, name))
+    for (const [name, bytes] of Object.entries(compilationFiles)) {
       const destination = path.join(temp, ...name.split("/"))
       await mkdir(path.dirname(destination), { recursive: true })
       await writeFile(destination, bytes)
@@ -217,15 +242,25 @@ export async function executeSourcePreservingBuild(input: { workspaceId: string;
     await mkdir(output)
     let stdout = "", stderr = ""
     try {
-      const result = await run(process.env.LATEXMK_BIN ?? "latexmk", ["-pdf", "-interaction=nonstopmode", "-halt-on-error", `-outdir=${output}`, path.join(temp, "main.tex")], { cwd: temp, timeout: 240_000, maxBuffer: 16 * 1024 * 1024, env: { ...process.env, XDG_CACHE_HOME: process.env.XDG_CACHE_HOME ?? "/data/tectonic-cache" } })
+      const result = await run(process.env.LATEXMK_BIN ?? "latexmk", ["-norc", "-pdf", "-interaction=nonstopmode", "-halt-on-error", `-outdir=${output}`, path.join(temp, "main.tex")], { cwd: temp, timeout: 240_000, maxBuffer: 16 * 1024 * 1024, env: { ...process.env, XDG_CACHE_HOME: process.env.XDG_CACHE_HOME ?? "/data/tectonic-cache" } })
       stdout = result.stdout; stderr = result.stderr
     } catch (error: any) {
       stdout = String(error?.stdout ?? ""); stderr = String(error?.stderr ?? error?.message ?? error)
       await prisma.paperBuild.update({ where: { id: build.id }, data: { status: "failed", logText: `${stdout}\n${stderr}`.trim(), completedAt: new Date() } })
       throw new Error(`Source-preserving PaperBuilder compilation failed under latexmk. Inspect build ${build.id}; no file was surfaced to the user.`)
     }
-    const pdf = await readFile(path.join(output, "main.pdf"))
-    const completeManifest = { ...input.manifest, builder_version: builderVersion, source_hash: sourceHash, manuscript_version_id: input.manuscriptVersionId }
+    let finalLog = ""
+    let pdf: Buffer
+    try {
+      finalLog = await readFile(path.join(output, "main.log"), "utf8")
+      validateSourcePreservingBuildLog(finalLog)
+      pdf = await readFile(path.join(output, "main.pdf"))
+    } catch (error: any) {
+      const failure = String(error?.message ?? error)
+      await prisma.paperBuild.update({ where: { id: build.id }, data: { status: "failed", logText: `${finalLog}\n${failure}`.trim(), completedAt: new Date() } })
+      throw new Error(`Source-preserving PaperBuilder final-output validation failed. Inspect build ${build.id}; no file was surfaced to the user.`)
+    }
+    const completeManifest = { ...input.manifest, builder_version: builderVersion, source_hash: sourceHash, manuscript_version_id: input.manuscriptVersionId, ignored_compilation_inputs: ignoredCompilationInputs }
     const bundledFiles = { ...input.files, "main.pdf": pdf, "build-manifest.json": Buffer.from(`${JSON.stringify(completeManifest, null, 2)}\n`) }
     const sourceZip = await zipSourceBuffers(bundledFiles)
     const sourceArtifact = await createManagedArtifact({ ...input, title: "PaperBuilder source-preserving successor bundle", filename: "manuscript-source.zip", kind: "latex", bytes: sourceZip, metadata: { role: "source_bundle", required_files: ["main.tex", "references.bib", "build-manifest.json"], paper_build_id: build.id, source_preserving: true } })
@@ -233,7 +268,7 @@ export async function executeSourcePreservingBuild(input: { workspaceId: string;
     await prisma.$transaction([
       prisma.artifactManuscriptVersion.upsert({ where: { artifactId_manuscriptVersionId_role: { artifactId: sourceArtifact.id, manuscriptVersionId: input.manuscriptVersionId, role: "source_bundle" } }, create: { workspaceId: input.workspaceId, artifactId: sourceArtifact.id, manuscriptVersionId: input.manuscriptVersionId, role: "source_bundle" }, update: {} }),
       prisma.artifactManuscriptVersion.upsert({ where: { artifactId_manuscriptVersionId_role: { artifactId: pdfArtifact.id, manuscriptVersionId: input.manuscriptVersionId, role: "compiled_pdf" } }, create: { workspaceId: input.workspaceId, artifactId: pdfArtifact.id, manuscriptVersionId: input.manuscriptVersionId, role: "compiled_pdf" }, update: {} }),
-      prisma.paperBuild.update({ where: { id: build.id }, data: { status: "succeeded", sourceArtifactId: sourceArtifact.id, pdfArtifactId: pdfArtifact.id, buildManifest: completeManifest as Prisma.InputJsonValue, logText: `${stdout}\n${stderr}`.trim(), completedAt: new Date() } })
+      prisma.paperBuild.update({ where: { id: build.id }, data: { status: "succeeded", sourceArtifactId: sourceArtifact.id, pdfArtifactId: pdfArtifact.id, buildManifest: completeManifest as Prisma.InputJsonValue, logText: finalLog, completedAt: new Date() } })
     ])
     return prisma.paperBuild.findUniqueOrThrow({ where: { id: build.id } })
   } finally {

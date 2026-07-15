@@ -12,11 +12,24 @@ import { advertisedScopes, hasBearerAuthorization, hasPermission, rolesForClient
 import { callTool, compactToolResult, contentResult, expectedMcpToolCount, formatResearchArtifact, mcpAuthorizationMatrix, mcpServerVersion, mcpToolsListResult, structuredContentForTool, toolDefinitions } from "./mcp/server.js"
 import { normalizedObligationCheckStatus, reviewEvidenceMatch } from "./research/readiness.js"
 import { validateReviewEvidence } from "./research/integrity.js"
+import { sourcePreservingCompilationFiles, validateSourcePreservingBuildLog } from "./research/paperBuilder.js"
 
 const root = path.resolve("tmp-workspace")
 assert.equal(assertInsideRoot(root, path.join(root, "vault", "A.md")), path.resolve(root, "vault", "A.md"))
 assert.throws(() => assertInsideRoot(root, path.resolve(root, "..", "escape.md")), /escapes/)
 assert.deepEqual(extractWikilinks("See [[Problem - A]] and [[Lemma|alias]]."), ["Problem - A", "Lemma"])
+
+const cleanCompilationFiles = sourcePreservingCompilationFiles({
+  "main.tex": Buffer.from("tex"),
+  "references.bib": Buffer.from("bib"),
+  "figure.pdf": Buffer.from("figure"),
+  "main.bbl": Buffer.from("stale"),
+  "latexmkrc": Buffer.from("$bibtex = 'bibtex'"),
+  "build/main.aux": Buffer.from("stale")
+})
+assert.deepEqual(Object.keys(cleanCompilationFiles).sort(), ["figure.pdf", "main.tex", "references.bib"])
+assert.deepEqual(validateSourcePreservingBuildLog("Output written on main.pdf."), { ok: true })
+assert.throws(() => validateSourcePreservingBuildLog("Package biblatex Warning: Empty bibliography.\nPackage biblatex Warning: Please (re)run Biber on the file"), /empty bibliography, Biber rerun required/)
 
 const markdown = dumpMarkdown(
   { id: "claim-demo", type: "Claim", depends_on: ["[[Definition - Demo]]"], title: "Demo claim" },
@@ -144,7 +157,7 @@ for (const prop of ["report_id", "workstream_id"]) {
   assert.ok(submitReportProps[prop], `submit_report_for_review schema must advertise ${prop}`)
 }
 
-assert.equal(mcpServerVersion, "1.5.0-source-preserving")
+assert.equal(mcpServerVersion, "1.5.1-biber-validated")
 assert.equal(normalizedObligationCheckStatus("passed"), "preserved")
 assert.equal(normalizedObligationCheckStatus("preserved"), "preserved")
 assert.equal(normalizedObligationCheckStatus("failed"), "failed")

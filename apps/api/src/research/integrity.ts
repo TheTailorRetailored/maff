@@ -12,6 +12,24 @@ const object = (value: unknown): Record<string, any> => value && typeof value ==
 const hash = (value: unknown) => createHash("sha256").update(typeof value === "string" ? value : JSON.stringify(value)).digest("hex")
 const slugify = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 60) || `import-${randomUUID().slice(0, 8)}`
 
+export async function retireResolvedGapWorkstreams(workspaceId: string, projectId?: string) {
+  const resolvedGaps = await prisma.gap.findMany({ where: { workspaceId, projectId, status: "resolved" }, select: { id: true } })
+  const targetIds = resolvedGaps.map((gap) => gap.id)
+  if (!targetIds.length) return { count: 0, workstream_ids: [] as string[] }
+  const stale = await prisma.workstream.findMany({
+    where: { workspaceId, projectId, targetObjectType: "Gap", targetObjectId: { in: targetIds }, status: { notIn: ["completed", "approved", "abandoned"] } },
+    select: { id: true }
+  })
+  const workstreamIds = stale.map((workstream) => workstream.id)
+  if (!workstreamIds.length) return { count: 0, workstream_ids: [] as string[] }
+  await prisma.$transaction([
+    prisma.reviewAssignment.updateMany({ where: { workspaceId, workstreamId: { in: workstreamIds }, status: "claimed" }, data: { status: "cancelled" } }),
+    prisma.agentRun.updateMany({ where: { workspaceId, workstreamId: { in: workstreamIds }, status: { in: ["started", "running"] } }, data: { status: "cancelled", finishedAt: new Date(), outputSummary: "Target Gap was already resolved; stale assignment retired automatically." } }),
+    prisma.workstream.updateMany({ where: { workspaceId, id: { in: workstreamIds } }, data: { status: "abandoned", claimedSessionId: null, assignedToUserId: null, leaseExpiresAt: null, completedAt: new Date(), escalationMessage: "Automatically retired because the target Gap is already resolved. Historical reports and reviews remain preserved." } })
+  ])
+  return { count: workstreamIds.length, workstream_ids: workstreamIds }
+}
+
 export async function recordObjectContribution(input: { workspaceId: string; projectId: string; agentRunId: string; objectType: string; objectId: string; versionHash?: string; type: string; metadata?: unknown }) {
   if (!constructive.has(input.type) && !["read", "reviewed", "triaged", "approved_for_stage"].includes(input.type)) throw new Error(`Invalid contribution type: ${input.type}`)
   const run = await prisma.agentRun.findFirstOrThrow({ where: { workspaceId: input.workspaceId, projectId: input.projectId, id: input.agentRunId } })
@@ -89,6 +107,7 @@ function recommendedRoleFor(action: Record<string, any>, fallback: AgentRole): A
 }
 
 export async function ensureProjectActionable(workspaceId: string, projectId: string, createIfMissing = true, suggestedAction?: Record<string, any>, excludeWorkstreamId?: string) {
+  await retireResolvedGapWorkstreams(workspaceId, projectId)
   const project = await prisma.project.findFirstOrThrow({ where: { workspaceId, id: projectId } })
   if (["completed", "terminated", "archived", "paused"].includes(project.status)) return { state: "terminal_or_paused", actionable: false, project_status: project.status }
   const workstreamScope = { workspaceId, projectId, ...(excludeWorkstreamId ? { id: { not: excludeWorkstreamId } } : {}) }
