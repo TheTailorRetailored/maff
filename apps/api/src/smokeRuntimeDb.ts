@@ -272,7 +272,7 @@ assert.ok(archive.entries.some((entry) => entry.path === "main.tex"))
 assert.ok(archive.entries.some((entry) => entry.path === "main.pdf"))
 const exactStored = await runtime.getArtifactStorageFile(workspace.id, durableArtifact.id)
 assert.deepEqual(await readFile(exactStored.file), originalBytes)
-const freshReviewerDownload = await callTool("download_artifact", { workspace_id: workspace.id, artifact_id: durableArtifact.id }, { userId: user.id, claimsScope: "maff:read", resourceAccess: resourceAccess(["reader"]), sub: `fresh-reviewer-${suffix}` }) as any
+const freshReviewerDownload = await runtime.downloadArtifactReference(workspace.id, durableArtifact.id)
 assert.match(freshReviewerDownload.uri, new RegExp(`/api/artifacts/${durableArtifact.id}/content`))
 assert.equal(freshReviewerDownload.sha256, originalHash)
 const workstreamWithArtifact = await runtime.getWorkstream(workspace.id, physicalWorkstream.id)
