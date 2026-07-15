@@ -150,6 +150,14 @@ assert.ok(controlRoom.workstreams_by_status.completed?.some((item) => item.id ==
   const developmentReadiness = await runtime.computeProjectSubmissionReadiness(workspace.id, project.id)
   assert.equal(developmentReadiness.release_assessment_active, false, "canonical manuscript development must not activate final review machinery")
   assert.equal(developmentReadiness.next_required_action, null)
+  const explicitIntegratedReview = await runtime.createWorkstream({ workspaceId: workspace.id, projectId: project.id, goalId: goal.id, title: "Explicit integrated manuscript report", kind: "paper_synthesis", instructions: "Submit one explicit exact-version report for independent review.", coordinatorRole: "PaperWriter", targetObjectType: "ManuscriptVersion", targetObjectId: manuscriptVersion.id, reviewPolicy: { min_approved_rounds: 1, review_type: "proof_integration" } })
+  const explicitIntegratedReport = await runtime.createOrUpdateWorkstreamReport({ workspaceId: workspace.id, workstreamId: explicitIntegratedReview.id, title: "Explicit RC integration report", bodyMarkdown: "The exact integrated manuscript is explicitly submitted for review." })
+  await runtime.submitReportForReview({ workspaceId: workspace.id, reportId: explicitIntegratedReport.id })
+  const explicitIntegratedClaim = await runtime.claimNextReview({ userId: user.id, workspaceRef: workspace.id, project: project.id, sessionId: `explicit-integrated-review-${suffix}`, model: "smoke" })
+  assert.equal(explicitIntegratedClaim.assignment?.id, explicitIntegratedReview.id, "an explicit submitted manuscript report must remain claimable before submission-candidate activation")
+  await prisma.reviewAssignment.update({ where: { id: explicitIntegratedClaim.review_assignment.assignment.id }, data: { status: "cancelled" } })
+  await prisma.agentRun.update({ where: { id: explicitIntegratedClaim.agent_run.id }, data: { status: "cancelled", finishedAt: new Date() } })
+  await prisma.workstream.update({ where: { id: explicitIntegratedReview.id }, data: { status: "abandoned", claimedSessionId: null, assignedToUserId: null, leaseExpiresAt: null } })
   await runtime.setManuscriptLifecycle({ workspaceId: workspace.id, manuscriptVersionId: manuscriptVersion.id, stage: "submission_candidate", loadBearingObligationIds: [obligation.id] })
   await assert.rejects(
     () => runtime.recordReviewRound({ workspaceId: workspace.id, workstreamId: workstream.id, verdict: "approved", reviewType: "proof_integration", targetVersion: manuscriptVersion.id, bodyMarkdown: "A direct typed approval must not count.", issues: [], requiredChanges: [], checkedRefs: [sourceA.id] }),

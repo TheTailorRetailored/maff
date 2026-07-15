@@ -761,7 +761,8 @@ export async function claimNextReview(input: { userId: string; workspaceRef?: st
     if (obsoleteCompileReviewIds.includes(candidate.id)) return false
     const policy = jsonObject(candidate.reviewPolicy) as any
     const finalGate = ["proof_integration", "end_to_end_mathematical", "novelty", "bibliography", "editorial", "source_fidelity", "compile"].includes(String(policy.review_type))
-    return !finalGate || candidate.targetObjectType !== "ManuscriptVersion" || releaseAssessmentActive
+    const hasSubmittedReport = candidate.reports.some((report) => report.status === "submitted")
+    return !finalGate || candidate.targetObjectType !== "ManuscriptVersion" || releaseAssessmentActive || hasSubmittedReport
   })
   const canonicalTargetId = (readiness as any)?.canonical_manuscript?.id as string | undefined
   const requiredGates = new Set(["proof_integration", "end_to_end_mathematical", "novelty", "bibliography", "editorial", "source_fidelity", "compile"])
