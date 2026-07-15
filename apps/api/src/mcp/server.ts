@@ -85,13 +85,13 @@ const tool = (name: string, description: string, role: WorkspaceRole, inputSchem
   annotations: { readOnlyHint: readOnlyToolNames.has(name), openWorldHint: false, destructiveHint: false, idempotentHint: idempotentToolNames.has(name) },
   meta
 })
-export const mcpServerVersion = "1.3.2-adverse-review-sequencing"
+export const mcpServerVersion = "1.3.3-execute-after-claim"
 export const expectedMcpToolCount = 112
 
 export const toolDefinitions: ToolDef[] = [
   tool("get_my_maff_context", "Recover where the user is up to. Infers the user's workspace, summarizes active projects, ready assignments, reports needing review, and suggested simple chat prompts.", "viewer", objectSchema({ workspace: s, project: s })),
-  tool("claim_next_assignment", "No-id specialist entrypoint. Infers workspace and project, claims the next ready assignment by natural project name and optional role/kind, starts an AgentRun by default, and returns the briefing.", "editor", objectSchema({ workspace: s, project: s, role: s, kind: s, session_id: s, model: s, lease_minutes: n, start_run: { type: "boolean" } })),
-  tool("claim_next_review", "No-id reviewer entrypoint. Infers workspace and project, atomically claims the next report needing review, starts its HostileReviewer AgentRun, and returns the locked assignment and review-only briefing.", "editor", objectSchema({ workspace: s, project: s, session_id: s, model: s, lease_minutes: n })),
+  tool("claim_next_assignment", "No-id specialist entrypoint. Infers workspace and project, claims and starts the next assignment, and returns a briefing that must be executed immediately in the same turn. Claiming or announcing future work is not a deliverable.", "editor", objectSchema({ workspace: s, project: s, role: s, kind: s, session_id: s, model: s, lease_minutes: n, start_run: { type: "boolean" } })),
+  tool("claim_next_review", "No-id reviewer entrypoint. Atomically claims and starts the next locked review. The returned review must be executed in the same turn; claiming it or announcing future review work is not a deliverable.", "editor", objectSchema({ workspace: s, project: s, session_id: s, model: s, lease_minutes: n })),
 
   tool("list_workspaces", "List workspaces visible to the authenticated user.", "viewer", objectSchema({})),
   tool("create_project", "Create a Maff research project. Projects coordinate approved goals and workstreams.", "editor", objectSchema({ workspace_id: s, title: s, area: s, statement: s, slug: s }, ["workspace_id", "title", "statement"])),
@@ -591,6 +591,7 @@ function compactBriefing(briefing: any) {
     forbidden_actions: briefing.forbidden_actions,
     success_criteria: briefing.success_criteria,
     output_contract: briefing.output_contract,
+    execution_start_rule: briefing.execution_start_rule,
     completion_options: briefing.completion_options,
     related_known_result_count: Array.isArray(briefing.related_known_results) ? briefing.related_known_results.length : undefined,
     related_known_results: Array.isArray(briefing.related_known_results) ? takeList(briefing.related_known_results, 8, compactResearchObject) : undefined

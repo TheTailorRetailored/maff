@@ -528,6 +528,7 @@ export async function getAgentBriefing(workspaceId: string, workstreamId: string
     forbidden_actions: normalizeLines(workstream.forbiddenActions),
     success_criteria: normalizeLines(workstream.successCriteria),
     output_contract: outputContract(role),
+    execution_start_rule: "A claimed AgentRun is active work, not a handoff. Begin substantive tool use immediately in this turn. Do not end after saying what you will do. Before yielding, either submit the required durable output and run outcome, or record a concrete blocker and leave an explicit recoverable state.",
     mandatory_handoff: { tool: "submit_run_outcome", required_fields: ["completed_work", "changed_objects", "evidence_generated", "checks_performed", "problems_encountered", "unresolved_uncertainty", "gaps_created", "gaps_resolved", "next_action"], rule: "An active project may not be left without runnable work, an explicit waiting condition, or a terminal justification. The server decides whether the next step can remain in this chat." },
     durable_artifact_policy: "A container-local path is ephemeral. A physical result is not registered until its bytes have been ingested into durable Maff storage and successfully retrieved in a fresh-session preflight.",
     completion_options: ["submit_workstream_report", "mark_workstream_blocked", "escalate_workstream", "submit_run_outcome"]
@@ -623,6 +624,70 @@ export async function claimNextAssignment(input: {
   const kind = asWorkstreamKind(input.kind)
   const project = await resolveProject(workspace.id, input.project)
   const filters = workstreamWhereForRole(role, kind)
+
+  // "Continue" in the owning chat must resume the durable run instead of
+  // pretending that there is no assignment (or creating a duplicate run).
+  const activeOwnedWorkstream = await prisma.workstream.findFirst({
+    where: {
+      workspaceId: workspace.id,
+      projectId: project?.id,
+      claimedSessionId: sessionId,
+      status: { in: ["claimed", "running"] },
+      ...filters
+    },
+    include: {
+      project: true,
+      goal: true,
+      agentRuns: {
+        where: { sessionId, status: { in: ["started", "running"] } },
+        orderBy: { startedAt: "desc" },
+        take: 1
+      }
+    },
+    orderBy: [{ priority: "desc" }, { updatedAt: "asc" }]
+  })
+  if (activeOwnedWorkstream) {
+    const activeRun = activeOwnedWorkstream.agentRuns[0] ?? null
+    const briefing = activeRun?.inputBriefing ?? await getAgentBriefing(workspace.id, activeOwnedWorkstream.id)
+    return {
+      workspace,
+      project: activeOwnedWorkstream.project,
+      assignment: activeOwnedWorkstream,
+      briefing,
+      agent_run: activeRun,
+      session_id: sessionId,
+      resumed: true,
+      prompt_to_agent: "Resume this assignment now in the same turn. It is already claimed by this chat. Begin substantive tool use immediately; do not create a duplicate assignment or stop after describing future work. Continue until you submit the required durable output and run outcome or record a concrete blocker with recoverable state."
+    }
+  }
+
+  // An abandoned authoring run must not permanently hide the project's next
+  // action. Expired non-review leases are safely returned to the ready queue;
+  // locked reviews use their separate token-preserving recovery path.
+  const expiredAuthoringWorkstream = await prisma.workstream.findFirst({
+    where: {
+      workspaceId: workspace.id,
+      projectId: project?.id,
+      status: { in: ["claimed", "running"] },
+      leaseExpiresAt: { lte: new Date() },
+      kind: { not: "hostile_review" },
+      coordinatorRole: { not: "HostileReviewer" },
+      ...filters
+    },
+    orderBy: [{ priority: "desc" }, { updatedAt: "asc" }]
+  })
+  if (expiredAuthoringWorkstream) {
+    await prisma.$transaction([
+      prisma.agentRun.updateMany({
+        where: { workstreamId: expiredAuthoringWorkstream.id, status: { in: ["started", "running"] } },
+        data: { status: "cancelled", finishedAt: new Date(), outputSummary: "Lease expired before a durable output or blocker was submitted; superseded by automatic recovery." }
+      }),
+      prisma.workstream.update({
+        where: { id: expiredAuthoringWorkstream.id },
+        data: { status: "ready", claimedSessionId: null, assignedToUserId: null, leaseExpiresAt: null }
+      })
+    ])
+  }
   const workstream = await prisma.workstream.findFirst({
     where: {
       workspaceId: workspace.id,
@@ -670,7 +735,7 @@ export async function claimNextAssignment(input: {
     briefing: agentRun?.briefing ?? claimed.briefing,
     agent_run: agentRun?.agentRun ?? null,
     session_id: sessionId,
-    prompt_to_agent: "Follow the returned briefing. Create only allowed objects. Submit a WorkstreamReport for review. Do not complete the workstream or mark claims proved."
+    prompt_to_agent: "Execute this assignment now in the same turn. Claiming it or describing future work is not progress. Follow the briefing, create only allowed objects, and continue until you submit the required durable output and run outcome or record a concrete blocker with recoverable state. Do not complete the workstream or mark claims proved."
   }
 }
 
@@ -798,7 +863,7 @@ export async function claimNextReview(input: { userId: string; workspaceRef?: st
     agent_run: agentRun,
     review_assignment: locked,
     session_id: sessionId,
-    prompt_to_agent: "Review the submitted report only and create a ReviewRound. Do not edit the reviewed objects."
+    prompt_to_agent: "Execute this locked review now in the same turn. Claiming it or describing future review work is not progress. Inspect the exact assigned target, create the ReviewRound, and submit the run outcome before yielding; if impossible, record the concrete blocker without editing reviewed objects."
   }
 }
 

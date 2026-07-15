@@ -52,9 +52,16 @@ const context = await runtime.getMyMaffContext({ userId: user.id, project: "vert
 assert.equal(context.active_project?.id, project.id)
 assert.equal((await runtime.getMyMaffContext({ userId: user.id, project: "mvvs" })).active_project?.id, project.id, "unambiguous project acronyms should resolve without a handoff prompt")
 assert.equal(context.suggested_chat_prompts.same_chat, "continue")
-const ergonomicClaim = await runtime.claimNextAssignment({ userId: user.id, project: "vertical slice", role: "ProofRouteAgent", sessionId: `session-${suffix}`, model: "smoke" })
+const ergonomicClaim = await runtime.claimNextAssignment({ userId: user.id, project: "vertical slice", role: "ProofRouteAgent", sessionId: `session-${suffix}`, model: "smoke" }) as any
 assert.equal(ergonomicClaim.assignment?.id, workstream.id)
 assert.equal(ergonomicClaim.agent_run?.role, "ProofRouteAgent")
+assert.match(ergonomicClaim.prompt_to_agent, /Execute this assignment now in the same turn/)
+assert.match(ergonomicClaim.briefing?.execution_start_rule ?? "", /Begin substantive tool use immediately/)
+const resumedClaim = await runtime.claimNextAssignment({ userId: user.id, project: "vertical slice", role: "ProofRouteAgent", sessionId: `session-${suffix}`, model: "smoke" }) as any
+assert.equal(resumedClaim.resumed, true)
+assert.equal(resumedClaim.assignment?.id, workstream.id)
+assert.equal(resumedClaim.agent_run?.id, ergonomicClaim.agent_run?.id, "same-chat continue must resume the existing run")
+assert.match(resumedClaim.prompt_to_agent, /Resume this assignment now in the same turn/)
 await assert.rejects(() => runtime.claimAgentAssignment({ workspaceId: workspace.id, projectId: project.id, workstreamId: workstream.id, sessionId: `session-${suffix}-direct`, userId: user.id }), /already owned/i)
 
 const claim = await runtime.createClaim({ workspaceId: workspace.id, projectId: project.id, title: "Smoke claim", statementMarkdown: "Every smoke test has a review gate.", kind: "conjecture", actorRole: "ProofRouteAgent" })
