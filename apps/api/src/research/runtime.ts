@@ -2294,18 +2294,43 @@ export async function setManuscriptLifecycle(input: { workspaceId: string; manus
   if (invalid.length) throw new Error(`Load-bearing obligations must be required obligations on the exact candidate; invalid ids: ${invalid.join(", ")}.`)
   return prisma.$transaction(async (tx) => {
     if (version.lifecycleStage !== "submission_candidate") {
-      const staleFinalReviews = await tx.workstream.findMany({ where: { workspaceId: input.workspaceId, projectId: version.projectId, targetObjectType: "ManuscriptVersion", targetObjectId: version.id, coordinatorRole: "HostileReviewer", status: { in: ["needs_review", "claimed", "running", "blocked", "escalated", "revision_required"] } }, select: { id: true } })
-      const staleIds = staleFinalReviews.map((workstream) => workstream.id)
+      const activeStatuses = ["planned", "ready", "needs_review", "claimed", "running", "blocked", "escalated", "revision_required"] as const
+      const predecessorVersions = await tx.manuscriptVersion.findMany({ where: { workspaceId: input.workspaceId, projectId: version.projectId, id: { not: version.id } }, select: { id: true } })
+      const predecessorIds = predecessorVersions.map((candidate) => candidate.id)
+      const predecessorReviews = predecessorIds.length ? await tx.externalReviewImport.findMany({ where: { workspaceId: input.workspaceId, projectId: version.projectId, manuscriptVersionId: { in: predecessorIds }, triagedAt: { not: null } }, select: { id: true } }) : []
+      const predecessorReviewIds = new Set(predecessorReviews.map((review) => review.id))
+      const active = await tx.workstream.findMany({ where: { workspaceId: input.workspaceId, projectId: version.projectId, status: { in: [...activeStatuses] } }, include: { reports: { orderBy: { updatedAt: "desc" }, take: 1 } } })
+      const staleIds = active.filter((workstream) => {
+        if (workstream.targetObjectType === "ManuscriptVersion" && predecessorIds.includes(workstream.targetObjectId ?? "")) return true
+        if (workstream.targetObjectType === "ExternalReviewImport" && predecessorReviewIds.has(workstream.targetObjectId ?? "")) return true
+        const sameVersionUnsubmittedReview = workstream.targetObjectType === "ManuscriptVersion" && workstream.targetObjectId === version.id && workstream.coordinatorRole === "HostileReviewer" && !workstream.reports.some((report) => report.status === "submitted")
+        return sameVersionUnsubmittedReview
+      }).map((workstream) => workstream.id)
       if (staleIds.length) {
         await tx.reviewAssignment.updateMany({ where: { workspaceId: input.workspaceId, workstreamId: { in: staleIds }, status: "claimed" }, data: { status: "cancelled" } })
         await tx.agentRun.updateMany({ where: { workspaceId: input.workspaceId, workstreamId: { in: staleIds }, status: { in: ["started", "running", "submitted"] } }, data: { status: "cancelled", finishedAt: new Date() } })
-        await tx.workstream.updateMany({ where: { workspaceId: input.workspaceId, id: { in: staleIds } }, data: { status: "abandoned", claimedSessionId: null, assignedToUserId: null, leaseExpiresAt: null, escalationMessage: "Superseded by explicit submission-candidate activation; readiness will issue only the current exact-version gate." } })
+        await tx.workstream.updateMany({ where: { workspaceId: input.workspaceId, id: { in: staleIds } }, data: { status: "abandoned", claimedSessionId: null, assignedToUserId: null, leaseExpiresAt: null, escalationMessage: `Superseded by explicit submission-candidate activation of ManuscriptVersion ${version.id}; readiness will issue only current exact-version work.` } })
       }
     }
     await tx.proofObligation.updateMany({ where: { workspaceId: input.workspaceId, manuscriptVersionId: version.id }, data: { loadBearing: false } })
     await tx.proofObligation.updateMany({ where: { workspaceId: input.workspaceId, manuscriptVersionId: version.id, id: { in: selected } }, data: { loadBearing: true } })
     return tx.manuscriptVersion.update({ where: { id: version.id }, data: { lifecycleStage: "submission_candidate" } })
   })
+}
+
+export async function promoteManuscriptToSubmissionCandidate(input: { workspaceId: string; manuscriptVersionId: string; loadBearingObligationIds?: string[] }) {
+  const version = await prisma.manuscriptVersion.findFirstOrThrow({ where: { workspaceId: input.workspaceId, id: input.manuscriptVersionId }, include: { obligations: { include: { checks: { include: { reviewRound: true } } } } } })
+  const evidenceKeys = ["intermediate_arguments", "uniformity_or_domination", "endpoints_and_exceptional_cases", "normalizers_and_denominators", "notation_and_quantifiers", "external_theorem_applicability"]
+  const inferredIds = version.obligations.filter((obligation) => obligation.required && obligation.checks.some((check) => {
+    const evidence = jsonObject(check.completenessEvidence) as Record<string, unknown>
+    return check.status === "preserved" && check.expositionStatus === "journal_verifiable" && check.reviewRound.reviewType === "proof_integration" && check.reviewRound.verdict === "approved" && check.reviewRound.evidenceStatus === "assigned_valid" && check.reviewRound.targetVersion === version.id && evidenceKeys.every((key) => typeof evidence[key] === "string" && Boolean(String(evidence[key]).trim()))
+  })).map((obligation) => obligation.id)
+  const selected = input.loadBearingObligationIds?.length ? input.loadBearingObligationIds : inferredIds
+  if (!selected.length) throw new Error("No exact-version journal-verifiable proof evidence is available to infer the load-bearing set. Supply bounded load_bearing_obligation_ids after completing the manuscript-level assessment.")
+  const manuscript = await setManuscriptLifecycle({ workspaceId: input.workspaceId, manuscriptVersionId: version.id, stage: "submission_candidate", loadBearingObligationIds: selected })
+  const readiness = await computeSubmissionReadiness(input.workspaceId, version.projectId)
+  const retired = await prisma.workstream.findMany({ where: { workspaceId: input.workspaceId, projectId: version.projectId, status: "abandoned", escalationMessage: { contains: `submission-candidate activation of ManuscriptVersion ${version.id}` } }, select: { id: true, title: true, targetObjectType: true, targetObjectId: true } })
+  return { manuscript, inferred_load_bearing_obligation_ids: input.loadBearingObligationIds?.length ? [] : inferredIds, load_bearing_obligation_ids: selected, retired_predecessor_workstreams: retired, readiness }
 }
 
 export async function setManuscriptFreeze(input: { workspaceId: string; manuscriptVersionId: string; level: "lexical" | "interface" | "mathematical" }) {

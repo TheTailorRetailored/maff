@@ -120,7 +120,7 @@ for (const name of [
   assert.ok(toolDefinitions.some((tool) => tool.name === name), `missing MCP tool ${name}`)
 }
 
-for (const name of ["get_manuscript", "update_manuscript", "build_manuscript", "revise_manuscript_source", "inspect_manuscript_build", "publish_manuscript", "create_proof_obligation", "get_integration_coverage", "compute_submission_readiness", "set_manuscript_freeze", "import_external_review", "create_strategic_review", "get_project_health", "create_project_branch"]) {
+for (const name of ["get_manuscript", "update_manuscript", "build_manuscript", "revise_manuscript_source", "inspect_manuscript_build", "publish_manuscript", "create_proof_obligation", "get_integration_coverage", "compute_submission_readiness", "promote_manuscript_to_submission_candidate", "import_external_review", "create_strategic_review", "get_project_health", "create_project_branch"]) {
   assert.ok(toolDefinitions.some((tool) => tool.name === name), `missing modern MCP tool ${name}`)
 }
 assert.equal(toolDefinitions.length, expectedMcpToolCount, "MCP registry count changed; update the reviewed snapshot intentionally")
@@ -157,10 +157,10 @@ for (const prop of ["report_id", "workstream_id"]) {
   assert.ok(submitReportProps[prop], `submit_report_for_review schema must advertise ${prop}`)
 }
 
-assert.equal(mcpServerVersion, "1.6.0-submission-candidate")
-const lifecycleTool = toolDefinitions.find((tool) => tool.name === "set_manuscript_freeze")!
+assert.equal(mcpServerVersion, "1.6.1-submission-promotion")
+const lifecycleTool = toolDefinitions.find((tool) => tool.name === "promote_manuscript_to_submission_candidate")!
 const lifecycleProps = lifecycleTool.inputSchema.properties as Record<string, unknown>
-for (const prop of ["level", "lifecycle_stage", "load_bearing_obligation_ids"]) assert.ok(lifecycleProps[prop], `set_manuscript_freeze schema must advertise ${prop}`)
+for (const prop of ["manuscript_version_id", "load_bearing_obligation_ids"]) assert.ok(lifecycleProps[prop], `promote_manuscript_to_submission_candidate schema must advertise ${prop}`)
 const obligationTool = toolDefinitions.find((tool) => tool.name === "create_proof_obligation")!
 assert.ok((obligationTool.inputSchema.properties as Record<string, unknown>).load_bearing, "create_proof_obligation must advertise load_bearing")
 assert.equal(normalizedObligationCheckStatus("passed"), "preserved")
