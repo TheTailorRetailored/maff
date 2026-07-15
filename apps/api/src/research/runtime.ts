@@ -841,7 +841,7 @@ export async function claimNextReview(input: { userId: string; workspaceRef?: st
     workflow_circuit_breaker_bypass: remediationWorkstream?.id === workstream.id ? { active: true, reason: "Explicit exact-candidate remediation review", scope: reviewType } : null,
     output_contract: {
       required_sections: ["Verdict", "Major issues", "Required changes", "Checked references", "Attack categories", "Evidence"],
-      required_tool_calls: ["record_object_access", "submit_assigned_review", "submit_run_outcome"]
+      required_tool_calls: manuscript ? ["inspect_manuscript_build", "record_object_access", "record_review_round", "submit_run_outcome"] : ["record_review_round", "submit_run_outcome"]
     },
     completion_options: ["record_review_round"]
   }
