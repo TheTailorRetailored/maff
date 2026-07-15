@@ -2182,6 +2182,14 @@ export async function reviseManuscriptSource(input: { workspaceId: string; proje
   const manifest = { manuscript_content_hash: version.contentHash, parent_manuscript_version_id: parent.id, source_review_round_id: sourceReview.id, revision_class: input.revisionClass, changed_files: [...changedFiles], theorem_fingerprint_unchanged: version.theoremFingerprint === parent.theoremFingerprint, citation_fingerprint_unchanged: version.citationFingerprint === parent.citationFingerprint, proof_obligations_cloned: parent.obligations.length }
   const build = await executeSourcePreservingBuild({ workspaceId: input.workspaceId, projectId: input.projectId, manuscriptVersionId: version.id, workstreamId: run.workstreamId, agentRunId: run.id, files, manifest })
   await promoteManuscriptVersion({ workspaceId: input.workspaceId, manuscriptVersionId: version.id })
+  await prisma.workstream.update({
+    where: { id: run.workstreamId, workspaceId: input.workspaceId },
+    data: {
+      targetObjectType: "ManuscriptVersion",
+      targetObjectId: version.id,
+      reviewPolicy: { ...policy, target_object_type: "ManuscriptVersion", target_object_id: version.id } as Prisma.InputJsonValue
+    }
+  })
   await prisma.objectContribution.create({ data: { workspaceId: input.workspaceId, projectId: input.projectId, agentRunId: run.id, objectType: "PaperBuild", objectId: build.id, versionHash: build.sourceHash, type: "compiled", metadata: { manuscript_version_id: version.id, revision_class: input.revisionClass, parent_build_id: parentBuild.id } } })
   return { manuscript_version: await getManuscriptVersion(input.workspaceId, version.id), paper_build: build, revision: { class: input.revisionClass, parent_manuscript_version_id: parent.id, source_review_round_id: sourceReview.id, changed_files: [...changedFiles], mathematical_reviews_reopenable: input.revisionClass !== "editorial_only" }, surfaced_file: null }
 }
