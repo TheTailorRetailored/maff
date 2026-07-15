@@ -12,7 +12,7 @@ try {
   const proposed = await runtime.proposeProjectGoal({ workspaceId: workspace.id, projectId: project.id, title: "Build a paper", statement: "Materialize the structured manuscript.", successCriteria: ["Internal PDF builds"] })
   const goal = await runtime.approveProjectGoal({ workspaceId: workspace.id, goalId: proposed.id, userId: user.id })
   const workstream = await runtime.createWorkstream({ workspaceId: workspace.id, projectId: project.id, goalId: goal.id, title: "Write structured paper", kind: "paper_synthesis", instructions: "Use PaperBuilder." })
-  const claim = await runtime.createClaim({ workspaceId: workspace.id, projectId: project.id, title: "Identity", statementMarkdown: "For every $x$, $x=x$.", kind: "theorem", status: "candidate" })
+  const claim = await runtime.createClaim({ workspaceId: workspace.id, projectId: project.id, title: "Identity", statementMarkdown: "For every $x$, $x=x$.", kind: "theorem", status: "informal_proof_candidate" })
   const claimed = await runtime.claimAgentAssignment({ workspaceId: workspace.id, projectId: project.id, workstreamId: workstream.id, sessionId: `paper-builder-${suffix}`, userId: user.id })
   const run = await runtime.startAgentRun({ workspaceId: workspace.id, workstreamId: claimed.assignment.id, sessionId: `paper-builder-${suffix}`, model: "smoke" })
   await runtime.updateStructuredManuscript({
