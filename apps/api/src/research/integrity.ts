@@ -330,17 +330,43 @@ export async function triageExternalReview(input: { workspaceId: string; project
   if (review.triagedAt) throw new Error("External review has already been triaged.")
   const items = array(input.dispositions).map(object)
   if (!items.length) throw new Error("External-review triage requires explicit issue dispositions.")
+  const applicable = items.filter((candidate) => candidate.applicable !== false)
+  const grouped = new Map<string, Record<string, any>[]>()
+  for (const item of applicable) {
+    const key = String(item.group_key ?? item.group ?? item.title ?? item.issue ?? "external-review-finding").trim().toLowerCase()
+    grouped.set(key, [...(grouped.get(key) ?? []), item])
+  }
+  if (grouped.size > 5) throw new Error("External-review findings must be consolidated into at most five manuscript-level revision groups. Do not create one gap or workstream per comment.")
   const result = await prisma.$transaction(async (tx) => {
     const gaps = []
-    for (const item of items.filter((candidate) => candidate.applicable !== false)) {
-      const severity = ["minor", "major", "fatal"].includes(String(item.severity)) ? String(item.severity) : "major"
-      gaps.push(await tx.gap.create({ data: { workspaceId: input.workspaceId, projectId: input.projectId, title: String(item.title ?? item.issue ?? "External review finding"), descriptionMarkdown: String(item.description ?? item.issue ?? "External reviewer finding requires resolution."), severity: severity as any, status: "open", suggestedResolution: item.suggested_resolution ? String(item.suggested_resolution) : undefined, targetObjectType: String(item.target_object_type ?? (review.manuscriptVersionId ? "ManuscriptVersion" : "ExternalReviewImport")), targetObjectId: String(item.target_object_id ?? review.manuscriptVersionId ?? review.id), externalReviewId: review.id } }))
+    for (const entries of grouped.values()) {
+      const first = entries[0]
+      const severities = entries.map((item) => String(item.severity))
+      const severity = severities.includes("fatal") ? "fatal" : severities.includes("major") ? "major" : "minor"
+      const description = entries.map((item) => String(item.description ?? item.issue ?? "External reviewer finding requires resolution.")).join("\n\n")
+      const resolutions = entries.map((item) => item.suggested_resolution ? String(item.suggested_resolution) : "").filter(Boolean)
+      gaps.push(await tx.gap.create({ data: { workspaceId: input.workspaceId, projectId: input.projectId, title: String(first.title ?? first.group ?? first.issue ?? "External review revision group"), descriptionMarkdown: description, severity: severity as any, status: "assigned", suggestedResolution: resolutions.join("\n") || undefined, targetObjectType: String(first.target_object_type ?? (review.manuscriptVersionId ? "ManuscriptVersion" : "ExternalReviewImport")), targetObjectId: String(first.target_object_id ?? review.manuscriptVersionId ?? review.id), externalReviewId: review.id } }))
     }
     await tx.externalReviewImport.update({ where: { id: review.id }, data: { triagedAt: new Date() } })
-    return { external_review_id: review.id, created_gap_ids: gaps.map((gap) => gap.id), disposition_count: items.length }
+    const workstream = gaps.length ? await tx.workstream.create({ data: {
+      workspaceId: input.workspaceId,
+      projectId: input.projectId,
+      title: "Apply grouped external-review revisions to the submission candidate",
+      kind: "paper_synthesis",
+      coordinatorRole: "PaperWriter",
+      status: "ready",
+      priority: 110,
+      targetObjectType: review.manuscriptVersionId ? "ManuscriptVersion" : "ExternalReviewImport",
+      targetObjectId: review.manuscriptVersionId ?? review.id,
+      instructions: `Address the ${gaps.length} grouped revision frontier(s) from ExternalReviewImport ${review.id} in one bounded manuscript revision. Resolve or explicitly rebut each linked Gap. Do not launch a graph audit or split this into theorem-by-theorem workstreams.`,
+      allowedWrites: ["ManuscriptDocument", "ManuscriptSection", "ManuscriptVersion", "PaperBuild", "ProofObligation", "Gap", "WorkstreamReport", "RunOutcome"],
+      forbiddenActions: ["Do not rewrite unaffected proofs.", "Do not self-review the revised exact manuscript.", "Do not create audit-repair campaigns."],
+      successCriteria: ["All grouped findings are addressed or rebutted in one exact successor manuscript.", "The successor is built and its proof-obligation mappings are updated.", "The successor is explicitly returned to submission_candidate for one fresh independent exact-manuscript review."],
+      reviewPolicy: { min_approved_rounds: 0, review_type: "other", grouped_external_revision: true, source_external_review_id: review.id, gap_ids: gaps.map((gap) => gap.id) }
+    } }) : null
+    return { external_review_id: review.id, created_gap_ids: gaps.map((gap) => gap.id), grouped_revision_count: gaps.length, disposition_count: items.length, revision_workstream_id: workstream?.id ?? null }
   })
-  const frontier = await ensureProjectActionable(input.workspaceId, input.projectId, true)
-  return { ...result, frontier }
+  return { ...result, continuation: result.revision_workstream_id ? { mode: "fresh_chat", instruction: "Work on the next part of my Maff project." } : { mode: "same_chat", instruction: "continue" } }
 }
 
 export async function createPublicationPackage(input: { workspaceId: string; projectId: string; manuscriptVersionId: string; sourceArtifactId: string; pdfArtifactId: string; supplementaryArtifactIds?: string[]; buildManifest: unknown }) {
@@ -363,6 +389,7 @@ export async function createPublicationPackage(input: { workspaceId: string; pro
   return prisma.$transaction(async (tx) => {
     await tx.readinessSnapshot.create({ data: { workspaceId: input.workspaceId, projectId: input.projectId, manuscriptVersionId: version.id, policyVersion: READINESS_POLICY_VERSION, assessment: readiness as any, assessmentHash: hash(readiness) } })
     const publication = await tx.publicationPackage.create({ data: { workspaceId: input.workspaceId, projectId: input.projectId, manuscriptVersionId: version.id, sourceArtifactId: source.id, pdfArtifactId: pdf.id, supplementaryArtifactIds: input.supplementaryArtifactIds ?? [], buildManifest: object(input.buildManifest), packageHash, status: "released", releasedAt: new Date() } })
+    await tx.manuscriptVersion.update({ where: { id: version.id }, data: { lifecycleStage: "released" } })
     await tx.artifact.updateMany({ where: { id: { in: artifacts.map((artifact) => artifact.id) } }, data: { visibility: "published" } })
     return publication
   })
