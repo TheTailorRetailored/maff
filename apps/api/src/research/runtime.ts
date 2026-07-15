@@ -756,7 +756,13 @@ export async function claimNextReview(input: { userId: string; workspaceRef?: st
   })
   const obsoleteCompileReviewIds = foundReviewCandidates.filter((candidate) => String((jsonObject(candidate.reviewPolicy) as any).review_type) === "compile").map((candidate) => candidate.id)
   if (obsoleteCompileReviewIds.length) await prisma.workstream.updateMany({ where: { workspaceId: workspace.id, id: { in: obsoleteCompileReviewIds } }, data: { status: "abandoned", escalationMessage: "Superseded by automated exact PaperBuild compile evidence." } })
-  const reviewCandidates = foundReviewCandidates.filter((candidate) => !obsoleteCompileReviewIds.includes(candidate.id))
+  const releaseAssessmentActive = Boolean((readiness as any)?.release_assessment_active)
+  const reviewCandidates = foundReviewCandidates.filter((candidate) => {
+    if (obsoleteCompileReviewIds.includes(candidate.id)) return false
+    const policy = jsonObject(candidate.reviewPolicy) as any
+    const finalGate = ["proof_integration", "end_to_end_mathematical", "novelty", "bibliography", "editorial", "source_fidelity", "compile"].includes(String(policy.review_type))
+    return !finalGate || candidate.targetObjectType !== "ManuscriptVersion" || releaseAssessmentActive
+  })
   const canonicalTargetId = (readiness as any)?.canonical_manuscript?.id as string | undefined
   const requiredGates = new Set(["proof_integration", "end_to_end_mathematical", "novelty", "bibliography", "editorial", "source_fidelity", "compile"])
   const remediationWorkstream = reviewCandidates.find((candidate) => {
@@ -1017,7 +1023,7 @@ export async function recordReviewRound(input: {
   parentMathReopenable?: boolean
   priorApprovalsEvidenceOnly?: boolean
   independence?: string
-  obligationChecks?: Array<{ proofObligationId: string; status: string; evidenceMarkdown?: string }>
+  obligationChecks?: Array<{ proofObligationId: string; status: string; evidenceMarkdown?: string; expositionStatus?: string; completenessEvidence?: unknown }>
   bodyMarkdown: string
   createdByAgentRunId?: string
   reviewAssignmentId?: string
@@ -1091,7 +1097,10 @@ export async function recordReviewRound(input: {
   if (verdict === "approved") await assertDurablePhysicalOutputs(input.workspaceId, input.workstreamId, input.reportId ?? workstream.reportId ?? undefined)
   const rawObligationChecks = input.obligationChecks ?? []
   if (!Array.isArray(rawObligationChecks)) throw new Error("obligationChecks must be an array when provided.")
-  let obligationChecks = rawObligationChecks.map((check) => ({ ...check, status: normalizedObligationCheckStatus(check.status) }))
+  let obligationChecks = rawObligationChecks.map((raw) => {
+    const check = raw as any
+    return { proofObligationId: check.proofObligationId ?? check.proof_obligation_id, status: normalizedObligationCheckStatus(check.status), evidenceMarkdown: check.evidenceMarkdown ?? check.evidence_markdown, expositionStatus: check.expositionStatus ?? check.exposition_status ?? "unassessed", completenessEvidence: jsonObject(check.completenessEvidence ?? check.completeness_evidence) }
+  })
   const obligationIds = obligationChecks.map((check, index) => {
     if (!check || typeof check.proofObligationId !== "string" || !check.proofObligationId.trim()) throw new Error(`obligationChecks[${index}].proofObligationId must be a non-empty string.`)
     if (typeof check.status !== "string" || !["preserved", "partial", "omitted", "failed"].includes(check.status)) throw new Error(`obligationChecks[${index}].status must be preserved/passed, partial, omitted, or failed.`)
@@ -1105,7 +1114,7 @@ export async function recordReviewRound(input: {
   }
   const checkedObligationIds = Array.isArray(input.checkedObligationIds) ? input.checkedObligationIds.filter((id): id is string => typeof id === "string" && Boolean(id.trim())) : []
   if (reviewType === "proof_integration" && manuscriptTarget) {
-    const targetObligations = await prisma.proofObligation.findMany({ where: { workspaceId: input.workspaceId, manuscriptVersionId: manuscriptTarget.id }, select: { id: true, required: true } })
+    const targetObligations = await prisma.proofObligation.findMany({ where: { workspaceId: input.workspaceId, manuscriptVersionId: manuscriptTarget.id }, select: { id: true, required: true, loadBearing: true } })
     const targetIds = new Set(targetObligations.map((obligation) => obligation.id))
     const invalidIds = [...new Set([...obligationIds, ...checkedObligationIds])].filter((id) => !targetIds.has(id))
     if (invalidIds.length) throw new Error(`Proof-integration checks must belong to the exact target ManuscriptVersion; invalid ids: ${invalidIds.join(", ")}.`)
@@ -1113,6 +1122,14 @@ export async function recordReviewRound(input: {
       const preservedIds = new Set(obligationChecks.filter((check) => check.status === "preserved").map((check) => check.proofObligationId))
       const missingRequired = targetObligations.filter((obligation) => obligation.required && !preservedIds.has(obligation.id)).map((obligation) => obligation.id)
       if (missingRequired.length) throw new Error(`An approved proof-integration review must preserve every required exact-version obligation; missing ids: ${missingRequired.join(", ")}.`)
+      const checkById = new Map(obligationChecks.map((check) => [check.proofObligationId, check]))
+      const incompleteLoadBearing = targetObligations.filter((obligation) => obligation.loadBearing).filter((obligation) => {
+        const check = checkById.get(obligation.id)
+        const requiredEvidence = ["intermediate_arguments", "uniformity_or_domination", "endpoints_and_exceptional_cases", "normalizers_and_denominators", "notation_and_quantifiers", "external_theorem_applicability"]
+        const evidence = check?.completenessEvidence as Record<string, unknown> | undefined
+        return check?.expositionStatus !== "journal_verifiable" || !evidence || requiredEvidence.some((key) => typeof evidence[key] !== "string" || !String(evidence[key]).trim())
+      }).map((obligation) => obligation.id)
+      if (incompleteLoadBearing.length) throw new Error(`An approved submission-candidate proof review must mark every load-bearing obligation journal_verifiable and record concrete evidence (or an explained not-applicable result) for intermediate arguments, uniformity/domination, endpoints/exceptions, normalizers, notation/quantifiers, and external-theorem applicability; incomplete ids: ${incompleteLoadBearing.join(", ")}.`)
     }
   }
   const evidenceSections = lockedAssignment && manuscriptReviewTypes.has(reviewType) ? validateReviewEvidence({ reviewType, verdict, evidenceSections: input.evidenceSections, obligationChecks, checkedRefs: input.checkedRefs, scope: input.scope }) : []
@@ -1153,7 +1170,7 @@ export async function recordReviewRound(input: {
         independence: (lockedAssignment ? ["author_disjoint", "fully_disjoint_internal_referee"].includes(lockedAssignment.independence) ? "independent_reviewer" : "same_workstream_reviewer" : input.independence ?? "same_workstream_reviewer") as any
       }
     })
-    if (obligationChecks.length) await tx.reviewObligationCheck.createMany({ data: obligationChecks.map((check) => ({ workspaceId: input.workspaceId, reviewRoundId: review.id, proofObligationId: check.proofObligationId, status: check.status, evidenceMarkdown: check.evidenceMarkdown })) })
+    if (obligationChecks.length) await tx.reviewObligationCheck.createMany({ data: obligationChecks.map((check) => ({ workspaceId: input.workspaceId, reviewRoundId: review.id, proofObligationId: check.proofObligationId, status: check.status, evidenceMarkdown: check.evidenceMarkdown, expositionStatus: check.expositionStatus, completenessEvidence: check.completenessEvidence as Prisma.InputJsonValue })) })
     if (lockedAssignment && input.createdByAgentRunId) {
       const assignmentUpdate = await tx.reviewAssignment.updateMany({ where: { id: lockedAssignment.id, status: "claimed" }, data: { status: "submitted", submittedAt: new Date() } })
       if (assignmentUpdate.count !== 1) throw new Error("Review assignment was already consumed or expired.")
@@ -2255,9 +2272,37 @@ export async function promoteManuscriptVersion(input: { workspaceId: string; man
     if (!provenance) throw new Error("Canonical promotion requires constructive AgentRun provenance for the exact ManuscriptVersion.")
     const prior = await tx.manuscriptVersion.findFirst({ where: { workspaceId: input.workspaceId, projectId: version.projectId, isCanonical: true } })
     if (prior && prior.id !== version.id) await tx.manuscriptVersion.update({ where: { id: prior.id }, data: { isCanonical: false, supersededAt: new Date() } })
-    const promoted = await tx.manuscriptVersion.update({ where: { id: version.id }, data: { isCanonical: true, verificationState: "ledger_complete" } })
+    const promoted = await tx.manuscriptVersion.update({ where: { id: version.id }, data: { isCanonical: true, verificationState: "ledger_complete", lifecycleStage: version.lifecycleStage === "draft" ? "integrated" : version.lifecycleStage } })
     await tx.project.update({ where: { id: version.projectId }, data: { currentWorkingPaperId: version.id } })
     return promoted
+  })
+}
+
+export async function setManuscriptLifecycle(input: { workspaceId: string; manuscriptVersionId: string; stage: "draft" | "integrated" | "submission_candidate"; loadBearingObligationIds?: string[] }) {
+  const version = await prisma.manuscriptVersion.findFirstOrThrow({ where: { workspaceId: input.workspaceId, id: input.manuscriptVersionId }, include: { obligations: true } })
+  if (!["draft", "integrated", "submission_candidate"].includes(input.stage)) throw new Error(`Invalid manuscript lifecycle stage: ${input.stage}.`)
+  if (input.stage !== "submission_candidate") return prisma.manuscriptVersion.update({ where: { id: version.id }, data: { lifecycleStage: input.stage } })
+  if (!version.isCanonical) throw new Error("Only the canonical exact manuscript version can become a submission candidate.")
+  const required = version.obligations.filter((obligation) => obligation.required)
+  const selected = [...new Set(input.loadBearingObligationIds ?? [])]
+  if (!required.length) throw new Error("Submission-candidate activation requires an exact-version proof-obligation ledger.")
+  if (!selected.length) throw new Error("Submission-candidate activation requires the bounded set of load-bearing proof-obligation ids. Do not select every theorem by default.")
+  const requiredIds = new Set(required.map((obligation) => obligation.id))
+  const invalid = selected.filter((id) => !requiredIds.has(id))
+  if (invalid.length) throw new Error(`Load-bearing obligations must be required obligations on the exact candidate; invalid ids: ${invalid.join(", ")}.`)
+  return prisma.$transaction(async (tx) => {
+    if (version.lifecycleStage !== "submission_candidate") {
+      const staleFinalReviews = await tx.workstream.findMany({ where: { workspaceId: input.workspaceId, projectId: version.projectId, targetObjectType: "ManuscriptVersion", targetObjectId: version.id, coordinatorRole: "HostileReviewer", status: { in: ["needs_review", "claimed", "running", "blocked", "escalated", "revision_required"] } }, select: { id: true } })
+      const staleIds = staleFinalReviews.map((workstream) => workstream.id)
+      if (staleIds.length) {
+        await tx.reviewAssignment.updateMany({ where: { workspaceId: input.workspaceId, workstreamId: { in: staleIds }, status: "claimed" }, data: { status: "cancelled" } })
+        await tx.agentRun.updateMany({ where: { workspaceId: input.workspaceId, workstreamId: { in: staleIds }, status: { in: ["started", "running", "submitted"] } }, data: { status: "cancelled", finishedAt: new Date() } })
+        await tx.workstream.updateMany({ where: { workspaceId: input.workspaceId, id: { in: staleIds } }, data: { status: "abandoned", claimedSessionId: null, assignedToUserId: null, leaseExpiresAt: null, escalationMessage: "Superseded by explicit submission-candidate activation; readiness will issue only the current exact-version gate." } })
+      }
+    }
+    await tx.proofObligation.updateMany({ where: { workspaceId: input.workspaceId, manuscriptVersionId: version.id }, data: { loadBearing: false } })
+    await tx.proofObligation.updateMany({ where: { workspaceId: input.workspaceId, manuscriptVersionId: version.id, id: { in: selected } }, data: { loadBearing: true } })
+    return tx.manuscriptVersion.update({ where: { id: version.id }, data: { lifecycleStage: "submission_candidate" } })
   })
 }
 
@@ -2333,9 +2378,9 @@ export async function getProjectHealth(workspaceId: string, projectId: string) {
   return { epoch, strategic_reviews: reviews, branches, metrics: { frontier_delta_rate: actions.filter((a) => a.meaningfulDelta).length / Math.max(actionCount, 1), gap_reopen_rate: gaps.filter((g) => g.status === "open").length / Math.max(gaps.length, 1), blocked_workstream_fraction: workstreams.filter((w) => ["blocked", "escalated", "revision_required"].includes(w.status)).length / Math.max(workstreams.length, 1), review_debt: workstreams.filter((w) => w.status === "needs_review").length }, circuit_breakers: { strategic_review_queued: Boolean(epoch?.strategicReviewQueuedAt && !epoch?.strategicReviewCompletedAt), downstream_paused: Boolean(epoch?.downstreamPausedAt && !epoch?.strategicReviewCompletedAt) } }
 }
 
-export async function createProofObligation(input: { workspaceId: string; projectId: string; manuscriptVersionId: string; title: string; statementMarkdown: string; dependencies?: unknown; claimId?: string; sourceArtifactId?: string; proofLocation?: string; manuscriptLocation?: string; externalTheorems?: unknown; externalAssumptionsMatched?: boolean; exactManuscriptProofPresent?: boolean; assumptions?: unknown; excludedRegimes?: unknown; boundaryCases?: unknown; semanticConsequences?: unknown; authorAssertion?: string; required?: boolean }) {
+export async function createProofObligation(input: { workspaceId: string; projectId: string; manuscriptVersionId: string; title: string; statementMarkdown: string; dependencies?: unknown; claimId?: string; sourceArtifactId?: string; proofLocation?: string; manuscriptLocation?: string; externalTheorems?: unknown; externalAssumptionsMatched?: boolean; exactManuscriptProofPresent?: boolean; assumptions?: unknown; excludedRegimes?: unknown; boundaryCases?: unknown; semanticConsequences?: unknown; authorAssertion?: string; required?: boolean; loadBearing?: boolean }) {
   const version = await prisma.manuscriptVersion.findFirstOrThrow({ where: { workspaceId: input.workspaceId, projectId: input.projectId, id: input.manuscriptVersionId } })
-  return prisma.proofObligation.create({ data: { workspaceId: input.workspaceId, projectId: input.projectId, manuscriptVersionId: version.id, title: input.title, statementMarkdown: input.statementMarkdown, dependencies: jsonArray(input.dependencies), claimId: input.claimId, sourceArtifactId: input.sourceArtifactId, proofLocation: input.proofLocation, manuscriptLocation: input.manuscriptLocation, externalTheorems: jsonArray(input.externalTheorems), externalAssumptionsMatched: input.externalAssumptionsMatched, exactManuscriptProofPresent: input.exactManuscriptProofPresent, assumptions: jsonArray(input.assumptions), excludedRegimes: jsonArray(input.excludedRegimes), boundaryCases: jsonArray(input.boundaryCases), semanticConsequences: jsonArray(input.semanticConsequences), authorAssertion: input.authorAssertion, required: input.required ?? true } })
+  return prisma.proofObligation.create({ data: { workspaceId: input.workspaceId, projectId: input.projectId, manuscriptVersionId: version.id, title: input.title, statementMarkdown: input.statementMarkdown, dependencies: jsonArray(input.dependencies), claimId: input.claimId, sourceArtifactId: input.sourceArtifactId, proofLocation: input.proofLocation, manuscriptLocation: input.manuscriptLocation, externalTheorems: jsonArray(input.externalTheorems), externalAssumptionsMatched: input.externalAssumptionsMatched, exactManuscriptProofPresent: input.exactManuscriptProofPresent, assumptions: jsonArray(input.assumptions), excludedRegimes: jsonArray(input.excludedRegimes), boundaryCases: jsonArray(input.boundaryCases), semanticConsequences: jsonArray(input.semanticConsequences), authorAssertion: input.authorAssertion, required: input.required ?? true, loadBearing: input.loadBearing ?? false } })
 }
 
 const scopedApprovalLabel: Record<string, string> = {

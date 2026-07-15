@@ -157,7 +157,12 @@ for (const prop of ["report_id", "workstream_id"]) {
   assert.ok(submitReportProps[prop], `submit_report_for_review schema must advertise ${prop}`)
 }
 
-assert.equal(mcpServerVersion, "1.5.1-biber-validated")
+assert.equal(mcpServerVersion, "1.6.0-submission-candidate")
+const lifecycleTool = toolDefinitions.find((tool) => tool.name === "set_manuscript_freeze")!
+const lifecycleProps = lifecycleTool.inputSchema.properties as Record<string, unknown>
+for (const prop of ["level", "lifecycle_stage", "load_bearing_obligation_ids"]) assert.ok(lifecycleProps[prop], `set_manuscript_freeze schema must advertise ${prop}`)
+const obligationTool = toolDefinitions.find((tool) => tool.name === "create_proof_obligation")!
+assert.ok((obligationTool.inputSchema.properties as Record<string, unknown>).load_bearing, "create_proof_obligation must advertise load_bearing")
 assert.equal(normalizedObligationCheckStatus("passed"), "preserved")
 assert.equal(normalizedObligationCheckStatus("preserved"), "preserved")
 assert.equal(normalizedObligationCheckStatus("failed"), "failed")

@@ -1,6 +1,6 @@
 import { prisma } from "../db/prisma.js"
 
-export const READINESS_POLICY_VERSION = "1.5.1-biber-validated"
+export const READINESS_POLICY_VERSION = "1.6.0-submission-candidate"
 export const REQUIRED_MANUSCRIPT_GATES = ["proof_integration", "end_to_end_mathematical", "novelty", "bibliography", "editorial", "compile"] as const
 export type RequiredGate = typeof REQUIRED_MANUSCRIPT_GATES[number]
 type VersionIdentity = { id: string; version: number; contentHash: string; theoremFingerprint: string; citationFingerprint: string }
@@ -10,6 +10,12 @@ const contributionRelations = new Set(["governs_claim", "contribution_claim", "m
 const relevanceRelations = new Set(["derived_from", "uses_source", "governs_claim", "contribution_claim", "manuscript_claim", "has_proof_obligation", "blocks", "depends_on"])
 
 function strings(value: unknown): string[] { return Array.isArray(value) ? value.filter((x): x is string => typeof x === "string") : [] }
+const completenessEvidenceKeys = ["intermediate_arguments", "uniformity_or_domination", "endpoints_and_exceptional_cases", "normalizers_and_denominators", "notation_and_quantifiers", "external_theorem_applicability"]
+function completeExpositionEvidence(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false
+  const evidence = value as Record<string, unknown>
+  return completenessEvidenceKeys.every((key) => typeof evidence[key] === "string" && Boolean((evidence[key] as string).trim()))
+}
 
 export function normalizedObligationCheckStatus(status: unknown) {
   const normalized = typeof status === "string" ? status.trim().toLowerCase() : ""
@@ -36,6 +42,24 @@ export async function computeSubmissionReadiness(workspaceId: string, projectId:
   await prisma.project.findFirstOrThrow({ where: { workspaceId, id: projectId } })
   const version = await prisma.manuscriptVersion.findFirst({ where: { workspaceId, projectId, isCanonical: true }, include: { artifact: true, obligations: true, physicalArtifacts: { include: { artifact: true } }, paperBuilds: { orderBy: { completedAt: "desc" } } } })
   if (!version) return { submission_ready: false, status: "no_canonical_manuscript", reasons: ["No canonical working-paper version exists."], blocking_object_references: [], stale_review_references: [], missing_gate_references: REQUIRED_MANUSCRIPT_GATES, gates: {} }
+  if (!['submission_candidate', 'released'].includes(version.lifecycleStage)) return {
+    submission_ready: false,
+    publication_candidate: false,
+    release_assessment_active: false,
+    policy_version: READINESS_POLICY_VERSION,
+    status: "manuscript_development",
+    lifecycle_stage: version.lifecycleStage,
+    canonical_manuscript: { id: version.id, artifact_id: version.artifactId, version: version.version, content_hash: version.contentHash, theorem_fingerprint: version.theoremFingerprint, citation_fingerprint: version.citationFingerprint },
+    gates: {},
+    gate_plan: [],
+    next_required_action: null,
+    workflow_circuit_breaker: { active: false, pause_duplicate_final_reviews: false, affected_gates: [], instruction: null },
+    reasons: ["Final manuscript assessment is dormant until this exact canonical version is explicitly promoted to submission_candidate."],
+    blocking_object_references: [],
+    stale_review_references: [],
+    missing_gate_references: [],
+    proof_obligations: { total: version.obligations.length, load_bearing_ids: version.obligations.filter((obligation) => obligation.loadBearing).map((obligation) => obligation.id) }
+  }
 
   const versions = await prisma.manuscriptVersion.findMany({ where: { workspaceId, projectId }, select: { id: true, version: true, contentHash: true, theoremFingerprint: true, citationFingerprint: true } })
 
@@ -107,6 +131,7 @@ export async function computeSubmissionReadiness(workspaceId: string, projectId:
   const integrationReviews = gateReviews("proof_integration")
   const integrationReviewIds = new Set(integrationReviews.map((review) => review.id))
   const preservedCheckedIds = new Set(obligationChecks.filter((check) => integrationReviewIds.has(check.reviewRoundId) && normalizedObligationCheckStatus(check.status) === "preserved").map((check) => check.proofObligationId))
+  const journalVerifiableCheckedIds = new Set(obligationChecks.filter((check) => integrationReviewIds.has(check.reviewRoundId) && normalizedObligationCheckStatus(check.status) === "preserved" && check.expositionStatus === "journal_verifiable" && completeExpositionEvidence(check.completenessEvidence)).map((check) => check.proofObligationId))
   const coveredObligations = new Set(version.obligations.filter((obligation) => [...(obligationAncestorMap.get(obligation.id) ?? new Set([obligation.id]))].some((id) => preservedCheckedIds.has(id))).map((obligation) => obligation.id))
   const compatibilityReviewIds: string[] = []
   for (const review of integrationReviews) {
@@ -114,6 +139,7 @@ export async function computeSubmissionReadiness(workspaceId: string, projectId:
     if (checkedIds.length && checkedIds.some((id) => ![...obligationAncestorMap.values()].some((ancestors) => ancestors.has(id)))) compatibilityReviewIds.push(review.id)
   }
   const missingObligations = version.obligations.filter((o) => o.required && !coveredObligations.has(o.id))
+  const missingLoadBearingCompleteness = version.obligations.filter((obligation) => obligation.required && obligation.loadBearing && ![...(obligationAncestorMap.get(obligation.id) ?? new Set([obligation.id]))].some((id) => journalVerifiableCheckedIds.has(id)))
   const requiredObligations = version.obligations.filter((o) => o.required)
   const zeroObligationLedger = requiredObligations.length === 0
   const weakObligations = requiredObligations.filter((obligation) => !obligation.statementMarkdown.trim() || (!strings(obligation.assumptions).length && !strings(obligation.boundaryCases).length && !strings(obligation.excludedRegimes).length))
@@ -134,7 +160,7 @@ export async function computeSubmissionReadiness(workspaceId: string, projectId:
     adverse_review_resolution: { satisfied: adverseExactReviews.length === 0, review_ids: adverseExactReviews.map((review) => review.id), reason: "Accepted adverse exact-candidate reviews must be repaired in a new manuscript version before remaining release gates continue." },
     artifact_integrity: { satisfied: physicalHealthy(sourceArtifacts) && physicalHealthy(pdfArtifacts), source_artifact_ids: sourceArtifacts.map((item) => item.artifact.id), pdf_artifact_ids: pdfArtifacts.map((item) => item.artifact.id), reason: "Exact managed source and compiled PDF bytes must both be attached and healthy." },
     proof_obligation_ledger: { satisfied: !zeroObligationLedger && weakObligations.length === 0, weak_obligation_ids: weakObligations.map((o) => o.id), reason: "A nontrivial canonical manuscript needs atomic obligations covering assumptions, excluded regimes, or boundary cases." },
-    proof_integration: { satisfied: !zeroObligationLedger && integrationReviews.length > 0 && missingObligations.length === 0, review_ids: integrationReviews.map((r) => r.id), missing_obligation_ids: missingObligations.map((o) => o.id), invalid_zero_obligation_ledger: zeroObligationLedger, compatibility_checked_id_review_ids: compatibilityReviewIds, evidence: evidence("proof_integration") },
+    proof_integration: { satisfied: !zeroObligationLedger && integrationReviews.length > 0 && missingObligations.length === 0 && missingLoadBearingCompleteness.length === 0, review_ids: integrationReviews.map((r) => r.id), missing_obligation_ids: missingObligations.map((o) => o.id), missing_load_bearing_completeness_ids: missingLoadBearingCompleteness.map((o) => o.id), invalid_zero_obligation_ledger: zeroObligationLedger, compatibility_checked_id_review_ids: compatibilityReviewIds, evidence: evidence("proof_integration") },
     end_to_end_mathematical: { satisfied: endToEnd.length > 0, review_ids: endToEnd.map((r) => r.id), reason: "Requires an independent reviewer of this exact manuscript version.", evidence: evidence("end_to_end_mathematical") },
     novelty: { satisfied: noveltyMissing.length === 0 && gateReviews("novelty").length > 0, review_ids: gateReviews("novelty").map((r) => r.id), missing_claim_ids: noveltyMissing.map((c) => c.id), evidence: evidence("novelty"), unclassified_literature_evidence_candidates: unclassifiedLiteratureEvidence },
     bibliography: { satisfied: gateReviews("bibliography").length > 0, review_ids: gateReviews("bibliography").map((r) => r.id), evidence: evidence("bibliography"), unclassified_literature_evidence_candidates: unclassifiedLiteratureEvidence },
@@ -147,6 +173,7 @@ export async function computeSubmissionReadiness(workspaceId: string, projectId:
   const gateReason = (type: RequiredGate) => {
     if (type === "compile") return `No successful internal PaperBuild matches exact release candidate ${version.id}.`
     if (type === "proof_integration" && integrationReviews.length && missingObligations.length) return `Approved exact-version proof-integration evidence is missing preserved checks for obligations: ${missingObligations.map((obligation) => obligation.id).join(", ")}.`
+    if (type === "proof_integration" && integrationReviews.length && missingLoadBearingCompleteness.length) return `Load-bearing proofs are not yet journal-verifiable at the exact manuscript interface: ${missingLoadBearingCompleteness.map((obligation) => obligation.id).join(", ")}.`
     if (type === "novelty" && gateReviews(type).length && noveltyMissing.length) return `Accepted theorem-fingerprint novelty evidence does not cover claims: ${noveltyMissing.map((claim) => claim.id).join(", ")}.`
     const rejected = diagnostics[type].filter((item) => !item.accepted && item.review.verdict === approved)
     if (rejected.length) return `No accepted ${type} evidence. Rejected approved reviews: ${rejected.map((item) => `${item.review.id} (${item.reason})`).join(", ")}.`
@@ -165,7 +192,7 @@ export async function computeSubmissionReadiness(workspaceId: string, projectId:
   const nextGate = adverseExactReviews.length ? null : releaseOrder.find((type) => !gates[type].satisfied) ?? null
   const nextAction: Record<RequiredGate, string> = {
     compile: `Build exact release candidate ${version.id} with PaperBuilder. This is an automated build, not a reviewer assignment.`,
-    proof_integration: `Review every required obligation against exact release candidate ${version.id}; record one preserved/passed obligation check per required obligation.`,
+    proof_integration: `Perform one bounded proof-and-exposition completeness assessment of exact release candidate ${version.id}. Check every required obligation in this single review; for load-bearing obligations, record journal-verifiable completeness evidence covering intermediate arguments, uniformity or domination, endpoints and exceptional cases, normalizers, notation, and external-theorem applicability where relevant. Group all required revisions into one manuscript frontier; do not create theorem-by-theorem workstreams or a graph audit.`,
     novelty: unclassifiedLiteratureEvidence.length ? `Classify eligible existing literature review evidence (${unclassifiedLiteratureEvidence.map((candidate) => candidate.review_id).join(", ")}) against theorem fingerprint ${version.theoremFingerprint}, or run only the uncovered novelty delta.` : `Register approved novelty evidence for theorem fingerprint ${version.theoremFingerprint}; matching evidence from an earlier version is reusable.`,
     bibliography: unclassifiedLiteratureEvidence.length ? `Classify eligible existing literature review evidence (${unclassifiedLiteratureEvidence.map((candidate) => candidate.review_id).join(", ")}) against citation fingerprint ${version.citationFingerprint}, or run only the uncovered bibliography delta.` : `Register approved bibliography evidence for citation fingerprint ${version.citationFingerprint}; matching evidence from an earlier version is reusable.`,
     end_to_end_mathematical: `Run one assigned, author-disjoint end-to-end mathematical review of exact release candidate ${version.id}.`,
@@ -188,7 +215,9 @@ export async function computeSubmissionReadiness(workspaceId: string, projectId:
     publication_candidate: reasons.length === 0,
     policy_version: READINESS_POLICY_VERSION,
     status: reasons.length ? externalChallenges.length ? "externally_challenged" : adverseExactReviews.length ? "revision_required" : circuitBreakerGates.length ? "workflow_infrastructure_blocked" : "release_gates_pending" : "publication_candidate",
-    lifecycle_stage: reasons.length === 0 ? "publication_candidate" : gates.end_to_end_mathematical.satisfied ? "internally_refereed" : gates.proof_integration.satisfied ? "proof_integration_checked" : gates.compile.satisfied ? "build_reproducible" : "draft",
+    release_assessment_active: true,
+    lifecycle_stage: version.lifecycleStage,
+    release_progress: reasons.length === 0 ? "publication_candidate" : gates.end_to_end_mathematical.satisfied ? "internally_refereed" : gates.proof_integration.satisfied ? "proof_integration_checked" : gates.compile.satisfied ? "build_reproducible" : "candidate_assembly",
     canonical_manuscript: { id: version.id, artifact_id: version.artifactId, version: version.version, content_hash: version.contentHash, theorem_fingerprint: version.theoremFingerprint, citation_fingerprint: version.citationFingerprint },
     release_candidate: { id: version.id, label: `RC-${version.version}`, exact_content_hash: version.contentHash, theorem_fingerprint: version.theoremFingerprint, citation_fingerprint: version.citationFingerprint, immutable_review_target: true },
     gates,
@@ -201,7 +230,7 @@ export async function computeSubmissionReadiness(workspaceId: string, projectId:
     missing_gate_references: ["adverse_review_resolution", "artifact_integrity", "proof_obligation_ledger", ...REQUIRED_MANUSCRIPT_GATES, ...(numericalRequired ? ["numerical_verification"] : []), "external_challenge_resolution"].filter((type) => !gates[type].satisfied),
     open_relevant_gaps: relevantGaps,
     governing_claim_ids: governingClaimIds,
-    proof_obligations: { total: version.obligations.length, uncovered_required_ids: missingObligations.map((o) => o.id) }
+    proof_obligations: { total: version.obligations.length, load_bearing_ids: version.obligations.filter((obligation) => obligation.loadBearing).map((obligation) => obligation.id), uncovered_required_ids: missingObligations.map((o) => o.id), incomplete_load_bearing_ids: missingLoadBearingCompleteness.map((o) => o.id) }
   }
 }
 
