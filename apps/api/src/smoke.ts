@@ -107,7 +107,7 @@ for (const name of [
   assert.ok(toolDefinitions.some((tool) => tool.name === name), `missing MCP tool ${name}`)
 }
 
-for (const name of ["create_manuscript_version", "create_proof_obligation", "get_integration_coverage", "compute_submission_readiness", "promote_manuscript_version", "set_manuscript_freeze", "import_external_review", "create_strategic_review", "get_project_health", "create_project_branch"]) {
+for (const name of ["get_manuscript", "update_manuscript", "build_manuscript", "inspect_manuscript_build", "publish_manuscript", "create_proof_obligation", "get_integration_coverage", "compute_submission_readiness", "set_manuscript_freeze", "import_external_review", "create_strategic_review", "get_project_health", "create_project_branch"]) {
   assert.ok(toolDefinitions.some((tool) => tool.name === name), `missing modern MCP tool ${name}`)
 }
 assert.equal(toolDefinitions.length, expectedMcpToolCount, "MCP registry count changed; update the reviewed snapshot intentionally")
@@ -144,7 +144,7 @@ for (const prop of ["report_id", "workstream_id"]) {
   assert.ok(submitReportProps[prop], `submit_report_for_review schema must advertise ${prop}`)
 }
 
-assert.equal(mcpServerVersion, "1.3.3-execute-after-claim")
+assert.equal(mcpServerVersion, "1.4.0-paper-builder")
 assert.equal(normalizedObligationCheckStatus("passed"), "preserved")
 assert.equal(normalizedObligationCheckStatus("preserved"), "preserved")
 assert.equal(normalizedObligationCheckStatus("failed"), "failed")
@@ -170,23 +170,23 @@ for (const listedTool of toolsList.tools) {
   assert.equal(typeof listedTool.annotations.readOnlyHint, "boolean", `${listedTool.name} must advertise tool annotations`)
 }
 
-for (const name of ["get_research_artifact", "export_research_artifact_bundle", "create_manuscript_version", "create_proof_obligation", "get_integration_coverage", "compute_submission_readiness"]) {
+for (const name of ["get_research_artifact", "export_research_artifact_bundle", "get_manuscript", "update_manuscript", "build_manuscript", "inspect_manuscript_build", "publish_manuscript", "create_proof_obligation", "get_integration_coverage", "compute_submission_readiness"]) {
   assert.ok(toolsListNames.has(name), `tools/list missing ${name}`)
 }
-for (const name of ["record_object_contribution", "record_object_access", "submit_run_outcome", "ensure_project_actionable", "begin_project_import", "analyze_project_import", "preview_project_import", "commit_project_import", "run_project_graph_audit", "begin_repair_from_audit", "publish_manuscript_package", "surface_artifact"]) {
+for (const name of ["record_object_contribution", "record_object_access", "submit_run_outcome", "ensure_project_actionable", "begin_project_import", "analyze_project_import", "preview_project_import", "commit_project_import", "run_project_graph_audit", "begin_repair_from_audit"]) {
   assert.ok(toolsListNames.has(name), `tools/list missing integrity tool ${name}`)
 }
-for (const name of ["create_artifact_from_path", "get_artifact", "download_artifact", "list_artifacts", "list_artifact_archive", "read_artifact_archive_file", "verify_artifact", "attach_artifact_to_manuscript_version", "export_physical_artifacts", "get_manuscript_version"]) {
+for (const name of ["get_artifact", "list_artifacts", "verify_artifact", "get_manuscript_version"]) {
   assert.ok(toolDefinitions.some((tool) => tool.name === name), `missing durable artifact tool ${name}`)
+}
+for (const name of ["create_artifact_from_path", "download_artifact", "list_artifact_archive", "read_artifact_archive_file", "attach_artifact_to_manuscript_version", "export_physical_artifacts", "create_manuscript_version", "promote_manuscript_version", "publish_manuscript_package", "surface_artifact"]) {
+  assert.equal(toolsListNames.has(name), false, `${name} is internal and must not be exposed to agents`)
 }
 const createArtifactTool = toolsList.tools.find((tool) => tool.name === "create_artifact") as any
 assert.deepEqual(createArtifactTool?._meta?.["openai/fileParams"], ["file"])
 const createArtifactProps = createArtifactTool.inputSchema.properties as Record<string, unknown>
 assert.ok(createArtifactProps.file, "create_artifact schema must advertise connector file upload")
 assert.ok(createArtifactProps.expected_sha256, "create_artifact schema must advertise expected_sha256")
-const pathArtifactTool = toolDefinitions.find((tool) => tool.name === "create_artifact_from_path")
-assert.ok(pathArtifactTool, "missing create_artifact_from_path")
-assert.deepEqual((pathArtifactTool.inputSchema as { required?: string[] }).required, ["workspace_id", "project_id", "server_path", "title"])
 const createdArtifactResult = contentResult("create_artifact", compactToolResult("create_artifact", {
   id: "artifact-1",
   kind: "archive",
@@ -204,9 +204,7 @@ const createdArtifactResult = contentResult("create_artifact", compactToolResult
 assert.equal((createdArtifactResult.structuredContent as any).verification.ok, true)
 assert.equal((createdArtifactResult.structuredContent as any).download.uri.includes("/api/artifacts/artifact-1/content"), true)
 assert.equal(createdArtifactResult.content[0].type, "text", "intermediate ingestion must not surface a user-visible file link")
-const surfacedArtifactResult = contentResult("surface_artifact", { uri: "https://maff.example/api/artifacts/artifact-1/content", name: "bundle.zip", mime_type: "application/zip" })
-assert.equal(surfacedArtifactResult.content[0].type, "resource_link", "explicit artifact surfacing must return a user-visible file link")
-const publicationResult = contentResult("publish_manuscript_package", { package_id: "package-1", final_pdf: { uri: "https://maff.example/api/artifacts/final/content", name: "paper.pdf", mime_type: "application/pdf" } })
+const publicationResult = contentResult("publish_manuscript", { package_id: "package-1", final_pdf: { uri: "https://maff.example/api/artifacts/final/content", name: "paper.pdf", mime_type: "application/pdf" } })
 assert.equal(publicationResult.content[0].type, "resource_link", "the final publication package must surface its PDF")
 const archiveTextResult = contentResult("read_artifact_archive_file", {
   artifact_id: "artifact-1",

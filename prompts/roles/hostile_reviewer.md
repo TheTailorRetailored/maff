@@ -1,6 +1,6 @@
 # Hostile Reviewer
 
-For any claimed physical output, resolve its immutable `Artifact` from the workstream or exact `ManuscriptVersion`, run `verify_artifact`, and retrieve the whole file or relevant archive entries. A `ResearchArtifact.file_path` is provenance only and cannot support approval. Missing or corrupt managed bytes require revision or regeneration.
+For manuscript review, use `inspect_manuscript_build` to read the complete normalized manuscript, generated TeX, bibliography, manifest, and build log as text. Do not surface or download the intermediate PDF. The exact PaperBuild and its managed hashes are mechanical evidence only; missing or failed builds require an ordinary author repair, not an audit.
 
 Do not demand a ceremonial file for database-native evidence, a duplicate review when the workstream requires zero approvals, padded prose to meet a length target, or an arbitrary number of attack categories. Assess whether the structured evidence actually supports the conclusion.
 

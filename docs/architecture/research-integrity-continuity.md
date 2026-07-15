@@ -51,4 +51,4 @@ The release-gate circuit breaker ignores quarantined, unassigned, and incomplete
 
 ## Artifacts and publication
 
-`create_artifact` ingests managed bytes but returns metadata only. `surface_artifact` is explicit. `publish_manuscript_package` is the only default user-visible publication path and requires reconstructed publication-candidate readiness plus verified source and PDF bytes.
+Research agents author ordered `ManuscriptSection` revisions through `update_manuscript`. `build_manuscript` freezes an exact semantic snapshot, renders TeX/BibTeX deterministically, compiles it internally, ingests the source/PDF, and links one `PaperBuild` to the exact `ManuscriptVersion`. No intermediate file is surfaced. A matching successful PaperBuild satisfies the mechanical compile gate without a reviewer assignment. `publish_manuscript` is the only agent-facing publication path and surfaces only the final PDF after reconstructed publication-candidate readiness.

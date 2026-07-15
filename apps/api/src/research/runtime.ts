@@ -9,6 +9,7 @@ import { requireWorkspaceRole } from "../auth/permissions.js"
 import { computeSubmissionReadiness, normalizedObligationCheckStatus, workstreamDependenciesSatisfied } from "./readiness.js"
 import { inferMimeType, ingestFile, ingestRemoteFile, listZipEntries, readZipEntryBytes, storagePath, verifyStoredFile } from "../artifacts/storage.js"
 import { analyzeProjectImport, beginProjectImport, beginRepairFromAudit, commitProjectImport, createPublicationPackage, createReviewAssignment, ensureProjectActionable, recordObjectAccess, recordObjectContribution, runProjectGraphAudit, submitRunOutcome, triageExternalReview, validateReviewAssignment, validateReviewEvidence } from "./integrity.js"
+import { citationKey, executePaperBuild, inspectPaperBuild, renderPaper } from "./paperBuilder.js"
 
 export { analyzeProjectImport, beginProjectImport, beginRepairFromAudit, commitProjectImport, createPublicationPackage, ensureProjectActionable, recordObjectAccess, recordObjectContribution, runProjectGraphAudit, submitRunOutcome, triageExternalReview }
 
@@ -49,7 +50,7 @@ const roleByKind: Record<WorkstreamKind, AgentRole> = {
 
 const kindByRole = Object.fromEntries(Object.entries(roleByKind).map(([kind, role]) => [role, kind])) as Partial<Record<AgentRole, WorkstreamKind>>
 
-const lockedManuscriptReviewTypes = new Set(["proof_integration", "end_to_end_mathematical", "novelty", "bibliography", "compile", "editorial", "source_fidelity"])
+const lockedManuscriptReviewTypes = new Set(["proof_integration", "end_to_end_mathematical", "novelty", "bibliography", "editorial", "source_fidelity"])
 
 function isLockedReviewWorkstream(workstream: { coordinatorRole: AgentRole; reviewPolicy: unknown }) {
   const policy = jsonObject(workstream.reviewPolicy) as Record<string, unknown>
@@ -69,7 +70,7 @@ const allowedWritesByRole: Record<AgentRole, string[]> = {
   HostileReviewer: ["ReviewRound", "AgentMessage"],
   FormalizationAgent: ["FormalizationTarget", "LeanTheorem", "Assumption", "Artifact", "WorkstreamReport", "AgentMessage"],
   LeanChecker: ["LeanTheorem", "Artifact", "WorkstreamReport", "AgentMessage"],
-  PaperWriter: ["Artifact", "WorkstreamReport", "AgentMessage"],
+  PaperWriter: ["ManuscriptDocument", "ManuscriptSection", "ManuscriptVersion", "ProofObligation", "PaperBuild", "WorkstreamReport", "AgentMessage"],
   TriageAgent: ["Workstream", "AgentMessage", "WorkstreamReport"],
   ImportAgent: ["ProjectImport", "Artifact", "RunOutcome", "AgentMessage"],
   GraphAuditor: ["ProjectAudit", "AuditFinding", "RunOutcome", "AgentMessage"]
@@ -616,7 +617,7 @@ export async function claimNextAssignment(input: {
   model?: string
   leaseMinutes?: number
   startRun?: boolean
-}) {
+}): Promise<any> {
   const workspace = await resolveWorkspaceForUser(input.userId, input.workspaceRef)
   await requireWorkspaceRole(input.userId, workspace.id, "editor")
   const sessionId = input.sessionId ?? `maff-${randomUUID()}`
@@ -739,18 +740,21 @@ export async function claimNextAssignment(input: {
   }
 }
 
-export async function claimNextReview(input: { userId: string; workspaceRef?: string; project?: string; sessionId?: string; model?: string; leaseMinutes?: number; startRun?: boolean }) {
+export async function claimNextReview(input: { userId: string; workspaceRef?: string; project?: string; sessionId?: string; model?: string; leaseMinutes?: number; startRun?: boolean }): Promise<any> {
   if (input.startRun === false) throw new Error("claim_next_review must start its reviewer run atomically; dry or deferred claims are not supported.")
   const workspace = await resolveWorkspaceForUser(input.userId, input.workspaceRef)
   await requireWorkspaceRole(input.userId, workspace.id, "editor")
   const sessionId = input.sessionId ?? `maff-${randomUUID()}`
   const project = await resolveProject(workspace.id, input.project)
   const readiness = project ? await computeSubmissionReadiness(workspace.id, project.id) : null
-  const reviewCandidates = await prisma.workstream.findMany({
+  const foundReviewCandidates = await prisma.workstream.findMany({
     where: { workspaceId: workspace.id, projectId: project?.id, status: "needs_review" },
     include: { project: true, goal: true, reports: { orderBy: { updatedAt: "desc" }, take: 1 } },
     orderBy: [{ priority: "desc" }, { updatedAt: "asc" }]
   })
+  const obsoleteCompileReviewIds = foundReviewCandidates.filter((candidate) => String((jsonObject(candidate.reviewPolicy) as any).review_type) === "compile").map((candidate) => candidate.id)
+  if (obsoleteCompileReviewIds.length) await prisma.workstream.updateMany({ where: { workspaceId: workspace.id, id: { in: obsoleteCompileReviewIds } }, data: { status: "abandoned", escalationMessage: "Superseded by automated exact PaperBuild compile evidence." } })
+  const reviewCandidates = foundReviewCandidates.filter((candidate) => !obsoleteCompileReviewIds.includes(candidate.id))
   const canonicalTargetId = (readiness as any)?.canonical_manuscript?.id as string | undefined
   const requiredGates = new Set(["proof_integration", "end_to_end_mathematical", "novelty", "bibliography", "editorial", "source_fidelity", "compile"])
   const remediationWorkstream = reviewCandidates.find((candidate) => {
@@ -775,6 +779,10 @@ export async function claimNextReview(input: { userId: string; workspaceRef?: st
   let workstream = remediationWorkstream ?? reviewCandidates[0] ?? null
   if (!workstream && project && (readiness as any)?.next_required_action && (readiness as any)?.canonical_manuscript) {
     const gate = (readiness as any).next_required_action.gate
+    if (gate === "compile") {
+      const buildWorkstream = await prisma.workstream.create({ data: { workspaceId: workspace.id, projectId: project.id, title: `Build ${(readiness as any).release_candidate.label} with PaperBuilder`, kind: "paper_synthesis", coordinatorRole: "PaperWriter", status: "ready", priority: 100, targetObjectType: "ManuscriptVersion", targetObjectId: (readiness as any).canonical_manuscript.id, instructions: "Inspect the structured manuscript, repair its sections if necessary, then call build_manuscript. Do not create, upload, attach, verify, or surface files manually.", allowedWrites: ["ManuscriptDocument", "ManuscriptSection", "ManuscriptVersion", "PaperBuild", "WorkstreamReport", "RunOutcome"], forbiddenActions: ["Do not use low-level artifact tools for manuscript builds.", "Do not surface intermediate source or PDF files."], successCriteria: ["A successful exact PaperBuild is linked to the canonical manuscript."], reviewPolicy: { review_type: "other", min_approved_rounds: 0, paper_builder: true } }, include: { project: true } })
+      return claimNextAssignment({ userId: input.userId, workspaceRef: workspace.id, project: project.id, role: "PaperWriter", sessionId, model: input.model, leaseMinutes: input.leaseMinutes, startRun: true })
+    }
     workstream = await prisma.workstream.create({ data: { workspaceId: workspace.id, projectId: project.id, title: `${gate.replace(/_/g, " ")} for ${(readiness as any).release_candidate.label}`, kind: "hostile_review", coordinatorRole: "HostileReviewer", status: "needs_review", priority: 100, targetObjectType: "ManuscriptVersion", targetObjectId: (readiness as any).canonical_manuscript.id, instructions: (readiness as any).next_required_action.instruction, allowedWrites: ["ReviewRound", "ReviewEvidenceSection", "RunOutcome"], forbiddenActions: ["Do not edit the reviewed manuscript or its mathematical objects."], successCriteria: [`Complete assigned ${gate} evidence contract against the exact release candidate.`], reviewPolicy: { review_type: gate, min_approved_rounds: 1 } }, include: { project: true, goal: true, reports: { orderBy: { updatedAt: "desc" }, take: 1 } } })
   }
   if (!workstream) {
@@ -1922,6 +1930,167 @@ export async function getResearchArtifactBundle(workspaceId: string, ids: unknow
 export async function createResearchArtifact(input: FrontierWriteInput) {
   const hasFilePath = Boolean(input.filePath)
   return prisma.researchArtifact.create({ data: { workspaceId: input.workspaceId, projectId: input.projectId, title: input.title, slug: input.slug ? slugify(input.slug) : uniqueSlug(input.title), kind: input.kind ?? "other", status: input.status ?? "draft", descriptionMarkdown: input.descriptionMarkdown, contentMarkdown: input.contentMarkdown, filePath: input.filePath, fileStatus: hasFilePath ? "provenance_only" : "not_applicable", fileDiagnostic: hasFilePath ? "Local file paths are provenance only. ChatGPT clients must use create_artifact with file; trusted server jobs may use create_artifact_from_path server_path. Ingest bytes before claiming a physical artifact is registered." : undefined, url: input.url, createdByUserId: input.createdByUserId } })
+}
+
+type ManuscriptSectionInput = {
+  stableKey: string
+  ordinal: number
+  kind: string
+  title?: string
+  contentMarkdown: string
+  sourceFormat?: string
+  claimIds?: string[]
+  citationKeys?: string[]
+}
+
+export async function getStructuredManuscript(workspaceId: string, projectId: string) {
+  const [project, document, papers] = await Promise.all([
+    prisma.project.findFirstOrThrow({ where: { workspaceId, id: projectId } }),
+    prisma.manuscriptDocument.findFirst({ where: { workspaceId, projectId }, include: { sections: { where: { isCurrent: true }, orderBy: [{ ordinal: "asc" }, { stableKey: "asc" }] } } }),
+    prisma.paper.findMany({ where: { workspaceId, OR: [{ projectId }, { projectId: null }] }, orderBy: [{ year: "asc" }, { title: "asc" }] })
+  ])
+  return {
+    project: { id: project.id, title: project.title },
+    document,
+    citation_key_map: papers.map((paper) => ({ key: citationKey(paper), paper_id: paper.id, title: paper.title })),
+    guidance: "Edit structured sections in Maff. PaperBuilder materializes TeX/PDF internally; do not create or surface intermediate files."
+  }
+}
+
+export async function updateStructuredManuscript(input: { workspaceId: string; projectId: string; agentRunId: string; metadata?: Record<string, unknown>; sections: ManuscriptSectionInput[]; obligationDrafts?: unknown[] }) {
+  if (!input.sections.length) throw new Error("A structured manuscript requires at least one section.")
+  const run = await prisma.agentRun.findFirstOrThrow({ where: { workspaceId: input.workspaceId, projectId: input.projectId, id: input.agentRunId, status: { in: ["started", "running"] } } })
+  const project = await prisma.project.findFirstOrThrow({ where: { workspaceId: input.workspaceId, id: input.projectId } })
+  const keys = input.sections.map((section) => section.stableKey.trim())
+  if (keys.some((key) => !key) || new Set(keys).size !== keys.length) throw new Error("Manuscript section stable keys must be non-empty and unique.")
+  const metadata = jsonObject(input.metadata) as Record<string, any>
+  return prisma.$transaction(async (tx) => {
+    const document = await tx.manuscriptDocument.upsert({
+      where: { projectId: project.id },
+      create: {
+        workspaceId: input.workspaceId,
+        projectId: project.id,
+        title: String(metadata.title ?? project.title),
+        authors: Array.isArray(metadata.authors) ? metadata.authors : [],
+        abstractMarkdown: String(metadata.abstract_markdown ?? metadata.abstractMarkdown ?? ""),
+        keywords: Array.isArray(metadata.keywords) ? metadata.keywords : [],
+        template: String(metadata.template ?? "article"),
+        obligationDrafts: (input.obligationDrafts ?? []) as Prisma.InputJsonValue
+      },
+      update: {
+        ...(metadata.title !== undefined ? { title: String(metadata.title) } : {}),
+        ...(metadata.authors !== undefined ? { authors: (Array.isArray(metadata.authors) ? metadata.authors : []) as Prisma.InputJsonValue } : {}),
+        ...((metadata.abstract_markdown ?? metadata.abstractMarkdown) !== undefined ? { abstractMarkdown: String(metadata.abstract_markdown ?? metadata.abstractMarkdown) } : {}),
+        ...(metadata.keywords !== undefined ? { keywords: (Array.isArray(metadata.keywords) ? metadata.keywords : []) as Prisma.InputJsonValue } : {}),
+        ...(metadata.template !== undefined ? { template: String(metadata.template) } : {}),
+        ...(input.obligationDrafts !== undefined ? { obligationDrafts: input.obligationDrafts as Prisma.InputJsonValue } : {})
+      }
+    })
+    await tx.manuscriptSection.updateMany({ where: { documentId: document.id, isCurrent: true, stableKey: { notIn: keys } }, data: { isCurrent: false } })
+    for (const section of input.sections) {
+      const current = await tx.manuscriptSection.findFirst({ where: { documentId: document.id, stableKey: section.stableKey, isCurrent: true }, orderBy: { revision: "desc" } })
+      const same = current && current.ordinal === section.ordinal && current.kind === section.kind && current.title === (section.title ?? null) && current.contentMarkdown === section.contentMarkdown && current.sourceFormat === (section.sourceFormat ?? "markdown") && JSON.stringify(current.claimIds) === JSON.stringify(section.claimIds ?? []) && JSON.stringify(current.citationKeys) === JSON.stringify(section.citationKeys ?? [])
+      if (same) continue
+      if (current) await tx.manuscriptSection.update({ where: { id: current.id }, data: { isCurrent: false } })
+      const latest = await tx.manuscriptSection.findFirst({ where: { documentId: document.id, stableKey: section.stableKey }, orderBy: { revision: "desc" } })
+      await tx.manuscriptSection.create({ data: {
+        workspaceId: input.workspaceId,
+        projectId: project.id,
+        documentId: document.id,
+        stableKey: section.stableKey,
+        revision: (latest?.revision ?? 0) + 1,
+        ordinal: section.ordinal,
+        kind: section.kind,
+        title: section.title,
+        contentMarkdown: section.contentMarkdown,
+        sourceFormat: section.sourceFormat === "latex" ? "latex" : "markdown",
+        claimIds: section.claimIds ?? [],
+        citationKeys: section.citationKeys ?? [],
+        createdByAgentRunId: run.id
+      } })
+    }
+    return tx.manuscriptDocument.findUniqueOrThrow({ where: { id: document.id }, include: { sections: { where: { isCurrent: true }, orderBy: [{ ordinal: "asc" }, { stableKey: "asc" }] } } })
+  })
+}
+
+export async function buildStructuredManuscript(input: { workspaceId: string; projectId: string; agentRunId: string; promote?: boolean }) {
+  const run = await prisma.agentRun.findFirstOrThrow({ where: { workspaceId: input.workspaceId, projectId: input.projectId, id: input.agentRunId, status: { in: ["started", "running"] } } })
+  const structured = await getStructuredManuscript(input.workspaceId, input.projectId)
+  if (!structured.document?.sections.length) throw new Error("No structured manuscript sections exist. Use update_manuscript first.")
+  const document = structured.document
+  const obligationDrafts = Array.isArray(document.obligationDrafts) ? document.obligationDrafts.map((value) => jsonObject(value) as Record<string, any>) : []
+  if (input.promote !== false && !obligationDrafts.length) throw new Error("Canonical build requires explicit obligation drafts in update_manuscript; PaperBuilder will not manufacture proof obligations.")
+  const papers = await prisma.paper.findMany({ where: { workspaceId: input.workspaceId, OR: [{ projectId: input.projectId }, { projectId: null }] }, orderBy: [{ year: "asc" }, { title: "asc" }] })
+  const rendered = renderPaper({
+    title: document.title,
+    authors: normalizeLines(document.authors),
+    abstractMarkdown: document.abstractMarkdown,
+    keywords: normalizeLines(document.keywords),
+    sections: document.sections,
+    papers
+  })
+  const normalizedMarkdown = [
+    `# ${document.title}`,
+    normalizeLines(document.authors).length ? `Authors: ${normalizeLines(document.authors).join(", ")}` : "",
+    document.abstractMarkdown ? `## Abstract\n\n${document.abstractMarkdown}` : "",
+    ...document.sections.map((section) => `${section.title ? `## ${section.title}\n\n` : ""}${section.contentMarkdown}`)
+  ].filter(Boolean).join("\n\n")
+  const contentHash = fingerprint(normalizedMarkdown)
+  const project = await prisma.project.findFirstOrThrow({ where: { workspaceId: input.workspaceId, id: input.projectId } })
+  const slug = `paperbuilder-${project.slug}-${contentHash.slice(0, 16)}`
+  const artifact = await prisma.researchArtifact.upsert({
+    where: { workspaceId_slug: { workspaceId: input.workspaceId, slug } },
+    create: { workspaceId: input.workspaceId, projectId: input.projectId, title: `${document.title} structured snapshot`, slug, kind: "paper_draft", status: "active", descriptionMarkdown: "Deterministic semantic snapshot assembled from ManuscriptSection revisions.", contentMarkdown: normalizedMarkdown },
+    update: {}
+  })
+  const claimIds = [...new Set(document.sections.flatMap((section) => normalizeLines(section.claimIds)))]
+  const prior = await prisma.manuscriptVersion.findFirst({ where: { workspaceId: input.workspaceId, projectId: input.projectId, isCanonical: true } })
+  const version = await createManuscriptVersion({ workspaceId: input.workspaceId, projectId: input.projectId, artifactId: artifact.id, parentArtifactIds: prior ? [prior.artifactId] : [], claimIds, createdByAgentRunId: run.id })
+  const existingObligations = await prisma.proofObligation.count({ where: { workspaceId: input.workspaceId, manuscriptVersionId: version.id } })
+  if (!existingObligations && obligationDrafts.length) {
+    await prisma.proofObligation.createMany({ data: obligationDrafts.map((draft, index) => ({
+      workspaceId: input.workspaceId,
+      projectId: input.projectId,
+      manuscriptVersionId: version.id,
+      claimId: draft.claim_id ? String(draft.claim_id) : undefined,
+      title: String(draft.title ?? `Proof obligation ${index + 1}`),
+      statementMarkdown: String(draft.statement_markdown ?? draft.statement ?? ""),
+      dependencies: Array.isArray(draft.dependencies) ? draft.dependencies as Prisma.InputJsonValue : [],
+      proofLocation: draft.proof_location ? String(draft.proof_location) : undefined,
+      manuscriptLocation: draft.manuscript_location ? String(draft.manuscript_location) : undefined,
+      externalTheorems: Array.isArray(draft.external_theorems) ? draft.external_theorems as Prisma.InputJsonValue : [],
+      externalAssumptionsMatched: typeof draft.external_assumptions_matched === "boolean" ? draft.external_assumptions_matched : undefined,
+      exactManuscriptProofPresent: typeof draft.exact_manuscript_proof_present === "boolean" ? draft.exact_manuscript_proof_present : undefined,
+      assumptions: normalizeLines(draft.assumptions),
+      excludedRegimes: normalizeLines(draft.excluded_regimes),
+      boundaryCases: normalizeLines(draft.boundary_cases),
+      semanticConsequences: normalizeLines(draft.semantic_consequences),
+      authorAssertion: draft.author_assertion ? String(draft.author_assertion) : undefined,
+      required: draft.required !== false
+    })) })
+  }
+  const manifest = {
+    document_id: document.id,
+    manuscript_content_hash: version.contentHash,
+    sections: document.sections.map((section) => ({ stable_key: section.stableKey, revision: section.revision, ordinal: section.ordinal })),
+    claim_ids: claimIds,
+    citation_keys: papers.map(citationKey)
+  }
+  const build = await executePaperBuild({ workspaceId: input.workspaceId, projectId: input.projectId, manuscriptVersionId: version.id, workstreamId: run.workstreamId, agentRunId: run.id, tex: rendered.tex, bibliography: rendered.bibliography, manifest })
+  if (input.promote !== false) await promoteManuscriptVersion({ workspaceId: input.workspaceId, manuscriptVersionId: version.id })
+  await prisma.objectContribution.create({ data: { workspaceId: input.workspaceId, projectId: input.projectId, agentRunId: run.id, objectType: "PaperBuild", objectId: build.id, versionHash: build.sourceHash, type: "compiled", metadata: { manuscript_version_id: version.id } } })
+  return { manuscript_version: await getManuscriptVersion(input.workspaceId, version.id), paper_build: build, surfaced_file: null }
+}
+
+export async function inspectStructuredManuscriptBuild(workspaceId: string, buildId: string) {
+  return inspectPaperBuild(workspaceId, buildId)
+}
+
+export async function publishStructuredManuscript(input: { workspaceId: string; projectId: string; manuscriptVersionId?: string }) {
+  const version = await prisma.manuscriptVersion.findFirstOrThrow({ where: { workspaceId: input.workspaceId, projectId: input.projectId, ...(input.manuscriptVersionId ? { id: input.manuscriptVersionId } : { isCanonical: true }) } })
+  const build = await prisma.paperBuild.findFirstOrThrow({ where: { workspaceId: input.workspaceId, projectId: input.projectId, manuscriptVersionId: version.id, status: "succeeded", sourceArtifactId: { not: null }, pdfArtifactId: { not: null } }, orderBy: { completedAt: "desc" } })
+  const publication = await createPublicationPackage({ workspaceId: input.workspaceId, projectId: input.projectId, manuscriptVersionId: version.id, sourceArtifactId: build.sourceArtifactId!, pdfArtifactId: build.pdfArtifactId!, buildManifest: build.buildManifest })
+  return { publication, final_pdf: await surfaceArtifact(input.workspaceId, build.pdfArtifactId!) }
 }
 
 function fingerprint(value: string) { return createHash("sha256").update(value).digest("hex") }

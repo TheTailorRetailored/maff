@@ -1,6 +1,6 @@
 import { prisma } from "../db/prisma.js"
 
-export const READINESS_POLICY_VERSION = "1.3.3-execute-after-claim"
+export const READINESS_POLICY_VERSION = "1.4.0-paper-builder"
 export const REQUIRED_MANUSCRIPT_GATES = ["proof_integration", "end_to_end_mathematical", "novelty", "bibliography", "editorial", "compile"] as const
 export type RequiredGate = typeof REQUIRED_MANUSCRIPT_GATES[number]
 type VersionIdentity = { id: string; version: number; contentHash: string; theoremFingerprint: string; citationFingerprint: string }
@@ -33,7 +33,7 @@ export function reviewEvidenceMatch(review: any, candidate: VersionIdentity, ver
 /** Central gate policy. Reviews only count when type, target version, and scope match. */
 export async function computeSubmissionReadiness(workspaceId: string, projectId: string) {
   await prisma.project.findFirstOrThrow({ where: { workspaceId, id: projectId } })
-  const version = await prisma.manuscriptVersion.findFirst({ where: { workspaceId, projectId, isCanonical: true }, include: { artifact: true, obligations: true, physicalArtifacts: { include: { artifact: true } } } })
+  const version = await prisma.manuscriptVersion.findFirst({ where: { workspaceId, projectId, isCanonical: true }, include: { artifact: true, obligations: true, physicalArtifacts: { include: { artifact: true } }, paperBuilds: { orderBy: { completedAt: "desc" } } } })
   if (!version) return { submission_ready: false, status: "no_canonical_manuscript", reasons: ["No canonical working-paper version exists."], blocking_object_references: [], stale_review_references: [], missing_gate_references: REQUIRED_MANUSCRIPT_GATES, gates: {} }
 
   const versions = await prisma.manuscriptVersion.findMany({ where: { workspaceId, projectId }, select: { id: true, version: true, contentHash: true, theoremFingerprint: true, citationFingerprint: true } })
@@ -74,7 +74,7 @@ export async function computeSubmissionReadiness(workspaceId: string, projectId:
     return { review, ...match }
   })
   const diagnostics = Object.fromEntries(REQUIRED_MANUSCRIPT_GATES.map((type) => [type, diagnosticsFor(type)])) as Record<RequiredGate, Array<{ review: any; accepted: boolean; basis: string | null; reason: string | null }>>
-  const adverseExactReviews = reviews.filter((review) => ["needs_revision", "rejected"].includes(review.verdict) && REQUIRED_MANUSCRIPT_GATES.includes(review.reviewType as RequiredGate)).filter((review) => {
+  const adverseExactReviews = reviews.filter((review) => ["needs_revision", "rejected"].includes(review.verdict) && review.reviewType !== "compile" && REQUIRED_MANUSCRIPT_GATES.includes(review.reviewType as RequiredGate)).filter((review) => {
     const match = reviewEvidenceMatch(review, version, versions, review.reviewType as RequiredGate)
     return match.accepted && review.evidenceStatus === "assigned_valid" && review.reviewAssignment?.status === "submitted" && ["submitted", "completed"].includes(review.reviewAssignment.reviewerRun.status)
   })
@@ -101,6 +101,7 @@ export async function computeSubmissionReadiness(workspaceId: string, projectId:
   const sourceArtifacts = attached.filter((item) => ["source_bundle", "manuscript_source"].includes(item.role))
   const pdfArtifacts = attached.filter((item) => ["compiled_pdf", "final_pdf"].includes(item.role))
   const physicalHealthy = (items: typeof attached) => items.some(({ artifact }) => artifact.storageStatus === "available" && Boolean(artifact.storageKey && artifact.sha256 && artifact.byteSize !== null))
+  const successfulBuild = version.paperBuilds.find((build) => build.status === "succeeded" && build.sourceArtifactId && build.pdfArtifactId && (build.buildManifest as any)?.manuscript_content_hash === version.contentHash)
   const externalChallenges = await prisma.externalReviewImport.findMany({ where: { workspaceId, projectId, manuscriptVersionId: version.id, verdict: { in: ["needs_revision", "rejected"] }, triagedAt: null } })
   const numericalRequired = claims.some((claim) => (claim.metadata as any)?.requires_numerical_validation === true)
   const numericalDiagnostics = reviews.filter((review) => review.reviewType === "numerical_verification" && review.verdict === approved && review.evidenceStatus === "assigned_valid" && review.reviewAssignment?.status === "submitted" && review.reviewAssignment.reviewerRun.status === "completed")
@@ -113,12 +114,13 @@ export async function computeSubmissionReadiness(workspaceId: string, projectId:
     novelty: { satisfied: noveltyMissing.length === 0 && gateReviews("novelty").length > 0, review_ids: gateReviews("novelty").map((r) => r.id), missing_claim_ids: noveltyMissing.map((c) => c.id), evidence: evidence("novelty"), unclassified_literature_evidence_candidates: unclassifiedLiteratureEvidence },
     bibliography: { satisfied: gateReviews("bibliography").length > 0, review_ids: gateReviews("bibliography").map((r) => r.id), evidence: evidence("bibliography"), unclassified_literature_evidence_candidates: unclassifiedLiteratureEvidence },
     editorial: { satisfied: gateReviews("editorial").length > 0, review_ids: gateReviews("editorial").map((r) => r.id), evidence: evidence("editorial") },
-    compile: { satisfied: gateReviews("compile").length > 0 && physicalHealthy(sourceArtifacts) && physicalHealthy(pdfArtifacts), review_ids: gateReviews("compile").map((r) => r.id), evidence: evidence("compile") },
+    compile: { satisfied: Boolean(successfulBuild) && physicalHealthy(sourceArtifacts) && physicalHealthy(pdfArtifacts), paper_build_id: successfulBuild?.id ?? null, builder_version: successfulBuild?.builderVersion ?? null, source_hash: successfulBuild?.sourceHash ?? null, review_ids: [], evidence: [] },
     numerical_verification: { required: numericalRequired, satisfied: !numericalRequired || numericalDiagnostics.length > 0, review_ids: numericalDiagnostics.map((review) => review.id) },
     external_challenge_resolution: { satisfied: externalChallenges.length === 0, unresolved_external_review_ids: externalChallenges.map((review) => review.id) }
   }
   const blockingGaps = relevantGaps.filter((g) => ["fatal", "critical", "major"].includes(g.severity))
   const gateReason = (type: RequiredGate) => {
+    if (type === "compile") return `No successful internal PaperBuild matches exact release candidate ${version.id}.`
     if (type === "proof_integration" && integrationReviews.length && missingObligations.length) return `Approved exact-version proof-integration evidence is missing preserved checks for obligations: ${missingObligations.map((obligation) => obligation.id).join(", ")}.`
     if (type === "novelty" && gateReviews(type).length && noveltyMissing.length) return `Accepted theorem-fingerprint novelty evidence does not cover claims: ${noveltyMissing.map((claim) => claim.id).join(", ")}.`
     const rejected = diagnostics[type].filter((item) => !item.accepted && item.review.verdict === approved)
@@ -137,7 +139,7 @@ export async function computeSubmissionReadiness(workspaceId: string, projectId:
   const releaseOrder: RequiredGate[] = ["compile", "proof_integration", "novelty", "bibliography", "end_to_end_mathematical", "editorial"]
   const nextGate = adverseExactReviews.length ? null : releaseOrder.find((type) => !gates[type].satisfied) ?? null
   const nextAction: Record<RequiredGate, string> = {
-    compile: `Run mechanical validation against exact release candidate ${version.id}.`,
+    compile: `Build exact release candidate ${version.id} with PaperBuilder. This is an automated build, not a reviewer assignment.`,
     proof_integration: `Review every required obligation against exact release candidate ${version.id}; record one preserved/passed obligation check per required obligation.`,
     novelty: unclassifiedLiteratureEvidence.length ? `Classify eligible existing literature review evidence (${unclassifiedLiteratureEvidence.map((candidate) => candidate.review_id).join(", ")}) against theorem fingerprint ${version.theoremFingerprint}, or run only the uncovered novelty delta.` : `Register approved novelty evidence for theorem fingerprint ${version.theoremFingerprint}; matching evidence from an earlier version is reusable.`,
     bibliography: unclassifiedLiteratureEvidence.length ? `Classify eligible existing literature review evidence (${unclassifiedLiteratureEvidence.map((candidate) => candidate.review_id).join(", ")}) against citation fingerprint ${version.citationFingerprint}, or run only the uncovered bibliography delta.` : `Register approved bibliography evidence for citation fingerprint ${version.citationFingerprint}; matching evidence from an earlier version is reusable.`,
@@ -145,6 +147,7 @@ export async function computeSubmissionReadiness(workspaceId: string, projectId:
     editorial: `Run an assigned author-disjoint significance, exposition, and venue-suitability review of exact release candidate ${version.id}.`
   }
   const repeatedWithoutNewIssues = releaseOrder.filter((type) => {
+    if (type === "compile") return false
     if (gates[type].satisfied) return false
     const exactAttempts = diagnostics[type]
       .filter((item) => item.basis === "exact_version" && item.review.evidenceStatus === "assigned_valid" && item.review.reviewAssignment?.status === "submitted" && item.review.reviewAssignment?.reviewerRun?.status === "completed")
@@ -152,7 +155,7 @@ export async function computeSubmissionReadiness(workspaceId: string, projectId:
       .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
     return exactAttempts.length >= 2 && exactAttempts.slice(-2).every((review) => strings(review.issues).length === 0)
   })
-  const acceptedButIncomplete = releaseOrder.filter((type) => !gates[type].satisfied && diagnostics[type].some((item) => item.accepted))
+  const acceptedButIncomplete = releaseOrder.filter((type) => type !== "compile" && !gates[type].satisfied && diagnostics[type].some((item) => item.accepted))
   const circuitBreakerGates = [...new Set([...repeatedWithoutNewIssues, ...acceptedButIncomplete])]
   const stale = REQUIRED_MANUSCRIPT_GATES.flatMap((type) => diagnostics[type].filter((item) => !item.accepted && item.review.verdict === approved).map((item) => ({ id: item.review.id, review_type: type, target_version: item.review.targetVersion, reason: item.reason })))
   return {

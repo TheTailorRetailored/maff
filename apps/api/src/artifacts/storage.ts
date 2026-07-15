@@ -58,6 +58,10 @@ async function ingestStream(source: Readable, workspaceId: string, originalFilen
   }
 }
 
+export async function ingestBytes(bytes: Buffer | string, workspaceId: string, originalFilename: string) {
+  return ingestStream(Readable.from([typeof bytes === "string" ? Buffer.from(bytes, "utf8") : bytes]), workspaceId, originalFilename)
+}
+
 export async function ingestFile(sourcePath: string, workspaceId: string) {
   const source = path.resolve(sourcePath)
   const allowed = config.artifactIngestRoots.some((allowedRoot) => source === allowedRoot || source.startsWith(`${allowedRoot}${path.sep}`))

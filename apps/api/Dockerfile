@@ -18,7 +18,14 @@ RUN npm run build
 FROM node:22-bookworm-slim
 WORKDIR /app
 ENV NODE_ENV=production
-RUN apt-get update && apt-get install -y --no-install-recommends openssl ca-certificates && rm -rf /var/lib/apt/lists/*
+ARG TECTONIC_VERSION=0.16.9
+ARG TECTONIC_SHA256=60b13a0826ae7ad9ce34b4a2df06bff2cfcfa6dda8a915477c0cbb84e1a4a902
+RUN apt-get update && apt-get install -y --no-install-recommends openssl ca-certificates curl \
+  && curl -fsSL "https://github.com/tectonic-typesetting/tectonic/releases/download/tectonic%40${TECTONIC_VERSION}/tectonic-${TECTONIC_VERSION}-x86_64-unknown-linux-musl.tar.gz" -o /tmp/tectonic.tar.gz \
+  && echo "${TECTONIC_SHA256}  /tmp/tectonic.tar.gz" | sha256sum -c - \
+  && tar -xzf /tmp/tectonic.tar.gz -C /usr/local/bin tectonic \
+  && chmod 0755 /usr/local/bin/tectonic \
+  && rm -rf /var/lib/apt/lists/* /tmp/tectonic.tar.gz
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/prisma ./prisma

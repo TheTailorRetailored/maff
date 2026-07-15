@@ -18,6 +18,8 @@
     "test:smoke:src": "tsx src/smoke.ts",
     "test:smoke:db": "tsx src/smokeRuntimeDb.ts",
     "test:artifact-storage": "tsx src/artifacts/storageSmoke.ts",
+    "test:paper-builder:fixture": "tsx src/paperBuilderRenderFixture.ts",
+    "test:paper-builder:db": "tsx src/paperBuilderDbSmoke.ts",
     "test:migration:fixture": "tsx src/migrationFixture.ts",
     "admin:reset-legacy": "node dist/admin/resetLegacyResearch.js",
     "admin:reset-legacy:src": "tsx src/admin/resetLegacyResearch.ts",

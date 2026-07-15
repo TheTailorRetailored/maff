@@ -12,16 +12,16 @@ Artifacts may link directly to a workstream, a ResearchArtifact, and one or more
 
 ## API lifecycle
 
-1. ChatGPT agents ingest generated `/mnt/data` files with `create_artifact` and its `file` parameter. The tool descriptor advertises `_meta["openai/fileParams"] = ["file"]`, so the client transfers a connector file object instead of a server-local path string. Supply `expected_sha256` when available; Maff recomputes the stored SHA-256 and rejects mismatches before creating an available `Artifact`.
-2. Trusted server jobs may ingest files already present on the Maff server with `create_artifact_from_path` and `server_path`. Do not pass ChatGPT container paths here.
-3. Link report metadata with `research_artifact_id`, and exact manuscript output with `attach_artifact_to_manuscript_version`.
-4. Inspect metadata with `get_artifact` or `list_artifacts`.
-5. Run `verify_artifact`; inspect ZIP entries with `list_artifact_archive`.
-6. Retrieve bytes through `download_artifact`, `read_artifact_archive_file`, or `export_physical_artifacts`. These return authenticated streaming references, not JSON/base64 payloads.
+1. Imported external files may enter through `create_artifact` and its connector `file` parameter. This is not the manuscript-writing path.
+2. Research reports, reviews, proof attempts, experiments, and handoffs remain database-native unless exact external or executable bytes genuinely matter.
+3. Manuscript agents edit structured content with `update_manuscript`; `build_manuscript` performs server-side rendering, compilation, ingestion, verification and exact-version linking.
+4. Reviewers use `inspect_manuscript_build` to read complete normalized text, TeX, bibliography, manifest and logs without surfacing a file.
+5. Low-level server-path ingestion, archive access, attachment, download and surfacing operations are internal implementation surfaces rather than agent tools.
+6. `publish_manuscript` selects the matching successful PaperBuild and surfaces only its final PDF after publication readiness.
 
 Submission, approval, and completion run a durability preflight only when structured state explicitly says physical bytes are material: `reviewPolicy.requires_physical_artifacts=true`. Neither ordinary prose nor merely referencing a legacy `ResearchArtifact.filePath` creates that obligation; a memo may discuss or diagnose missing files without becoming a file-producing task. When the policy applies, the preflight verifies managed bytes, required archive members from `metadata.required_files`, direct links, and rejects metadata-only paths.
 
-Canonical promotion identifies the exact working manuscript text and therefore does not require a compiled PDF. Exact managed source and PDF bytes may be attached later as immutable evidence without changing the semantic content hash; they remain mandatory for artifact-integrity readiness and final publication packaging. Creating a dummy Markdown, ZIP, or PDF solely to satisfy workflow state is forbidden.
+Canonical promotion identifies the exact structured working manuscript text. PaperBuilder produces exact managed source and PDF bytes as derived build evidence without changing the semantic content hash. Creating a dummy Markdown, ZIP, or PDF solely to satisfy workflow state is forbidden.
 
 ## Existing records and MMRW Version 3
 
