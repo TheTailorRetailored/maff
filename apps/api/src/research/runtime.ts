@@ -1023,18 +1023,19 @@ export async function recordReviewRound(input: {
   evidenceSections?: unknown
 }) {
   const workstream = await prisma.workstream.findFirstOrThrow({ where: { workspaceId: input.workspaceId, id: input.workstreamId } })
+  let createdByRun: Awaited<ReturnType<typeof prisma.agentRun.findFirstOrThrow>> | null = null
   if (input.createdByAgentRunId) {
-    const run = await prisma.agentRun.findFirstOrThrow({ where: { workspaceId: input.workspaceId, id: input.createdByAgentRunId } })
-    if (run.workstreamId === input.workstreamId && run.role === workstream.coordinatorRole && !input.reviewAssignmentId) throw new Error("Reviewer cannot review or edit the same workstream output in the same ReviewRound without a dedicated locked review assignment.")
+    createdByRun = await prisma.agentRun.findFirstOrThrow({ where: { workspaceId: input.workspaceId, id: input.createdByAgentRunId } })
+    if (createdByRun.workstreamId === input.workstreamId && createdByRun.role === workstream.coordinatorRole && !input.reviewAssignmentId) throw new Error("Reviewer cannot review or edit the same workstream output in the same ReviewRound without a dedicated locked review assignment.")
   }
   const verdict = asReviewVerdict(input.verdict)
   const reviewType = input.reviewType ?? "legacy_unspecified"
   const allowedReviewTypes = ["legacy_unspecified", "ingredient_correctness", "proof_integration", "end_to_end_mathematical", "novelty", "bibliography", "editorial", "source_fidelity", "compile", "numerical_verification", "formal_verification", "other"]
+  const manuscriptReviewTypes = new Set(["proof_integration", "end_to_end_mathematical", "novelty", "bibliography", "compile", "editorial", "source_fidelity"])
   const allowedIndependence = ["author_self_check", "same_workstream_reviewer", "independent_reviewer", "external_referee_style"]
   if (!allowedReviewTypes.includes(reviewType)) throw new Error(`Invalid review type: ${reviewType}`)
   if (input.independence && !allowedIndependence.includes(input.independence)) throw new Error(`Invalid review independence: ${input.independence}`)
-  if (reviewType !== "legacy_unspecified" && !input.targetVersion) throw new Error("Scoped reviews require targetVersion (canonical ManuscriptVersion id or content hash).")
-  const manuscriptReviewTypes = new Set(["proof_integration", "end_to_end_mathematical", "novelty", "bibliography", "compile", "editorial", "source_fidelity"])
+  if (manuscriptReviewTypes.has(reviewType) && !input.targetVersion) throw new Error("Manuscript reviews require targetVersion (canonical ManuscriptVersion id or content hash).")
   let manuscriptTarget: { id: string; contentHash: string } | null = null
   if (manuscriptReviewTypes.has(reviewType)) {
     const targetRef = input.targetVersion!
@@ -1047,9 +1048,14 @@ export async function recordReviewRound(input: {
     if (input.targetObjectId && input.targetObjectId !== manuscriptTarget.id) throw new Error("Manuscript review targetObjectId must match the exact ManuscriptVersion.")
   }
   let lockedAssignment: Awaited<ReturnType<typeof validateReviewAssignment>> | null = null
+  const assignedInternalReview = createdByRun?.role === "HostileReviewer" || Boolean(input.reviewAssignmentId)
+  if (assignedInternalReview) {
+    const assignedTargetId = manuscriptTarget?.id ?? input.targetObjectId ?? input.reportId ?? workstream.reportId ?? input.workstreamId
+    if (!input.reviewAssignmentId || !input.submissionToken || !input.createdByAgentRunId) throw new Error("Internal reviews require the server-issued ReviewAssignment, submission token, and active reviewer AgentRun returned by claim_next_review.")
+    lockedAssignment = await validateReviewAssignment({ workspaceId: input.workspaceId, assignmentId: input.reviewAssignmentId, submissionToken: input.submissionToken, reviewerRunId: input.createdByAgentRunId, reviewType, targetObjectId: assignedTargetId, workstreamId: input.workstreamId })
+  }
   if (manuscriptReviewTypes.has(reviewType)) {
-    if (!input.reviewAssignmentId || !input.submissionToken || !input.createdByAgentRunId || !manuscriptTarget) throw new Error("Internal manuscript reviews require a server-issued ReviewAssignment, submission token, and active reviewer AgentRun.")
-    lockedAssignment = await validateReviewAssignment({ workspaceId: input.workspaceId, assignmentId: input.reviewAssignmentId, submissionToken: input.submissionToken, reviewerRunId: input.createdByAgentRunId, reviewType, targetObjectId: manuscriptTarget.id, workstreamId: input.workstreamId })
+    if (!lockedAssignment || !input.createdByAgentRunId || !manuscriptTarget) throw new Error("Internal manuscript reviews require a server-issued ReviewAssignment, submission token, and active reviewer AgentRun.")
     const permittedArtifactIds = Array.isArray(lockedAssignment.permittedArtifactIds)
       ? lockedAssignment.permittedArtifactIds.filter((id): id is string => typeof id === "string")
       : []
@@ -1107,7 +1113,7 @@ export async function recordReviewRound(input: {
       if (missingRequired.length) throw new Error(`An approved proof-integration review must preserve every required exact-version obligation; missing ids: ${missingRequired.join(", ")}.`)
     }
   }
-  const evidenceSections = lockedAssignment ? validateReviewEvidence({ reviewType, verdict, evidenceSections: input.evidenceSections, obligationChecks, checkedRefs: input.checkedRefs, scope: input.scope }) : []
+  const evidenceSections = lockedAssignment && manuscriptReviewTypes.has(reviewType) ? validateReviewEvidence({ reviewType, verdict, evidenceSections: input.evidenceSections, obligationChecks, checkedRefs: input.checkedRefs, scope: input.scope }) : []
   const canonicalCheckedObligationIds = [...new Set([...checkedObligationIds, ...obligationChecks.map((check) => check.proofObligationId)])]
   if (canonicalCheckedObligationIds.length) {
     const allowed = await prisma.proofObligation.count({ where: { workspaceId: input.workspaceId, id: { in: canonicalCheckedObligationIds } } })

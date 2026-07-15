@@ -53,7 +53,8 @@ export async function computeReviewEligibility(input: { workspaceId: string; pro
 
 export async function createReviewAssignment(input: { workspaceId: string; projectId: string; workstreamId: string; reviewerRunId: string; reviewType: string; targetObjectType: string; targetObjectId: string; targetHash?: string; manuscriptVersionId?: string; permittedArtifactIds?: string[]; briefing: unknown; leaseExpiresAt: Date }) {
   await prisma.reviewAssignment.updateMany({ where: { workspaceId: input.workspaceId, workstreamId: input.workstreamId, status: "claimed", leaseExpiresAt: { lte: new Date() } }, data: { status: "expired" } })
-  const activeAssignment = await prisma.reviewAssignment.findFirst({ where: { workspaceId: input.workspaceId, workstreamId: input.workstreamId, status: "claimed", leaseExpiresAt: { gt: new Date() } } })
+  await prisma.reviewAssignment.updateMany({ where: { workspaceId: input.workspaceId, workstreamId: input.workstreamId, status: "claimed", reviewerRun: { status: { notIn: ["started", "running", "submitted"] } } }, data: { status: "cancelled" } })
+  const activeAssignment = await prisma.reviewAssignment.findFirst({ where: { workspaceId: input.workspaceId, workstreamId: input.workstreamId, status: "claimed", leaseExpiresAt: { gt: new Date() }, reviewerRun: { status: { in: ["started", "running", "submitted"] } } } })
   if (activeAssignment) throw new Error("This workstream already has an active locked review assignment. Resume that reviewer chat or wait for its lease to expire.")
   const eligibility = await computeReviewEligibility(input)
   if (!eligibility.eligible) throw new Error(`Reviewer run is ineligible for ${input.reviewType}: computed independence is ${eligibility.independence}. Start a fresh chat.`)
@@ -114,8 +115,9 @@ export async function submitRunOutcome(input: { workspaceId: string; agentRunId:
   const reviewPolicy = object(run.workstream.reviewPolicy)
   const manuscriptReviewTypes = new Set(["proof_integration", "end_to_end_mathematical", "novelty", "bibliography", "compile", "editorial", "source_fidelity"])
   const lockedReviewerRun = run.role === "HostileReviewer" && (reviewPolicy.locked_assignment_required === true || manuscriptReviewTypes.has(String(reviewPolicy.review_type ?? "")))
-  if (lockedReviewerRun) {
-    const assignment = await prisma.reviewAssignment.findFirst({ where: { workspaceId: input.workspaceId, reviewerRunId: run.id }, include: { reviewRound: true } })
+  const reviewerAssignment = run.role === "HostileReviewer" ? await prisma.reviewAssignment.findFirst({ where: { workspaceId: input.workspaceId, reviewerRunId: run.id }, include: { reviewRound: true } }) : null
+  if (lockedReviewerRun || reviewerAssignment) {
+    const assignment = reviewerAssignment
     if (!assignment) throw new Error("This locked reviewer run was started without a ReviewAssignment. It cannot complete; claim the review through claim_next_review.")
     if (assignment.status !== "submitted" || !assignment.reviewRound) throw new Error("Submit the assigned ReviewRound before completing this locked reviewer run. A narrative run outcome cannot replace the required verdict.")
   }

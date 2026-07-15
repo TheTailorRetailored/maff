@@ -279,6 +279,16 @@ assert.equal(metadataExport[0].physicalArtifacts[0].id, durableArtifact.id)
 const submittedPhysical = await runtime.submitReportForReview({ workspaceId: workspace.id, reportId: draftPhysicalSubmission.id })
 assert.equal(submittedPhysical.report_status, "submitted")
 
+// Generic report reviews use the same server-issued assignment lifecycle as
+// manuscript gates. Completing a reviewer run must never strand a claimed lock.
+const genericClaim = await runtime.claimNextReview({ userId: user.id, workspaceRef: workspace.id, project: project.id, sessionId: `generic-review-session-${suffix}`, model: "smoke" })
+assert.equal(genericClaim.assignment?.id, physicalWorkstream.id)
+assert.ok(genericClaim.review_assignment?.submission_token)
+const genericReview = await runtime.recordReviewRound({ workspaceId: workspace.id, workstreamId: physicalWorkstream.id, reportId: draftPhysicalSubmission.id, targetObjectType: genericClaim.review_assignment.assignment.targetObjectType, targetObjectId: genericClaim.review_assignment.assignment.targetObjectId, verdict: "approved", reviewType: "other", bodyMarkdown: "The submitted report and its durable exact outputs were independently inspected and are internally consistent.", issues: [], requiredChanges: [], checkedRefs: [durableArtifact.id], createdByAgentRunId: genericClaim.agent_run.id, reviewAssignmentId: genericClaim.review_assignment.assignment.id, submissionToken: genericClaim.review_assignment.submission_token })
+assert.equal(genericReview.evidenceStatus, "assigned_valid")
+await runtime.submitRunOutcome({ workspaceId: workspace.id, agentRunId: genericClaim.agent_run.id, completedWork: ["Completed the assigned generic report review."], nextAction: { kind: "review", role: "HostileReviewer" } })
+assert.equal((await prisma.reviewAssignment.findUniqueOrThrow({ where: { id: genericClaim.review_assignment.assignment.id } })).status, "submitted")
+
 // A fresh reviewer receives a locked target and must prove access to exact bytes before
 // substantive evidence can close the gate. The one-use assignment completes with the run.
 const lockedReviewWorkstream = await runtime.createWorkstream({ workspaceId: workspace.id, projectId: project.id, goalId: goal.id, title: "Locked proof integration review", kind: "hostile_review", instructions: "Attack the exact proof integration without editing it.", coordinatorRole: "HostileReviewer", priority: 100, targetObjectType: "ManuscriptVersion", targetObjectId: manuscriptVersion.id, reviewPolicy: { min_approved_rounds: 1, review_type: "proof_integration", locked_assignment_required: true, remediation: true } })
