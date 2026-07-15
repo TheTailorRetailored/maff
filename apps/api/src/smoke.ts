@@ -107,7 +107,7 @@ for (const name of [
   assert.ok(toolDefinitions.some((tool) => tool.name === name), `missing MCP tool ${name}`)
 }
 
-for (const name of ["get_manuscript", "update_manuscript", "build_manuscript", "inspect_manuscript_build", "publish_manuscript", "create_proof_obligation", "get_integration_coverage", "compute_submission_readiness", "set_manuscript_freeze", "import_external_review", "create_strategic_review", "get_project_health", "create_project_branch"]) {
+for (const name of ["get_manuscript", "update_manuscript", "build_manuscript", "revise_manuscript_source", "inspect_manuscript_build", "publish_manuscript", "create_proof_obligation", "get_integration_coverage", "compute_submission_readiness", "set_manuscript_freeze", "import_external_review", "create_strategic_review", "get_project_health", "create_project_branch"]) {
   assert.ok(toolDefinitions.some((tool) => tool.name === name), `missing modern MCP tool ${name}`)
 }
 assert.equal(toolDefinitions.length, expectedMcpToolCount, "MCP registry count changed; update the reviewed snapshot intentionally")
@@ -144,7 +144,7 @@ for (const prop of ["report_id", "workstream_id"]) {
   assert.ok(submitReportProps[prop], `submit_report_for_review schema must advertise ${prop}`)
 }
 
-assert.equal(mcpServerVersion, "1.4.0-paper-builder")
+assert.equal(mcpServerVersion, "1.5.0-source-preserving")
 assert.equal(normalizedObligationCheckStatus("passed"), "preserved")
 assert.equal(normalizedObligationCheckStatus("preserved"), "preserved")
 assert.equal(normalizedObligationCheckStatus("failed"), "failed")
@@ -153,6 +153,8 @@ const priorCandidate = { id: "version-3", version: 3, contentHash: "content-3", 
 assert.deepEqual(reviewEvidenceMatch({ targetVersion: "4" }, releaseCandidate, [priorCandidate, releaseCandidate], "compile"), { accepted: true, basis: "exact_version", reason: null })
 assert.deepEqual(reviewEvidenceMatch({ targetVersion: "version-3" }, releaseCandidate, [priorCandidate, releaseCandidate], "bibliography"), { accepted: true, basis: "citation_fingerprint", reason: null })
 assert.equal(reviewEvidenceMatch({ targetVersion: "version-3" }, releaseCandidate, [priorCandidate, releaseCandidate], "proof_integration").accepted, false)
+assert.deepEqual(reviewEvidenceMatch({ targetVersion: "version-3" }, releaseCandidate, [priorCandidate, releaseCandidate], "proof_integration", new Set(["version-3"])), { accepted: true, basis: "editorial_only_lineage", reason: null })
+assert.equal(reviewEvidenceMatch({ targetVersion: "version-3" }, releaseCandidate, [priorCandidate, releaseCandidate], "editorial", new Set(["version-3"])).accepted, false, "editorial approval must not carry across the editorial repair it triggered")
 assert.doesNotThrow(() => validateReviewEvidence({ reviewType: "end_to_end_mathematical", verdict: "approved", evidenceSections: [{ sectionType: "end_to_end_mathematical", conclusion: "holds", evidenceMarkdown: "Checked the boundary case directly.", attackCategories: ["boundary"] }] }))
 assert.throws(() => validateReviewEvidence({ reviewType: "editorial", verdict: "approved", evidenceSections: [{ sectionType: "editorial", evidenceMarkdown: "Evidence without a conclusion." }] }), /conclusion and concrete evidence/i)
 assert.throws(() => validateReviewEvidence({ reviewType: "end_to_end_mathematical", verdict: "approved", evidenceSections: [{ sectionType: "end_to_end_mathematical", conclusion: "holds", evidenceMarkdown: "Checked directly.", attackCategories: [] }] }), /arbitrary quota/i)

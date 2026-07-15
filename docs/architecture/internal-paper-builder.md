@@ -16,4 +16,6 @@ The same semantic snapshot and builder version produce the same rendered source 
 
 `inspect_manuscript_build` returns the full normalized manuscript, TeX, bibliography, manifest and log as text. It reports PDF identity but does not return a file resource. This is the reviewer path.
 
+Imported or hand-formatted LaTeX projects use `revise_manuscript_source` for bounded successor revisions. The server reads the parent source bundle, requires exact expected-text occurrence counts, preserves every untouched source entry, recompiles internally, clones the proof-obligation ledger, and records an immutable child lineage. The conservative `editorial_only` class is accepted only when the entire source delta is confined to `\\date{...}`; this may carry proof-integration and end-to-end evidence forward while never carrying the editorial verdict that requested the change.
+
 Readiness treats a successful PaperBuild whose manifest matches the canonical manuscript content hash as compile evidence. `publish_manuscript` selects that exact build after all substantive gates pass, creates the publication package, and returns the final PDF as the only automatically surfaced file.

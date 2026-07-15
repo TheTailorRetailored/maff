@@ -126,6 +126,15 @@ async function zipSources(files: Record<string, string>) {
   return Buffer.concat(chunks)
 }
 
+async function zipSourceBuffers(files: Record<string, Buffer>) {
+  const zip = new yazl.ZipFile()
+  for (const name of Object.keys(files).sort()) zip.addBuffer(files[name], name)
+  zip.end()
+  const chunks: Buffer[] = []
+  for await (const chunk of zip.outputStream) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
+  return Buffer.concat(chunks)
+}
+
 async function createManagedArtifact(input: { workspaceId: string; projectId: string; workstreamId?: string; agentRunId?: string; title: string; filename: string; kind: "latex" | "pdf"; bytes: Buffer; metadata: Record<string, unknown> }) {
   const ingested = await ingestBytes(input.bytes, input.workspaceId, input.filename)
   return prisma.artifact.create({ data: {
@@ -175,6 +184,52 @@ export async function executePaperBuild(input: { workspaceId: string; projectId:
     const sourceZip = await zipSources({ "main.tex": input.tex, "references.bib": input.bibliography, "build-manifest.json": `${JSON.stringify(completeManifest, null, 2)}\n` })
     const sourceArtifact = await createManagedArtifact({ ...input, title: "PaperBuilder source bundle", filename: "manuscript-source.zip", kind: "latex", bytes: sourceZip, metadata: { role: "source_bundle", required_files: ["main.tex", "references.bib", "build-manifest.json"], paper_build_id: build.id } })
     const pdfArtifact = await createManagedArtifact({ ...input, title: "PaperBuilder compiled manuscript", filename: "manuscript.pdf", kind: "pdf", bytes: pdf, metadata: { role: "compiled_pdf", paper_build_id: build.id } })
+    await prisma.$transaction([
+      prisma.artifactManuscriptVersion.upsert({ where: { artifactId_manuscriptVersionId_role: { artifactId: sourceArtifact.id, manuscriptVersionId: input.manuscriptVersionId, role: "source_bundle" } }, create: { workspaceId: input.workspaceId, artifactId: sourceArtifact.id, manuscriptVersionId: input.manuscriptVersionId, role: "source_bundle" }, update: {} }),
+      prisma.artifactManuscriptVersion.upsert({ where: { artifactId_manuscriptVersionId_role: { artifactId: pdfArtifact.id, manuscriptVersionId: input.manuscriptVersionId, role: "compiled_pdf" } }, create: { workspaceId: input.workspaceId, artifactId: pdfArtifact.id, manuscriptVersionId: input.manuscriptVersionId, role: "compiled_pdf" }, update: {} }),
+      prisma.paperBuild.update({ where: { id: build.id }, data: { status: "succeeded", sourceArtifactId: sourceArtifact.id, pdfArtifactId: pdfArtifact.id, buildManifest: completeManifest as Prisma.InputJsonValue, logText: `${stdout}\n${stderr}`.trim(), completedAt: new Date() } })
+    ])
+    return prisma.paperBuild.findUniqueOrThrow({ where: { id: build.id } })
+  } finally {
+    await rm(temp, { recursive: true, force: true })
+  }
+}
+
+export async function executeSourcePreservingBuild(input: { workspaceId: string; projectId: string; manuscriptVersionId: string; workstreamId: string; agentRunId: string; files: Record<string, Buffer>; manifest: Record<string, unknown> }) {
+  const safeEntries = Object.entries(input.files).filter(([name]) => name && !name.startsWith("/") && !name.startsWith("\\") && !name.split(/[\\/]/).includes(".."))
+  if (safeEntries.length !== Object.keys(input.files).length || !input.files["main.tex"] || !input.files["references.bib"]) throw new Error("Source-preserving builds require safe archive paths with root main.tex and references.bib.")
+  const sourceInputs = safeEntries.filter(([name]) => !["main.pdf", "main.log", "build-manifest.json"].includes(name)).sort(([a], [b]) => a.localeCompare(b))
+  const sourceHash = sha256(Buffer.concat(sourceInputs.flatMap(([name, bytes]) => [Buffer.from(`${name}\0${bytes.length}\0`), bytes])))
+  const builderVersion = "1.1.0-source-preserving"
+  const existing = await prisma.paperBuild.findUnique({ where: { manuscriptVersionId_builderVersion_sourceHash: { manuscriptVersionId: input.manuscriptVersionId, builderVersion, sourceHash } } })
+  if (existing?.status === "succeeded") return existing
+  const build = existing
+    ? await prisma.paperBuild.update({ where: { id: existing.id }, data: { status: "running", logText: null, startedAt: new Date(), completedAt: null } })
+    : await prisma.paperBuild.create({ data: { workspaceId: input.workspaceId, projectId: input.projectId, manuscriptVersionId: input.manuscriptVersionId, status: "running", builderVersion, sourceHash, buildManifest: input.manifest as Prisma.InputJsonValue } })
+  const temp = await mkdtemp(path.join(os.tmpdir(), "maff-source-successor-"))
+  try {
+    for (const [name, bytes] of safeEntries) {
+      const destination = path.join(temp, ...name.split("/"))
+      await mkdir(path.dirname(destination), { recursive: true })
+      await writeFile(destination, bytes)
+    }
+    const output = path.join(temp, "build")
+    await mkdir(output)
+    let stdout = "", stderr = ""
+    try {
+      const result = await run(process.env.LATEXMK_BIN ?? "latexmk", ["-pdf", "-interaction=nonstopmode", "-halt-on-error", `-outdir=${output}`, path.join(temp, "main.tex")], { cwd: temp, timeout: 240_000, maxBuffer: 16 * 1024 * 1024, env: { ...process.env, XDG_CACHE_HOME: process.env.XDG_CACHE_HOME ?? "/data/tectonic-cache" } })
+      stdout = result.stdout; stderr = result.stderr
+    } catch (error: any) {
+      stdout = String(error?.stdout ?? ""); stderr = String(error?.stderr ?? error?.message ?? error)
+      await prisma.paperBuild.update({ where: { id: build.id }, data: { status: "failed", logText: `${stdout}\n${stderr}`.trim(), completedAt: new Date() } })
+      throw new Error(`Source-preserving PaperBuilder compilation failed under latexmk. Inspect build ${build.id}; no file was surfaced to the user.`)
+    }
+    const pdf = await readFile(path.join(output, "main.pdf"))
+    const completeManifest = { ...input.manifest, builder_version: builderVersion, source_hash: sourceHash, manuscript_version_id: input.manuscriptVersionId }
+    const bundledFiles = { ...input.files, "main.pdf": pdf, "build-manifest.json": Buffer.from(`${JSON.stringify(completeManifest, null, 2)}\n`) }
+    const sourceZip = await zipSourceBuffers(bundledFiles)
+    const sourceArtifact = await createManagedArtifact({ ...input, title: "PaperBuilder source-preserving successor bundle", filename: "manuscript-source.zip", kind: "latex", bytes: sourceZip, metadata: { role: "source_bundle", required_files: ["main.tex", "references.bib", "build-manifest.json"], paper_build_id: build.id, source_preserving: true } })
+    const pdfArtifact = await createManagedArtifact({ ...input, title: "PaperBuilder source-preserving compiled manuscript", filename: "manuscript.pdf", kind: "pdf", bytes: pdf, metadata: { role: "compiled_pdf", paper_build_id: build.id, source_preserving: true } })
     await prisma.$transaction([
       prisma.artifactManuscriptVersion.upsert({ where: { artifactId_manuscriptVersionId_role: { artifactId: sourceArtifact.id, manuscriptVersionId: input.manuscriptVersionId, role: "source_bundle" } }, create: { workspaceId: input.workspaceId, artifactId: sourceArtifact.id, manuscriptVersionId: input.manuscriptVersionId, role: "source_bundle" }, update: {} }),
       prisma.artifactManuscriptVersion.upsert({ where: { artifactId_manuscriptVersionId_role: { artifactId: pdfArtifact.id, manuscriptVersionId: input.manuscriptVersionId, role: "compiled_pdf" } }, create: { workspaceId: input.workspaceId, artifactId: pdfArtifact.id, manuscriptVersionId: input.manuscriptVersionId, role: "compiled_pdf" }, update: {} }),

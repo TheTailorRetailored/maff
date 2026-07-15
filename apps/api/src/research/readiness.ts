@@ -1,6 +1,6 @@
 import { prisma } from "../db/prisma.js"
 
-export const READINESS_POLICY_VERSION = "1.4.0-paper-builder"
+export const READINESS_POLICY_VERSION = "1.5.0-source-preserving"
 export const REQUIRED_MANUSCRIPT_GATES = ["proof_integration", "end_to_end_mathematical", "novelty", "bibliography", "editorial", "compile"] as const
 export type RequiredGate = typeof REQUIRED_MANUSCRIPT_GATES[number]
 type VersionIdentity = { id: string; version: number; contentHash: string; theoremFingerprint: string; citationFingerprint: string }
@@ -21,10 +21,11 @@ function resolveReviewVersion(review: any, versions: VersionIdentity[]) {
   return versions.find((version) => review.targetVersion === version.id || review.targetVersion === version.contentHash || review.targetVersion === String(version.version)) ?? null
 }
 
-export function reviewEvidenceMatch(review: any, candidate: VersionIdentity, versions: VersionIdentity[], gate: RequiredGate) {
+export function reviewEvidenceMatch(review: any, candidate: VersionIdentity, versions: VersionIdentity[], gate: RequiredGate, editorialAncestorIds: Set<string> = new Set()) {
   const target = resolveReviewVersion(review, versions)
   if (!target) return { accepted: false, basis: null, reason: "target_version_not_recognized" }
   if (target.id === candidate.id) return { accepted: true, basis: "exact_version", reason: null }
+  if (["proof_integration", "end_to_end_mathematical"].includes(gate) && editorialAncestorIds.has(target.id)) return { accepted: true, basis: "editorial_only_lineage", reason: null }
   if (gate === "novelty" && target.theoremFingerprint && target.theoremFingerprint === candidate.theoremFingerprint) return { accepted: true, basis: "theorem_fingerprint", reason: null }
   if (gate === "bibliography" && target.citationFingerprint && target.citationFingerprint === candidate.citationFingerprint) return { accepted: true, basis: "citation_fingerprint", reason: null }
   return { accepted: false, basis: null, reason: gate === "novelty" ? "theorem_fingerprint_changed" : gate === "bibliography" ? "citation_fingerprint_changed" : "exact_version_required" }
@@ -39,6 +40,20 @@ export async function computeSubmissionReadiness(workspaceId: string, projectId:
   const versions = await prisma.manuscriptVersion.findMany({ where: { workspaceId, projectId }, select: { id: true, version: true, contentHash: true, theoremFingerprint: true, citationFingerprint: true } })
 
   const allLinks = await prisma.researchLink.findMany({ where: { workspaceId, projectId } })
+  const versionById = new Map(versions.map((item) => [item.id, item]))
+  const editorialAncestorIds = new Set<string>()
+  let lineageFrontier = new Set([version.id])
+  for (let depth = 0; depth < versions.length && lineageFrontier.size; depth++) {
+    const next = new Set<string>()
+    for (const link of allLinks.filter((item) => item.sourceType === "ManuscriptVersion" && lineageFrontier.has(item.sourceId) && item.relationType === "editorial_successor_of" && item.targetType === "ManuscriptVersion")) {
+      const child = versionById.get(link.sourceId), parent = versionById.get(link.targetId)
+      let note: Record<string, unknown> = {}
+      try { note = link.noteMarkdown ? JSON.parse(link.noteMarkdown) : {} } catch { note = {} }
+      if (!child || !parent || note.revision_class !== "editorial_only" || child.theoremFingerprint !== parent.theoremFingerprint || child.citationFingerprint !== parent.citationFingerprint) continue
+      if (!editorialAncestorIds.has(parent.id)) { editorialAncestorIds.add(parent.id); next.add(parent.id) }
+    }
+    lineageFrontier = next
+  }
   const governingClaimIds = [...new Set([
     ...allLinks.filter((l) => l.sourceType === "ManuscriptVersion" && l.sourceId === version.id && contributionRelations.has(l.relationType) && l.targetType === "Claim").map((l) => l.targetId),
     ...version.obligations.flatMap((obligation) => obligation.claimId ? [obligation.claimId] : [])
@@ -65,7 +80,7 @@ export async function computeSubmissionReadiness(workspaceId: string, projectId:
   const reviews = await prisma.reviewRound.findMany({ where: { workspaceId, projectId }, include: { workstream: { select: { id: true, title: true, kind: true } }, reviewAssignment: { include: { reviewerRun: true } }, evidenceSections: true } })
   const diagnosticsFor = (type: RequiredGate) => reviews.filter((review) => review.reviewType === type).map((review) => {
     if (review.verdict !== approved) return { review, accepted: false, basis: null, reason: `verdict_${review.verdict}` }
-    const match = reviewEvidenceMatch(review, version, versions, type)
+    const match = reviewEvidenceMatch(review, version, versions, type, editorialAncestorIds)
     if (!match.accepted) return { review, ...match }
     if (review.evidenceStatus !== "assigned_valid" || !review.reviewAssignment) return { review, accepted: false, basis: match.basis, reason: "assigned_review_evidence_required" }
     if (review.reviewAssignment.status !== "submitted" || review.reviewAssignment.reviewerRun.status !== "completed") return { review, accepted: false, basis: match.basis, reason: "completed_reviewer_run_required" }
@@ -75,18 +90,28 @@ export async function computeSubmissionReadiness(workspaceId: string, projectId:
   })
   const diagnostics = Object.fromEntries(REQUIRED_MANUSCRIPT_GATES.map((type) => [type, diagnosticsFor(type)])) as Record<RequiredGate, Array<{ review: any; accepted: boolean; basis: string | null; reason: string | null }>>
   const adverseExactReviews = reviews.filter((review) => ["needs_revision", "rejected"].includes(review.verdict) && review.reviewType !== "compile" && REQUIRED_MANUSCRIPT_GATES.includes(review.reviewType as RequiredGate)).filter((review) => {
-    const match = reviewEvidenceMatch(review, version, versions, review.reviewType as RequiredGate)
+    const match = reviewEvidenceMatch(review, version, versions, review.reviewType as RequiredGate, editorialAncestorIds)
     return match.accepted && review.evidenceStatus === "assigned_valid" && review.reviewAssignment?.status === "submitted" && ["submitted", "completed"].includes(review.reviewAssignment.reviewerRun.status)
   })
   const gateReviews = (type: RequiredGate) => diagnostics[type].filter((item) => item.accepted).map((item) => item.review)
-  const obligationChecks = await prisma.reviewObligationCheck.findMany({ where: { workspaceId, proofObligationId: { in: version.obligations.map((o) => o.id) } }, include: { reviewRound: true } })
+  const obligationAncestorMap = new Map<string, Set<string>>(version.obligations.map((obligation) => [obligation.id, new Set([obligation.id])]))
+  for (let depth = 0; depth < 8; depth++) {
+    let added = 0
+    for (const link of allLinks.filter((item) => item.sourceType === "ProofObligation" && item.relationType === "editorial_clone_of" && item.targetType === "ProofObligation")) {
+      for (const ancestors of obligationAncestorMap.values()) if (ancestors.has(link.sourceId) && !ancestors.has(link.targetId)) { ancestors.add(link.targetId); added++ }
+    }
+    if (!added) break
+  }
+  const relevantObligationIds = [...new Set([...obligationAncestorMap.values()].flatMap((ids) => [...ids]))]
+  const obligationChecks = await prisma.reviewObligationCheck.findMany({ where: { workspaceId, proofObligationId: { in: relevantObligationIds } }, include: { reviewRound: true } })
   const integrationReviews = gateReviews("proof_integration")
   const integrationReviewIds = new Set(integrationReviews.map((review) => review.id))
-  const coveredObligations = new Set(obligationChecks.filter((check) => integrationReviewIds.has(check.reviewRoundId) && normalizedObligationCheckStatus(check.status) === "preserved").map((check) => check.proofObligationId))
+  const preservedCheckedIds = new Set(obligationChecks.filter((check) => integrationReviewIds.has(check.reviewRoundId) && normalizedObligationCheckStatus(check.status) === "preserved").map((check) => check.proofObligationId))
+  const coveredObligations = new Set(version.obligations.filter((obligation) => [...(obligationAncestorMap.get(obligation.id) ?? new Set([obligation.id]))].some((id) => preservedCheckedIds.has(id))).map((obligation) => obligation.id))
   const compatibilityReviewIds: string[] = []
   for (const review of integrationReviews) {
     const checkedIds = strings(review.checkedObligationIds)
-    if (checkedIds.length && checkedIds.some((id) => !coveredObligations.has(id))) compatibilityReviewIds.push(review.id)
+    if (checkedIds.length && checkedIds.some((id) => ![...obligationAncestorMap.values()].some((ancestors) => ancestors.has(id)))) compatibilityReviewIds.push(review.id)
   }
   const missingObligations = version.obligations.filter((o) => o.required && !coveredObligations.has(o.id))
   const requiredObligations = version.obligations.filter((o) => o.required)

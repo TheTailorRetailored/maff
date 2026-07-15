@@ -9,7 +9,7 @@ import { requireWorkspaceRole } from "../auth/permissions.js"
 import { computeSubmissionReadiness, normalizedObligationCheckStatus, workstreamDependenciesSatisfied } from "./readiness.js"
 import { inferMimeType, ingestFile, ingestRemoteFile, listZipEntries, readZipEntryBytes, storagePath, verifyStoredFile } from "../artifacts/storage.js"
 import { analyzeProjectImport, beginProjectImport, beginRepairFromAudit, commitProjectImport, createPublicationPackage, createReviewAssignment, ensureProjectActionable, recordObjectAccess, recordObjectContribution, runProjectGraphAudit, submitRunOutcome, triageExternalReview, validateReviewAssignment, validateReviewEvidence } from "./integrity.js"
-import { citationKey, executePaperBuild, inspectPaperBuild, renderPaper } from "./paperBuilder.js"
+import { citationKey, executePaperBuild, executeSourcePreservingBuild, inspectPaperBuild, renderPaper } from "./paperBuilder.js"
 
 export { analyzeProjectImport, beginProjectImport, beginRepairFromAudit, commitProjectImport, createPublicationPackage, ensureProjectActionable, recordObjectAccess, recordObjectContribution, runProjectGraphAudit, submitRunOutcome, triageExternalReview }
 
@@ -1158,10 +1158,15 @@ export async function recordReviewRound(input: {
       await tx.agentRun.update({ where: { id: input.createdByAgentRunId }, data: { status: "submitted" } })
       if (evidenceSections.length) await tx.reviewEvidenceSection.createMany({ data: evidenceSections.map((raw) => { const section = jsonObject(raw) as Record<string, any>; return { workspaceId: input.workspaceId, projectId: workstream.projectId, reviewRoundId: review.id, sectionType: String(section.sectionType ?? section.section_type), conclusion: String(section.conclusion ?? ""), evidenceMarkdown: String(section.evidenceMarkdown ?? section.evidence_markdown ?? ""), checkedRefs: jsonArray(section.checkedRefs ?? section.checked_refs), externalSources: jsonArray(section.externalSources ?? section.external_sources), attackCategories: jsonArray(section.attackCategories ?? section.attack_categories) } }) })
     }
+    const configuredReviewTypes = normalizeLines((jsonObject(workstream.reviewPolicy) as any).review_types)
+    const approvedConfiguredTypes = configuredReviewTypes.length ? new Set((await tx.reviewRound.findMany({ where: { workspaceId: input.workspaceId, workstreamId: input.workstreamId, verdict: "approved", evidenceStatus: "assigned_valid", reviewType: { in: configuredReviewTypes as any } }, select: { reviewType: true } })).map((item) => item.reviewType)) : new Set<string>()
+    const remainingReviewTypes = configuredReviewTypes.filter((type) => !approvedConfiguredTypes.has(type as any))
+    const multiGatePending = Boolean(lockedAssignment && verdict === "approved" && remainingReviewTypes.length)
     const assignedRevision = Boolean(lockedAssignment && (verdict === "needs_revision" || verdict === "rejected"))
-    const workstreamStatus = verdict === "approved" ? "approved" : assignedRevision ? "completed" : verdict === "needs_revision" || verdict === "rejected" ? "revision_required" : verdict === "escalate" ? "escalated" : "blocked"
-    const reportStatus = verdict === "approved" ? "reviewed_approved" : "reviewed_needs_revision"
-    await tx.workstream.update({ where: { id: input.workstreamId, workspaceId: input.workspaceId }, data: { status: workstreamStatus as any, completedAt: assignedRevision ? new Date() : undefined, claimedSessionId: null, assignedToUserId: null, leaseExpiresAt: null } })
+    const workstreamStatus = multiGatePending ? "needs_review" : verdict === "approved" ? "approved" : assignedRevision ? "completed" : verdict === "needs_revision" || verdict === "rejected" ? "revision_required" : verdict === "escalate" ? "escalated" : "blocked"
+    const reportStatus = multiGatePending ? "submitted" : verdict === "approved" ? "reviewed_approved" : "reviewed_needs_revision"
+    const nextReviewPolicy = multiGatePending ? { ...(jsonObject(workstream.reviewPolicy) as Record<string, unknown>), review_type: remainingReviewTypes[0], review_types_remaining: remainingReviewTypes } : undefined
+    await tx.workstream.update({ where: { id: input.workstreamId, workspaceId: input.workspaceId }, data: { status: workstreamStatus as any, reviewPolicy: nextReviewPolicy as Prisma.InputJsonValue | undefined, completedAt: assignedRevision ? new Date() : undefined, claimedSessionId: null, assignedToUserId: null, leaseExpiresAt: null } })
     if (review.reportId) await tx.workstreamReport.update({ where: { id: review.reportId, workspaceId: input.workspaceId }, data: { status: reportStatus } })
     if (assignedRevision && manuscriptTarget) {
       const requiredChanges = normalizeLines(input.requiredChanges)
@@ -2120,6 +2125,65 @@ export async function buildStructuredManuscript(input: { workspaceId: string; pr
   if (input.promote !== false) await promoteManuscriptVersion({ workspaceId: input.workspaceId, manuscriptVersionId: version.id })
   await prisma.objectContribution.create({ data: { workspaceId: input.workspaceId, projectId: input.projectId, agentRunId: run.id, objectType: "PaperBuild", objectId: build.id, versionHash: build.sourceHash, type: "compiled", metadata: { manuscript_version_id: version.id } } })
   return { manuscript_version: await getManuscriptVersion(input.workspaceId, version.id), paper_build: build, surfaced_file: null }
+}
+
+type SourceReplacement = { path: string; expected: string; replacement: string; expectedOccurrences?: number }
+
+export async function reviseManuscriptSource(input: { workspaceId: string; projectId: string; agentRunId: string; parentBuildId: string; sourceReviewRoundId: string; revisionClass: "editorial_only" | "substantive"; replacements: SourceReplacement[] }) {
+  if (!input.replacements.length || input.replacements.length > 10) throw new Error("Source-preserving revision requires between one and ten bounded replacements.")
+  const run = await prisma.agentRun.findFirstOrThrow({ where: { workspaceId: input.workspaceId, projectId: input.projectId, id: input.agentRunId, role: "PaperWriter", status: { in: ["started", "running"] } }, include: { workstream: true } })
+  const parentBuild = await prisma.paperBuild.findFirstOrThrow({ where: { workspaceId: input.workspaceId, projectId: input.projectId, id: input.parentBuildId, status: "succeeded", sourceArtifactId: { not: null } }, include: { manuscriptVersion: { include: { obligations: true } }, sourceArtifact: true } })
+  const sourceReview = await prisma.reviewRound.findFirstOrThrow({ where: { workspaceId: input.workspaceId, projectId: input.projectId, id: input.sourceReviewRoundId, targetVersion: parentBuild.manuscriptVersionId, verdict: { in: ["needs_revision", "rejected"] }, evidenceStatus: "assigned_valid" } })
+  if (input.revisionClass === "editorial_only" && sourceReview.reviewType !== "editorial") throw new Error("Only an assigned editorial review can authorize an editorial-only successor.")
+  const policy = jsonObject(run.workstream.reviewPolicy) as Record<string, any>
+  if (policy.source_review_round_id && policy.source_review_round_id !== sourceReview.id) throw new Error("This repair workstream is bound to a different source ReviewRound.")
+  if (!parentBuild.sourceArtifact?.storageKey) throw new Error("Parent PaperBuild has no readable source bundle.")
+  const archiveEntries = (await listZipEntries(parentBuild.sourceArtifact.storageKey)).filter((entry) => !entry.directory)
+  if (archiveEntries.reduce((sum, entry) => sum + entry.byte_size, 0) > 64 * 1024 * 1024) throw new Error("Source bundle exceeds the 64 MiB source-preserving revision limit.")
+  const files: Record<string, Buffer> = {}
+  for (const entry of archiveEntries) files[entry.path] = (await readZipEntryBytes(parentBuild.sourceArtifact.storageKey, entry.path, 64 * 1024 * 1024)).bytes
+  if (!files["main.tex"] || !files["references.bib"]) throw new Error("Parent source bundle must contain root main.tex and references.bib.")
+  const originalMain = files["main.tex"].toString("utf8")
+  const changedFiles = new Set<string>()
+  for (const replacement of input.replacements) {
+    const path = replacement.path.trim()
+    if (!path || !files[path] || !/\.(tex|bib|sty|cls|txt|md)$/i.test(path)) throw new Error(`Replacement path is not a readable text source file: ${path}`)
+    if (!replacement.expected || replacement.expected === replacement.replacement) throw new Error("Each replacement requires distinct non-empty expected and replacement text.")
+    const text = files[path].toString("utf8")
+    const occurrences = text.split(replacement.expected).length - 1
+    const required = replacement.expectedOccurrences ?? 1
+    if (!Number.isInteger(required) || required < 1 || occurrences !== required) throw new Error(`Expected ${required} exact occurrence(s) in ${path}, found ${occurrences}.`)
+    files[path] = Buffer.from(text.split(replacement.expected).join(replacement.replacement), "utf8")
+    changedFiles.add(path)
+  }
+  const revisedMain = files["main.tex"].toString("utf8")
+  if (revisedMain === originalMain && changedFiles.size === 1 && changedFiles.has("main.tex")) throw new Error("The bounded replacement did not change main.tex.")
+  if (input.revisionClass === "editorial_only") {
+    const withoutDate = (value: string) => value.replace(/\\date\s*\{[^{}]*\}/g, "\\date{MAFF-EDITORIAL-DATE}")
+    if (changedFiles.size !== 1 || !changedFiles.has("main.tex") || withoutDate(originalMain) !== withoutDate(revisedMain)) throw new Error("Editorial-only carry-forward is conservative: the exact source delta must be confined to the LaTeX date command.")
+  }
+  const parent = parentBuild.manuscriptVersion
+  const parentClaimLinks = await prisma.researchLink.findMany({ where: { workspaceId: input.workspaceId, projectId: input.projectId, sourceType: "ManuscriptVersion", sourceId: parent.id, relationType: { in: ["contribution_claim", "governs_claim", "manuscript_claim"] }, targetType: "Claim" } })
+  const project = await prisma.project.findFirstOrThrow({ where: { workspaceId: input.workspaceId, id: input.projectId } })
+  const contentHash = fingerprint(revisedMain)
+  const artifact = await prisma.researchArtifact.upsert({
+    where: { workspaceId_slug: { workspaceId: input.workspaceId, slug: `source-successor-${project.slug}-${contentHash.slice(0, 16)}` } },
+    create: { workspaceId: input.workspaceId, projectId: input.projectId, title: `${project.title} exact source successor`, slug: `source-successor-${project.slug}-${contentHash.slice(0, 16)}`, kind: "paper_draft", status: "active", descriptionMarkdown: `Source-preserving ${input.revisionClass} successor of ManuscriptVersion ${parent.id}.`, contentMarkdown: revisedMain },
+    update: {}
+  })
+  const version = await createManuscriptVersion({ workspaceId: input.workspaceId, projectId: input.projectId, artifactId: artifact.id, parentArtifactIds: [parent.artifactId], claimIds: [...new Set(parentClaimLinks.map((link) => link.targetId))], theoremFingerprint: parent.theoremFingerprint, citationFingerprint: parent.citationFingerprint, createdByAgentRunId: run.id })
+  if (await prisma.proofObligation.count({ where: { workspaceId: input.workspaceId, manuscriptVersionId: version.id } }) === 0) {
+    for (const obligation of parent.obligations) {
+      const clone = await prisma.proofObligation.create({ data: { workspaceId: input.workspaceId, projectId: input.projectId, manuscriptVersionId: version.id, claimId: obligation.claimId, title: obligation.title, statementMarkdown: obligation.statementMarkdown, dependencies: obligation.dependencies as Prisma.InputJsonValue, sourceArtifactId: obligation.sourceArtifactId, proofLocation: obligation.proofLocation, manuscriptLocation: obligation.manuscriptLocation, externalTheorems: obligation.externalTheorems as Prisma.InputJsonValue, externalAssumptionsMatched: obligation.externalAssumptionsMatched, exactManuscriptProofPresent: obligation.exactManuscriptProofPresent, assumptions: obligation.assumptions as Prisma.InputJsonValue, excludedRegimes: obligation.excludedRegimes as Prisma.InputJsonValue, boundaryCases: obligation.boundaryCases as Prisma.InputJsonValue, semanticConsequences: obligation.semanticConsequences as Prisma.InputJsonValue, authorAssertion: obligation.authorAssertion, required: obligation.required } })
+      await prisma.researchLink.create({ data: { workspaceId: input.workspaceId, projectId: input.projectId, sourceType: "ProofObligation", sourceId: clone.id, relationType: "editorial_clone_of", targetType: "ProofObligation", targetId: obligation.id, noteMarkdown: JSON.stringify({ revision_class: input.revisionClass, source_review_round_id: sourceReview.id }) } })
+    }
+  }
+  await prisma.researchLink.create({ data: { workspaceId: input.workspaceId, projectId: input.projectId, sourceType: "ManuscriptVersion", sourceId: version.id, relationType: input.revisionClass === "editorial_only" ? "editorial_successor_of" : "source_successor_of", targetType: "ManuscriptVersion", targetId: parent.id, noteMarkdown: JSON.stringify({ revision_class: input.revisionClass, source_review_round_id: sourceReview.id, parent_build_id: parentBuild.id, changed_files: [...changedFiles], replacements: input.replacements.map((replacement) => ({ path: replacement.path, expected_occurrences: replacement.expectedOccurrences ?? 1 })) }) } })
+  const manifest = { manuscript_content_hash: version.contentHash, parent_manuscript_version_id: parent.id, source_review_round_id: sourceReview.id, revision_class: input.revisionClass, changed_files: [...changedFiles], theorem_fingerprint_unchanged: version.theoremFingerprint === parent.theoremFingerprint, citation_fingerprint_unchanged: version.citationFingerprint === parent.citationFingerprint, proof_obligations_cloned: parent.obligations.length }
+  const build = await executeSourcePreservingBuild({ workspaceId: input.workspaceId, projectId: input.projectId, manuscriptVersionId: version.id, workstreamId: run.workstreamId, agentRunId: run.id, files, manifest })
+  await promoteManuscriptVersion({ workspaceId: input.workspaceId, manuscriptVersionId: version.id })
+  await prisma.objectContribution.create({ data: { workspaceId: input.workspaceId, projectId: input.projectId, agentRunId: run.id, objectType: "PaperBuild", objectId: build.id, versionHash: build.sourceHash, type: "compiled", metadata: { manuscript_version_id: version.id, revision_class: input.revisionClass, parent_build_id: parentBuild.id } } })
+  return { manuscript_version: await getManuscriptVersion(input.workspaceId, version.id), paper_build: build, revision: { class: input.revisionClass, parent_manuscript_version_id: parent.id, source_review_round_id: sourceReview.id, changed_files: [...changedFiles], mathematical_reviews_reopenable: input.revisionClass !== "editorial_only" }, surfaced_file: null }
 }
 
 export async function inspectStructuredManuscriptBuild(workspaceId: string, buildId: string) {

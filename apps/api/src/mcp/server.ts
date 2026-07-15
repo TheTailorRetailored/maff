@@ -85,8 +85,8 @@ const tool = (name: string, description: string, role: WorkspaceRole, inputSchem
   annotations: { readOnlyHint: readOnlyToolNames.has(name), openWorldHint: false, destructiveHint: false, idempotentHint: idempotentToolNames.has(name) },
   meta
 })
-export const mcpServerVersion = "1.4.0-paper-builder"
-export const expectedMcpToolCount = 107
+export const mcpServerVersion = "1.5.0-source-preserving"
+export const expectedMcpToolCount = 108
 
 export const toolDefinitions: ToolDef[] = [
   tool("get_my_maff_context", "Recover where the user is up to. Infers the user's workspace, summarizes active projects, ready assignments, reports needing review, and suggested simple chat prompts.", "viewer", objectSchema({ workspace: s, project: s })),
@@ -171,6 +171,7 @@ export const toolDefinitions: ToolDef[] = [
   tool("get_manuscript", "Read the complete current structured manuscript, section revisions, obligation drafts, and citation-key map without surfacing a file.", "viewer", objectSchema({ workspace_id: s, project_id: s }, ["workspace_id", "project_id"])),
   tool("update_manuscript", "Replace the current structured manuscript with immutable section revisions and explicit proof-obligation drafts. This edits Maff content, not TeX/PDF files.", "editor", objectSchema({ workspace_id: s, project_id: s, agent_run_id: s, metadata: anyObj, sections: { type: "array", items: anyObj }, obligation_drafts: { type: "array", items: anyObj } }, ["workspace_id", "project_id", "agent_run_id", "sections"])),
   tool("build_manuscript", "Deterministically materialize the structured manuscript into internal TeX, bibliography, source bundle, and PDF; attach them automatically and surface nothing.", "editor", objectSchema({ workspace_id: s, project_id: s, agent_run_id: s, promote: { type: "boolean" } }, ["workspace_id", "project_id", "agent_run_id"])),
+  tool("revise_manuscript_source", "Create an exact source-preserving child manuscript from an existing PaperBuild using bounded expected-text replacements, recompile it internally, clone its proof ledger, and surface nothing. Editorial-only carry-forward is permitted only for a server-verified LaTeX date-command delta authorized by an assigned editorial ReviewRound.", "editor", objectSchema({ workspace_id: s, project_id: s, agent_run_id: s, parent_build_id: s, source_review_round_id: s, revision_class: s, replacements: { type: "array", items: anyObj } }, ["workspace_id", "project_id", "agent_run_id", "parent_build_id", "source_review_round_id", "revision_class", "replacements"])),
   tool("inspect_manuscript_build", "Inspect the complete normalized manuscript, generated TeX, bibliography, manifest, and build log as text without surfacing source or PDF files.", "viewer", objectSchema({ workspace_id: s, build_id: s }, ["workspace_id", "build_id"])),
   tool("publish_manuscript", "Release the latest successful exact PaperBuild after publication readiness and surface only its final PDF.", "editor", objectSchema({ workspace_id: s, project_id: s, manuscript_version_id: s }, ["workspace_id", "project_id"]), scopes.maffReview),
   tool("create_proof_obligation", "Record an atomic exact-version proof obligation including assumptions, excluded regimes, boundary cases, semantic consequences, dependency/source ledger, and the author's non-verifying assertion.", "editor", objectSchema({ workspace_id: s, project_id: s, manuscript_version_id: s, title: s, statement_markdown: s, dependencies: { type: "array", items: anyObj }, claim_id: s, source_artifact_id: s, proof_location: s, manuscript_location: s, external_theorems: { type: "array", items: anyObj }, external_assumptions_matched: { type: "boolean" }, exact_manuscript_proof_present: { type: "boolean" }, assumptions: strArray, excluded_regimes: strArray, boundary_cases: strArray, semantic_consequences: strArray, author_assertion: s, required: { type: "boolean" } }, ["workspace_id", "project_id", "manuscript_version_id", "title", "statement_markdown", "assumptions", "boundary_cases"])),
@@ -323,6 +324,7 @@ export async function callTool(toolName: string, args: any, ctx: ToolContext) {
     case "get_manuscript": return runtime.getStructuredManuscript(workspaceId, args.project_id)
     case "update_manuscript": return runtime.updateStructuredManuscript({ workspaceId, projectId: args.project_id, agentRunId: args.agent_run_id, metadata: args.metadata, sections: args.sections, obligationDrafts: args.obligation_drafts })
     case "build_manuscript": return runtime.buildStructuredManuscript({ workspaceId, projectId: args.project_id, agentRunId: args.agent_run_id, promote: args.promote })
+    case "revise_manuscript_source": return runtime.reviseManuscriptSource({ workspaceId, projectId: args.project_id, agentRunId: args.agent_run_id, parentBuildId: args.parent_build_id, sourceReviewRoundId: args.source_review_round_id, revisionClass: args.revision_class, replacements: args.replacements })
     case "inspect_manuscript_build": return runtime.inspectStructuredManuscriptBuild(workspaceId, args.build_id)
     case "publish_manuscript": return runtime.publishStructuredManuscript({ workspaceId, projectId: args.project_id, manuscriptVersionId: args.manuscript_version_id })
     case "set_manuscript_freeze": return runtime.setManuscriptFreeze({ workspaceId, manuscriptVersionId: args.manuscript_version_id, level: args.level })

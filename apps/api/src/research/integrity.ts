@@ -92,13 +92,21 @@ export async function ensureProjectActionable(workspaceId: string, projectId: st
   const project = await prisma.project.findFirstOrThrow({ where: { workspaceId, id: projectId } })
   if (["completed", "terminated", "archived", "paused"].includes(project.status)) return { state: "terminal_or_paused", actionable: false, project_status: project.status }
   const workstreamScope = { workspaceId, projectId, ...(excludeWorkstreamId ? { id: { not: excludeWorkstreamId } } : {}) }
-  const [runnable, active, review, waiting, openGaps] = await Promise.all([
+  const [runnable, active, review, waiting, openGaps, blockedReleaseRevision] = await Promise.all([
     prisma.workstream.findFirst({ where: { ...workstreamScope, status: { in: ["planned", "ready", "revision_required"] } }, orderBy: [{ priority: "desc" }, { updatedAt: "asc" }] }),
     prisma.workstream.findFirst({ where: { ...workstreamScope, status: { in: ["claimed", "running"] } } }),
     prisma.workstream.findFirst({ where: { ...workstreamScope, status: "needs_review" } }),
     prisma.projectWaitingState.findFirst({ where: { workspaceId, projectId, active: true } }),
-    prisma.gap.findMany({ where: { workspaceId, projectId, status: { in: ["open", "assigned"] }, severity: { in: ["major", "fatal"] } }, orderBy: { updatedAt: "asc" } })
+    prisma.gap.findMany({ where: { workspaceId, projectId, status: { in: ["open", "assigned"] }, severity: { in: ["major", "fatal"] } }, orderBy: { updatedAt: "asc" } }),
+    prisma.workstream.findFirst({ where: { workspaceId, projectId, status: "blocked", targetObjectType: "ManuscriptVersion", reviewPolicy: { path: ["bounded_revision"], equals: true } }, orderBy: [{ priority: "desc" }, { updatedAt: "asc" }] })
   ])
+  if (blockedReleaseRevision && !active && !review && !waiting && (!runnable || runnable.priority <= blockedReleaseRevision.priority)) {
+    const existingRecovery = await prisma.workstream.findFirst({ where: { workspaceId, projectId, targetObjectType: "Workstream", targetObjectId: blockedReleaseRevision.id, status: { in: ["planned", "ready", "claimed", "running"] } }, orderBy: { updatedAt: "asc" } })
+    if (existingRecovery) return { state: "release_revision_recovery", actionable: true, next_workstream: existingRecovery }
+    if (!createIfMissing) return { state: "release_revision_blocked", actionable: false, next_workstream: blockedReleaseRevision }
+    const recovery = await prisma.workstream.create({ data: { workspaceId, projectId, title: `Recover blocked release revision: ${blockedReleaseRevision.title}`, kind: "project_coordination", coordinatorRole: "ProjectCoordinator", status: "ready", priority: blockedReleaseRevision.priority + 1, targetObjectType: "Workstream", targetObjectId: blockedReleaseRevision.id, instructions: `Restore the bounded release revision ${blockedReleaseRevision.id} to a runnable state by resolving its concrete workflow blocker. Do not switch to unrelated theorem development and do not edit the manuscript unless the repair assignment explicitly permits it.`, allowedWrites: ["Workstream", "AgentMessage", "RunOutcome"], forbiddenActions: ["Do not create an audit campaign.", "Do not reopen unaffected mathematics."], successCriteria: ["The bounded release revision is runnable or has one explicit external waiting condition."], reviewPolicy: { review_type: "other", min_approved_rounds: 0, release_revision_recovery: true } } })
+    return { state: "release_revision_recovery", actionable: true, next_workstream: recovery, created: true }
+  }
   if (runnable || active || review || waiting) return { state: runnable ? "runnable" : active ? "active" : review ? "awaiting_review" : "waiting", actionable: Boolean(runnable || active || review), next_workstream: runnable ?? active ?? review, waiting }
   if (!createIfMissing) return { state: "workflow_frontier_empty", actionable: false, open_gap_ids: openGaps.map((gap) => gap.id) }
   const proposed = object(suggestedAction)
