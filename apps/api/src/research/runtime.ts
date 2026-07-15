@@ -752,7 +752,7 @@ export async function claimNextReview(input: { userId: string; workspaceRef?: st
     orderBy: [{ priority: "desc" }, { updatedAt: "asc" }]
   })
   const canonicalTargetId = (readiness as any)?.canonical_manuscript?.id as string | undefined
-  const requiredGates = new Set(["proof_integration", "end_to_end_mathematical", "novelty", "bibliography", "editorial", "compile"])
+  const requiredGates = new Set(["proof_integration", "end_to_end_mathematical", "novelty", "bibliography", "editorial", "source_fidelity", "compile"])
   const remediationWorkstream = reviewCandidates.find((candidate) => {
     const policy = jsonObject(candidate.reviewPolicy) as any
     return policy.remediation === true && requiredGates.has(String(policy.review_type)) && candidate.targetObjectType === "ManuscriptVersion" && candidate.targetObjectId === canonicalTargetId
@@ -773,19 +773,6 @@ export async function claimNextReview(input: { userId: string; workspaceRef?: st
   }
   const leaseExpiresAt = new Date(Date.now() + (input.leaseMinutes ?? 120) * 60_000)
   let workstream = remediationWorkstream ?? reviewCandidates[0] ?? null
-  if (canonicalTargetId) {
-    const authorSessionConflict = await prisma.objectContribution.count({
-      where: {
-        workspaceId: workspace.id,
-        projectId: project?.id,
-        objectType: "ManuscriptVersion",
-        objectId: canonicalTargetId,
-        type: { in: ["created", "authored", "edited", "integrated", "repaired", "computed", "compiled"] },
-        agentRun: { sessionId }
-      }
-    })
-    if (authorSessionConflict) throw new Error("This session contributed to the canonical manuscript and cannot claim its review. Start a fresh chat.")
-  }
   if (!workstream && project && (readiness as any)?.next_required_action && (readiness as any)?.canonical_manuscript) {
     const gate = (readiness as any).next_required_action.gate
     workstream = await prisma.workstream.create({ data: { workspaceId: workspace.id, projectId: project.id, title: `${gate.replace(/_/g, " ")} for ${(readiness as any).release_candidate.label}`, kind: "hostile_review", coordinatorRole: "HostileReviewer", status: "needs_review", priority: 100, targetObjectType: "ManuscriptVersion", targetObjectId: (readiness as any).canonical_manuscript.id, instructions: (readiness as any).next_required_action.instruction, allowedWrites: ["ReviewRound", "ReviewEvidenceSection", "RunOutcome"], forbiddenActions: ["Do not edit the reviewed manuscript or its mathematical objects."], successCriteria: [`Complete assigned ${gate} evidence contract against the exact release candidate.`], reviewPolicy: { review_type: gate, min_approved_rounds: 1 } }, include: { project: true, goal: true, reports: { orderBy: { updatedAt: "desc" }, take: 1 } } })
@@ -806,9 +793,13 @@ export async function claimNextReview(input: { userId: string; workspaceRef?: st
   if (claimedCount.count !== 1) throw new Error("This review was claimed by another session. Ask Maff for the next review; do not start a generic reviewer run.")
   const baseBriefing = await getAgentBriefing(workspace.id, workstream.id)
   const reviewPolicy = jsonObject(workstream.reviewPolicy) as any
-  const reviewType = String(reviewPolicy.review_type ?? (readiness as any)?.next_required_action?.gate ?? "other")
-  const manuscript = (readiness as any)?.canonical_manuscript?.id ? await prisma.manuscriptVersion.findFirst({ where: { workspaceId: workspace.id, id: (readiness as any).canonical_manuscript.id }, include: { physicalArtifacts: true } }) : null
-  const targetObjectType = manuscript ? "ManuscriptVersion" : workstream.targetObjectType ?? "WorkstreamReport"
+  const rawReviewType = String(reviewPolicy.review_type ?? (readiness as any)?.next_required_action?.gate ?? "other")
+  const reviewType = rawReviewType === "mathematical_truth_audit" ? "ingredient_correctness" : rawReviewType
+  const manuscriptGate = requiredGates.has(reviewType)
+  const manuscript = manuscriptGate && (readiness as any)?.canonical_manuscript?.id
+    ? await prisma.manuscriptVersion.findFirst({ where: { workspaceId: workspace.id, id: (readiness as any).canonical_manuscript.id }, include: { physicalArtifacts: true } })
+    : null
+  const targetObjectType = manuscript ? "ManuscriptVersion" : workstream.targetObjectType ?? (workstream.reports[0] ? "WorkstreamReport" : "Workstream")
   const targetObjectId = manuscript?.id ?? workstream.targetObjectId ?? workstream.reports[0]?.id ?? workstream.id
   const briefing = {
     ...baseBriefing,
