@@ -809,7 +809,8 @@ export async function claimNextReview(input: { userId: string; workspaceRef?: st
   if (claimedCount.count !== 1) throw new Error("This review was claimed by another session. Ask Maff for the next review; do not start a generic reviewer run.")
   const baseBriefing = await getAgentBriefing(workspace.id, workstream.id)
   const reviewPolicy = jsonObject(workstream.reviewPolicy) as any
-  const rawReviewType = String(reviewPolicy.review_type ?? (readiness as any)?.next_required_action?.gate ?? "other")
+  const readinessGate = workstream.targetObjectType === "ManuscriptVersion" ? (readiness as any)?.next_required_action?.gate : undefined
+  const rawReviewType = String(reviewPolicy.review_type ?? readinessGate ?? "other")
   const reviewType = rawReviewType === "mathematical_truth_audit" ? "ingredient_correctness" : rawReviewType
   const manuscriptGate = requiredGates.has(reviewType)
   const manuscript = manuscriptGate && (readiness as any)?.canonical_manuscript?.id
