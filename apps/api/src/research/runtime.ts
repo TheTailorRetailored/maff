@@ -1940,8 +1940,12 @@ export async function createManuscriptVersion(input: { workspaceId: string; proj
   const artifact = await prisma.researchArtifact.findFirstOrThrow({ where: { workspaceId: input.workspaceId, projectId: input.projectId, id: input.artifactId } })
   const contentHash = fingerprint(artifact.contentMarkdown ?? "")
   const governingClaims = input.claimIds?.length ? await prisma.claim.findMany({ where: { workspaceId: input.workspaceId, projectId: input.projectId, id: { in: input.claimIds } }, orderBy: { id: "asc" } }) : []
-  const theoremFingerprint = fingerprint(JSON.stringify(governingClaims.map((claim) => ({ title: claim.title, statement: claim.statementMarkdown, kind: claim.kind, assumptions: (claim.metadata as any)?.assumptions ?? [], conclusion: (claim.metadata as any)?.conclusion ?? null }))))
-  const citationFingerprint = fingerprint((artifact.contentMarkdown ?? "").match(/\\[[^\]]+\]|\\cite\{[^}]+\}/g)?.sort().join("|") ?? "")
+  const suppliedFingerprint = (value: string | undefined, name: string) => {
+    if (value !== undefined && !/^[0-9a-f]{64}$/i.test(value)) throw new Error(`${name} must be a SHA-256 hex digest.`)
+    return value?.toLowerCase()
+  }
+  const theoremFingerprint = suppliedFingerprint(input.theoremFingerprint, "theoremFingerprint") ?? fingerprint(JSON.stringify(governingClaims.map((claim) => ({ title: claim.title, statement: claim.statementMarkdown, kind: claim.kind, assumptions: (claim.metadata as any)?.assumptions ?? [], conclusion: (claim.metadata as any)?.conclusion ?? null }))))
+  const citationFingerprint = suppliedFingerprint(input.citationFingerprint, "citationFingerprint") ?? fingerprint((artifact.contentMarkdown ?? "").match(/\\[[^\]]+\]|\\cite\{[^}]+\}/g)?.sort().join("|") ?? "")
   return prisma.$transaction(async (tx) => {
     const existing = await tx.manuscriptVersion.findFirst({ where: { projectId: input.projectId, contentHash } })
     if (existing) return existing

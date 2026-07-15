@@ -161,7 +161,12 @@ assert.ok(controlRoom.workstreams_by_status.completed?.some((item) => item.id ==
 // Robustness regression: a substantial manuscript without an exact proof-obligation ledger
 // remains an unverified candidate; it cannot become canonical or receive manuscript gates.
 const ledgerless = await runtime.createResearchArtifact({ workspaceId: workspace.id, projectId: project.id, title: "Ledgerless theorem manuscript", kind: "paper_draft", contentMarkdown: "# Theorem\nA nontrivial statement with proof." })
-const ledgerlessVersion = await runtime.createManuscriptVersion({ workspaceId: workspace.id, projectId: project.id, artifactId: ledgerless.id, claimIds: [claim.id] })
+const suppliedTheoremFingerprint = "a".repeat(64)
+const suppliedCitationFingerprint = "b".repeat(64)
+const ledgerlessVersion = await runtime.createManuscriptVersion({ workspaceId: workspace.id, projectId: project.id, artifactId: ledgerless.id, claimIds: [claim.id], theoremFingerprint: suppliedTheoremFingerprint, citationFingerprint: suppliedCitationFingerprint })
+assert.equal(ledgerlessVersion.theoremFingerprint, suppliedTheoremFingerprint)
+assert.equal(ledgerlessVersion.citationFingerprint, suppliedCitationFingerprint)
+await assert.rejects(() => runtime.createManuscriptVersion({ workspaceId: workspace.id, projectId: project.id, artifactId: ledgerless.id, theoremFingerprint: "not-a-hash" }), /SHA-256/)
 assert.equal(ledgerlessVersion.isCanonical, false)
 assert.equal(ledgerlessVersion.verificationState, "unverified_candidate")
 await assert.rejects(
