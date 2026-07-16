@@ -50,8 +50,10 @@ const parentGap = await runtime.createGap({ workspaceId: workspace.id, projectId
 const childGap = await runtime.createGap({ workspaceId: workspace.id, projectId: routedProject.id, title: "Write the exact manuscript", descriptionMarkdown: "Integrate the approved theorem package.", severity: "major", targetObjectType: "Gap", targetObjectId: parentGap.id, suggestedResolution: "Write and compile the complete manuscript without repeating gap analysis.", resolutionKind: "paper_synthesis", resolutionRole: "ManuscriptAuthor" })
 const spinoutGap = await runtime.createGap({ workspaceId: workspace.id, projectId: routedProject.id, title: "Preserved spinout defect", descriptionMarkdown: "This remains open but is not mainline work.", severity: "major", frontierEligible: false })
 const staleParentWorkstream = await runtime.createWorkstream({ workspaceId: workspace.id, projectId: routedProject.id, title: "Stale parent analysis", kind: "gap_analysis", coordinatorRole: "GapAnalyst", targetObjectType: "Gap", targetObjectId: parentGap.id, instructions: "Repeat the parent analysis." })
+const staleSpinoutWorkstream = await runtime.createWorkstream({ workspaceId: workspace.id, projectId: routedProject.id, title: "Stale spinout analysis", kind: "gap_analysis", coordinatorRole: "GapAnalyst", targetObjectType: "Gap", targetObjectId: spinoutGap.id, instructions: "Incorrectly dispatch spinout work." })
 const routedFrontier = await runtime.ensureProjectActionable(workspace.id, routedProject.id, true) as any
 assert.equal((await prisma.workstream.findUniqueOrThrow({ where: { id: staleParentWorkstream.id } })).status, "abandoned")
+assert.equal((await prisma.workstream.findUniqueOrThrow({ where: { id: staleSpinoutWorkstream.id } })).status, "abandoned")
 assert.equal(routedFrontier.next_workstream.targetObjectId, childGap.id)
 assert.equal(routedFrontier.next_workstream.kind, "paper_synthesis")
 assert.equal(routedFrontier.next_workstream.coordinatorRole, "PaperWriter")

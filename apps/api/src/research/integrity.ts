@@ -30,6 +30,21 @@ export async function retireResolvedGapWorkstreams(workspaceId: string, projectI
   return { count: workstreamIds.length, workstream_ids: workstreamIds }
 }
 
+async function retireDeferredGapWorkstreams(workspaceId: string, projectId?: string) {
+  const deferredGaps = await prisma.gap.findMany({ where: { workspaceId, projectId, frontierEligible: false }, select: { id: true } })
+  const targetIds = deferredGaps.map((gap) => gap.id)
+  if (!targetIds.length) return { count: 0 }
+  const stale = await prisma.workstream.findMany({ where: { workspaceId, projectId, targetObjectType: "Gap", targetObjectId: { in: targetIds }, status: { notIn: ["completed", "approved", "abandoned"] } }, select: { id: true } })
+  const workstreamIds = stale.map((workstream) => workstream.id)
+  if (!workstreamIds.length) return { count: 0 }
+  await prisma.$transaction([
+    prisma.reviewAssignment.updateMany({ where: { workspaceId, workstreamId: { in: workstreamIds }, status: "claimed" }, data: { status: "cancelled" } }),
+    prisma.agentRun.updateMany({ where: { workspaceId, workstreamId: { in: workstreamIds }, status: { in: ["started", "running"] } }, data: { status: "cancelled", finishedAt: new Date(), outputSummary: "Target Gap remains preserved but was deferred from this project's active frontier." } }),
+    prisma.workstream.updateMany({ where: { workspaceId, id: { in: workstreamIds } }, data: { status: "abandoned", claimedSessionId: null, assignedToUserId: null, leaseExpiresAt: null, completedAt: new Date(), escalationMessage: "Automatically retired because the target Gap is paused, bypassed, or spinout-only for this project. Historical reports and reviews remain preserved." } })
+  ])
+  return { count: workstreamIds.length }
+}
+
 export async function recordObjectContribution(input: { workspaceId: string; projectId: string; agentRunId: string; objectType: string; objectId: string; versionHash?: string; type: string; metadata?: unknown }) {
   if (!constructive.has(input.type) && !["read", "reviewed", "triaged", "approved_for_stage"].includes(input.type)) throw new Error(`Invalid contribution type: ${input.type}`)
   const run = await prisma.agentRun.findFirstOrThrow({ where: { workspaceId: input.workspaceId, projectId: input.projectId, id: input.agentRunId } })
@@ -108,6 +123,7 @@ function recommendedRoleFor(action: Record<string, any>, fallback: AgentRole): A
 
 export async function ensureProjectActionable(workspaceId: string, projectId: string, createIfMissing = true, suggestedAction?: Record<string, any>, excludeWorkstreamId?: string) {
   await retireResolvedGapWorkstreams(workspaceId, projectId)
+  await retireDeferredGapWorkstreams(workspaceId, projectId)
   const project = await prisma.project.findFirstOrThrow({ where: { workspaceId, id: projectId } })
   if (["completed", "terminated", "archived", "paused"].includes(project.status)) return { state: "terminal_or_paused", actionable: false, project_status: project.status }
   const workstreamScope = { workspaceId, projectId, ...(excludeWorkstreamId ? { id: { not: excludeWorkstreamId } } : {}) }

@@ -85,7 +85,7 @@ const tool = (name: string, description: string, role: WorkspaceRole, inputSchem
   annotations: { readOnlyHint: readOnlyToolNames.has(name), openWorldHint: false, destructiveHint: false, idempotentHint: idempotentToolNames.has(name) },
   meta
 })
-export const mcpServerVersion = "1.6.3-gap-frontier-routing"
+export const mcpServerVersion = "1.6.4-gap-frontier-routing"
 export const expectedMcpToolCount = 108
 
 export const toolDefinitions: ToolDef[] = [
