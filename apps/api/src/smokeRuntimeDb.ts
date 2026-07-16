@@ -41,6 +41,27 @@ assert.equal(await prisma.auditLog.count(), auditsBeforeRollback)
 const workspace = await prisma.workspace.create({ data: { slug: `smoke-v2-${suffix}`, name: `Smoke v2 ${suffix}`, type: "private", ownerUserId: user.id } })
 await prisma.workspaceMember.create({ data: { workspaceId: workspace.id, userId: user.id, role: "owner" } })
 
+// Frontier regression: a decomposed parent gap must not regenerate generic
+// GapAnalyst work. Its executable child keeps the requested manuscript role,
+// including the public ManuscriptAuthor alias, and workspace slugs are valid.
+const routedProject = await runtime.createProject({ workspaceId: workspace.id, title: "Routed manuscript repair", statement: "Exercise leaf-gap routing.", userId: user.id })
+await runtime.updateProjectSummary({ workspaceId: workspace.id, projectId: routedProject.id, coordinatorSummary: "The theorem package is ready for manuscript integration." })
+const parentGap = await runtime.createGap({ workspaceId: workspace.id, projectId: routedProject.id, title: "Decompose theorem package", descriptionMarkdown: "Identify the executable manuscript task.", severity: "major" })
+const childGap = await runtime.createGap({ workspaceId: workspace.id, projectId: routedProject.id, title: "Write the exact manuscript", descriptionMarkdown: "Integrate the approved theorem package.", severity: "major", targetObjectType: "Gap", targetObjectId: parentGap.id, suggestedResolution: "Write and compile the complete manuscript without repeating gap analysis.", resolutionKind: "paper_synthesis", resolutionRole: "ManuscriptAuthor" })
+const spinoutGap = await runtime.createGap({ workspaceId: workspace.id, projectId: routedProject.id, title: "Preserved spinout defect", descriptionMarkdown: "This remains open but is not mainline work.", severity: "major", frontierEligible: false })
+const staleParentWorkstream = await runtime.createWorkstream({ workspaceId: workspace.id, projectId: routedProject.id, title: "Stale parent analysis", kind: "gap_analysis", coordinatorRole: "GapAnalyst", targetObjectType: "Gap", targetObjectId: parentGap.id, instructions: "Repeat the parent analysis." })
+const routedFrontier = await runtime.ensureProjectActionable(workspace.id, routedProject.id, true) as any
+assert.equal((await prisma.workstream.findUniqueOrThrow({ where: { id: staleParentWorkstream.id } })).status, "abandoned")
+assert.equal(routedFrontier.next_workstream.targetObjectId, childGap.id)
+assert.equal(routedFrontier.next_workstream.kind, "paper_synthesis")
+assert.equal(routedFrontier.next_workstream.coordinatorRole, "PaperWriter")
+assert.notEqual(routedFrontier.next_workstream.targetObjectId, spinoutGap.id)
+const routedClaim = await runtime.claimNextAssignment({ userId: user.id, workspaceRef: workspace.slug, project: routedProject.id, role: "ManuscriptAuthor", sessionId: `routed-author-${suffix}`, model: "smoke" }) as any
+assert.equal(routedClaim.assignment?.id, routedFrontier.next_workstream.id)
+assert.equal(routedClaim.agent_run?.role, "PaperWriter")
+await prisma.agentRun.update({ where: { id: routedClaim.agent_run.id }, data: { status: "cancelled", finishedAt: new Date() } })
+await prisma.workstream.update({ where: { id: routedFrontier.next_workstream.id }, data: { status: "abandoned", claimedSessionId: null, assignedToUserId: null, leaseExpiresAt: null } })
+
 const project = await runtime.createProject({ workspaceId: workspace.id, title: "Maff v2 vertical slice", area: "smoke", statement: "Check project-goal-workstream-agent-report-review gates.", userId: user.id })
 await prisma.project.update({ where: { id: project.id }, data: { strategicReviewInterval: 1, strategicReviewHardLimit: 100 } })
 const proposedGoal = await runtime.proposeProjectGoal({ workspaceId: workspace.id, projectId: project.id, title: "Find proof routes", statement: "Produce multiple candidate routes.", successCriteria: ["Two routes", "Review passed"] })

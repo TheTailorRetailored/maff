@@ -116,9 +116,27 @@ export async function ensureProjectActionable(workspaceId: string, projectId: st
     prisma.workstream.findFirst({ where: { ...workstreamScope, status: { in: ["claimed", "running"] } } }),
     prisma.workstream.findFirst({ where: { ...workstreamScope, status: "needs_review" } }),
     prisma.projectWaitingState.findFirst({ where: { workspaceId, projectId, active: true } }),
-    prisma.gap.findMany({ where: { workspaceId, projectId, status: { in: ["open", "assigned"] }, severity: { in: ["major", "fatal"] } }, orderBy: { updatedAt: "asc" } }),
+    prisma.gap.findMany({ where: { workspaceId, projectId, status: { in: ["open", "assigned"] }, severity: { in: ["major", "fatal"] }, frontierEligible: true }, orderBy: { updatedAt: "asc" } }),
     prisma.workstream.findFirst({ where: { workspaceId, projectId, status: "blocked", targetObjectType: "ManuscriptVersion", reviewPolicy: { path: ["bounded_revision"], equals: true } }, orderBy: [{ priority: "desc" }, { updatedAt: "asc" }] })
   ])
+  // A gap targeted by another open gap is a decomposed parent, not the executable
+  // frontier. Prefer leaf repairs, and preserve an explicitly assigned repair role.
+  const decomposedParentIds = new Set(openGaps.flatMap((gap) => gap.targetObjectType === "Gap" && gap.targetObjectId ? [gap.targetObjectId] : []))
+  const leafGaps = openGaps.filter((gap) => !decomposedParentIds.has(gap.id))
+  const selectedGap = [...leafGaps].sort((a, b) => {
+    const explicitDelta = Number(Boolean(b.resolutionKind || b.resolutionRole)) - Number(Boolean(a.resolutionKind || a.resolutionRole))
+    return explicitDelta || a.updatedAt.getTime() - b.updatedAt.getTime()
+  })[0]
+  const runnableGap = runnable?.targetObjectType === "Gap" ? openGaps.find((gap) => gap.id === runnable.targetObjectId) : undefined
+  const staleGenericGapRoute = Boolean(runnable && ["planned", "ready", "revision_required"].includes(runnable.status) && runnable.kind === "gap_analysis" && runnable.coordinatorRole === "GapAnalyst" && (
+    (runnable.targetObjectId && decomposedParentIds.has(runnable.targetObjectId))
+    || (runnableGap?.resolutionKind && runnableGap.resolutionKind !== runnable.kind)
+    || (runnableGap?.resolutionRole && runnableGap.resolutionRole !== runnable.coordinatorRole)
+  ))
+  if (staleGenericGapRoute && runnable) {
+    await prisma.workstream.update({ where: { id: runnable.id }, data: { status: "abandoned", escalationMessage: `Automatically superseded by executable leaf gap ${selectedGap?.id ?? runnableGap?.id}; immutable reports and reviews remain preserved.` } })
+    return ensureProjectActionable(workspaceId, projectId, createIfMissing, suggestedAction, excludeWorkstreamId)
+  }
   if (blockedReleaseRevision && !active && !review && !waiting && (!runnable || runnable.priority <= blockedReleaseRevision.priority)) {
     const existingRecovery = await prisma.workstream.findFirst({ where: { workspaceId, projectId, targetObjectType: "Workstream", targetObjectId: blockedReleaseRevision.id, status: { in: ["planned", "ready", "claimed", "running"] } }, orderBy: { updatedAt: "asc" } })
     if (existingRecovery) return { state: "release_revision_recovery", actionable: true, next_workstream: existingRecovery }
@@ -127,12 +145,15 @@ export async function ensureProjectActionable(workspaceId: string, projectId: st
     return { state: "release_revision_recovery", actionable: true, next_workstream: recovery, created: true }
   }
   if (runnable || active || review || waiting) return { state: runnable ? "runnable" : active ? "active" : review ? "awaiting_review" : "waiting", actionable: Boolean(runnable || active || review), next_workstream: runnable ?? active ?? review, waiting }
-  if (!createIfMissing) return { state: "workflow_frontier_empty", actionable: false, open_gap_ids: openGaps.map((gap) => gap.id) }
+  if (!createIfMissing) return { state: "workflow_frontier_empty", actionable: false, open_gap_ids: openGaps.map((gap) => gap.id), executable_gap_id: selectedGap?.id ?? null }
   const proposed = object(suggestedAction)
   const proposedRole = proposed.role ? recommendedRoleFor(proposed, "ProjectCoordinator") : null
-  const title = openGaps.length ? `Repair: ${openGaps[0].title}` : String(proposed.title ?? "Reconcile empty project frontier")
+  const routedRole = selectedGap?.resolutionRole ?? (selectedGap ? "GapAnalyst" : proposedRole ?? "ProjectCoordinator")
+  const routedKind = selectedGap?.resolutionKind ?? (selectedGap ? "gap_analysis" : routedRole === "HostileReviewer" ? "hostile_review" : "project_coordination")
+  const title = selectedGap ? `Repair: ${selectedGap.title}` : String(proposed.title ?? "Reconcile empty project frontier")
   const isReview = proposedRole === "HostileReviewer"
-  const workstream = await prisma.workstream.create({ data: { workspaceId, projectId, title, kind: openGaps.length ? "gap_analysis" : isReview ? "hostile_review" : "project_coordination", coordinatorRole: openGaps.length ? "GapAnalyst" : proposedRole ?? "ProjectCoordinator", status: openGaps.length ? "ready" : isReview ? "needs_review" : "ready", priority: openGaps.length ? 90 : 100, targetObjectType: openGaps.length ? "Gap" : String(proposed.target_object_type ?? "Project"), targetObjectId: openGaps[0]?.id ?? String(proposed.target_object_id ?? projectId), instructions: openGaps.length ? `Resolve or refine blocking gap ${openGaps[0].id}. Preserve evidence and submit a structured handoff.` : String(proposed.instructions ?? proposed.description ?? "Determine why the active project has no actionable frontier. Create only evidence-linked next work, or record an explicit waiting/paused/terminal state."), allowedWrites: array(proposed.allowed_writes).length ? array(proposed.allowed_writes) : ["Gap", "WorkstreamReport", "AgentMessage", "RunOutcome"], forbiddenActions: ["Do not invent busywork or declare publication readiness."], successCriteria: array(proposed.success_criteria).length ? array(proposed.success_criteria) : ["Project has a justified next assignment, waiting condition, or terminal state."], reviewPolicy: isReview || openGaps.length ? { min_approved_rounds: 1, review_type: String(proposed.review_type ?? "other") } : { min_approved_rounds: 0, review_type: "other" } } })
+  const writerRoute = routedRole === "PaperWriter"
+  const workstream = await prisma.workstream.create({ data: { workspaceId, projectId, title, kind: routedKind, coordinatorRole: routedRole, status: isReview && !selectedGap ? "needs_review" : "ready", priority: selectedGap ? 90 : 100, targetObjectType: selectedGap ? "Gap" : String(proposed.target_object_type ?? "Project"), targetObjectId: selectedGap?.id ?? String(proposed.target_object_id ?? projectId), instructions: selectedGap ? `${selectedGap.suggestedResolution ?? `Resolve the executable gap ${selectedGap.id}.`} Work against the existing theorem package; do not repeat the parent analysis.` : String(proposed.instructions ?? proposed.description ?? "Determine why the active project has no actionable frontier. Create only evidence-linked next work, or record an explicit waiting/paused/terminal state."), allowedWrites: array(proposed.allowed_writes).length ? array(proposed.allowed_writes) : writerRoute ? ["ManuscriptDocument", "ManuscriptSection", "ManuscriptVersion", "ProofObligation", "PaperBuild", "WorkstreamReport", "AgentMessage", "RunOutcome"] : ["Gap", "WorkstreamReport", "AgentMessage", "RunOutcome"], forbiddenActions: ["Do not invent busywork or declare publication readiness.", ...(writerRoute ? ["Do not reopen approved theorem mathematics unless manuscript integration exposes a concrete contradiction."] : [])], successCriteria: array(proposed.success_criteria).length ? array(proposed.success_criteria) : writerRoute ? ["The requested manuscript or proof-integration repair is implemented, compiled when applicable, and submitted for exact-version review."] : ["Project has a justified next assignment, waiting condition, or terminal state."], reviewPolicy: isReview || selectedGap ? { min_approved_rounds: 1, review_type: String(proposed.review_type ?? (writerRoute ? "proof_integration" : "other")) } : { min_approved_rounds: 0, review_type: "other" } } })
   return { state: "reconciled", actionable: true, next_workstream: workstream, created: true }
 }
 

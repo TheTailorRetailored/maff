@@ -157,7 +157,10 @@ for (const prop of ["report_id", "workstream_id"]) {
   assert.ok(submitReportProps[prop], `submit_report_for_review schema must advertise ${prop}`)
 }
 
-assert.equal(mcpServerVersion, "1.6.1-submission-promotion")
+assert.equal(mcpServerVersion, "1.6.3-gap-frontier-routing")
+const gapTool = toolDefinitions.find((tool) => tool.name === "create_gap")!
+const gapProps = gapTool.inputSchema.properties as Record<string, unknown>
+for (const prop of ["resolution_kind", "resolution_role", "frontier_eligible"]) assert.ok(gapProps[prop], `create_gap schema must advertise ${prop}`)
 const lifecycleTool = toolDefinitions.find((tool) => tool.name === "promote_manuscript_to_submission_candidate")!
 const lifecycleProps = lifecycleTool.inputSchema.properties as Record<string, unknown>
 for (const prop of ["manuscript_version_id", "load_bearing_obligation_ids"]) assert.ok(lifecycleProps[prop], `promote_manuscript_to_submission_candidate schema must advertise ${prop}`)
