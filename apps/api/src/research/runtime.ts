@@ -757,17 +757,23 @@ export async function claimNextReview(input: { userId: string; workspaceRef?: st
     include: { project: true, goal: true, reports: { orderBy: { updatedAt: "desc" }, take: 1 } },
     orderBy: [{ priority: "desc" }, { updatedAt: "asc" }]
   })
+  const canonicalTargetId = (readiness as any)?.canonical_manuscript?.id as string | undefined
+  const satisfiedGates = (readiness as any)?.gates as Record<string, { satisfied?: boolean }> | undefined
   const obsoleteCompileReviewIds = foundReviewCandidates.filter((candidate) => String((jsonObject(candidate.reviewPolicy) as any).review_type) === "compile").map((candidate) => candidate.id)
-  if (obsoleteCompileReviewIds.length) await prisma.workstream.updateMany({ where: { workspaceId: workspace.id, id: { in: obsoleteCompileReviewIds } }, data: { status: "abandoned", escalationMessage: "Superseded by automated exact PaperBuild compile evidence." } })
+  const redundantSatisfiedGateIds = foundReviewCandidates.filter((candidate) => {
+    const gate = String((jsonObject(candidate.reviewPolicy) as any).review_type ?? "")
+    return candidate.targetObjectType === "ManuscriptVersion" && candidate.targetObjectId === canonicalTargetId && satisfiedGates?.[gate]?.satisfied === true
+  }).map((candidate) => candidate.id)
+  const retiredReviewIds = [...new Set([...obsoleteCompileReviewIds, ...redundantSatisfiedGateIds])]
+  if (retiredReviewIds.length) await prisma.workstream.updateMany({ where: { workspaceId: workspace.id, id: { in: retiredReviewIds } }, data: { status: "abandoned", escalationMessage: "This exact-candidate gate is already satisfied by accepted readiness evidence; no duplicate reviewer run is required." } })
   const releaseAssessmentActive = Boolean((readiness as any)?.release_assessment_active)
   const reviewCandidates = foundReviewCandidates.filter((candidate) => {
-    if (obsoleteCompileReviewIds.includes(candidate.id)) return false
+    if (retiredReviewIds.includes(candidate.id)) return false
     const policy = jsonObject(candidate.reviewPolicy) as any
-    const finalGate = ["proof_integration", "end_to_end_mathematical", "novelty", "bibliography", "editorial", "source_fidelity", "compile"].includes(String(policy.review_type))
+    const releaseOnlyGate = ["novelty", "bibliography", "editorial"].includes(String(policy.review_type))
     const hasSubmittedReport = candidate.reports.some((report) => report.status === "submitted")
-    return !finalGate || candidate.targetObjectType !== "ManuscriptVersion" || releaseAssessmentActive || hasSubmittedReport
+    return !releaseOnlyGate || candidate.targetObjectType !== "ManuscriptVersion" || releaseAssessmentActive || (hasSubmittedReport && String(policy.review_type) === "proof_integration")
   })
-  const canonicalTargetId = (readiness as any)?.canonical_manuscript?.id as string | undefined
   const requiredGates = new Set(["proof_integration", "end_to_end_mathematical", "novelty", "bibliography", "editorial", "source_fidelity", "compile"])
   const remediationWorkstream = reviewCandidates.find((candidate) => {
     const policy = jsonObject(candidate.reviewPolicy) as any
@@ -909,7 +915,7 @@ export async function claimNextReview(input: { userId: string; workspaceRef?: st
     agent_run: agentRun,
     review_assignment: locked,
     session_id: sessionId,
-    prompt_to_agent: "Execute this locked review now in the same turn. Claiming it or describing future review work is not progress. Inspect the exact assigned target, create the ReviewRound, and submit the run outcome before yielding; if impossible, record the concrete blocker without editing reviewed objects."
+    prompt_to_agent: "Execute this locked review now in the same turn. Claiming it or describing future review work is not progress. Inspect the exact assigned target, create the ReviewRound, and submit the run outcome. If the authoritative continuation returned by submit_run_outcome is same_chat, immediately claim and execute the next eligible review gate in this same chat and turn; do not ask the user to open another chat between independent gates."
   }
 }
 

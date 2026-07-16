@@ -211,6 +211,7 @@ export async function submitRunOutcome(input: { workspaceId: string; agentRunId:
   if (["completed", "terminated", "archived"].includes(run.project.status)) { mode = "terminal"; reason = `Project is ${run.project.status}.` }
   if (mode !== "terminal" && !frontier.actionable && !["waiting_for_user", "waiting_for_external_condition"].includes(mode)) frontier = await ensureProjectActionable(input.workspaceId, run.projectId, true, nextAction, run.workstreamId)
   const userPrompt = mode === "same_chat" ? `Say "continue".` : mode === "fresh_chat_required" ? `Start one new chat and say: "Work on the next part of my Maff project: ${run.project.title}."` : mode === "terminal" ? "No further assignment is required." : reason
+  const authoritativeNextAction = reviewerMayContinue ? { ...nextAction, mode: "same_chat", requires_fresh_context: false, prompt: "continue", reason } : nextAction
   const outcome = await prisma.$transaction(async (tx) => {
     if (["waiting_for_user", "waiting_for_external_condition"].includes(mode)) {
       await tx.projectWaitingState.updateMany({ where: { workspaceId: input.workspaceId, projectId: run.projectId, active: true }, data: { active: false, resolvedAt: new Date() } })
@@ -219,11 +220,11 @@ export async function submitRunOutcome(input: { workspaceId: string; agentRunId:
     } else if (requestedTerminalStatus) {
       await tx.project.update({ where: { id: run.projectId }, data: { status: requestedTerminalStatus as any } })
     }
-    const created = await tx.runOutcome.create({ data: { workspaceId: input.workspaceId, projectId: run.projectId, agentRunId: run.id, completedWork: array(input.completedWork), changedObjects: array(input.changedObjects), evidenceGenerated: array(input.evidenceGenerated), checksPerformed: array(input.checksPerformed), problemsEncountered: array(input.problemsEncountered), unresolvedUncertainty: array(input.unresolvedUncertainty), gapsCreated: array(input.gapsCreated), gapsResolved: array(input.gapsResolved), nextAction, continuationMode: mode, continuationReason: reason, userPrompt } })
+    const created = await tx.runOutcome.create({ data: { workspaceId: input.workspaceId, projectId: run.projectId, agentRunId: run.id, completedWork: array(input.completedWork), changedObjects: array(input.changedObjects), evidenceGenerated: array(input.evidenceGenerated), checksPerformed: array(input.checksPerformed), problemsEncountered: array(input.problemsEncountered), unresolvedUncertainty: array(input.unresolvedUncertainty), gapsCreated: array(input.gapsCreated), gapsResolved: array(input.gapsResolved), nextAction: authoritativeNextAction, continuationMode: mode, continuationReason: reason, userPrompt } })
     await tx.agentRun.update({ where: { id: run.id }, data: { status: "completed", finishedAt: new Date(), outputSummary: array(input.completedWork).map(String).join("; ") } })
     return created
   })
-  return { outcome, frontier, continuation: { mode, reason, prompt: userPrompt } }
+  return { outcome, frontier, continuation: { mode, reason, prompt: userPrompt, authoritative: true, continue_immediately: reviewerMayContinue } }
 }
 
 export async function beginProjectImport(input: { workspaceId: string; projectId?: string; title: string; provenance: unknown }) {

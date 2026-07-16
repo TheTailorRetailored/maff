@@ -355,6 +355,8 @@ await assert.rejects(() => runtime.recordReviewRound({ workspaceId: workspace.id
 const reviewerOutcome = await runtime.submitRunOutcome({ workspaceId: workspace.id, agentRunId: reviewerRun.agentRun.id, completedWork: ["Completed locked proof-integration review."], changedObjects: [`ReviewRound:${integrationReview.id}`], evidenceGenerated: ["Exact source access evidence", "Proof obligation evidence"], checksPerformed: ["Compared exact source and manuscript"], problemsEncountered: [], unresolvedUncertainty: [], gapsCreated: [], gapsResolved: [], nextAction: { title: "Run the next independent manuscript gate", kind: "review", role: "HostileReviewer" } })
 assert.equal(reviewerOutcome.continuation.mode, "same_chat")
 assert.equal(reviewerOutcome.continuation.prompt, 'Say "continue".')
+assert.equal((reviewerOutcome.outcome.nextAction as any).mode, "same_chat", "caller-authored fresh-chat text must not override an authoritative same-reviewer continuation")
+assert.equal(reviewerOutcome.continuation.continue_immediately, true)
 assert.equal((await prisma.agentRun.findUniqueOrThrow({ where: { id: reviewerRun.agentRun.id } })).status, "completed")
 
 // A locked needs-revision verdict closes the reviewer assignment and creates one
