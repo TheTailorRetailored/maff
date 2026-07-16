@@ -369,6 +369,9 @@ assert.equal((await prisma.agentRun.findUniqueOrThrow({ where: { id: reviewerRun
 // bounded author repair. It must not send the same review workstream around again.
 const boundedReviewWorkstream = await runtime.createWorkstream({ workspaceId: workspace.id, projectId: project.id, goalId: goal.id, title: "Bounded end-to-end review", kind: "hostile_review", instructions: "Check the exact theorem interface.", coordinatorRole: "HostileReviewer", priority: 101, targetObjectType: "ManuscriptVersion", targetObjectId: manuscriptVersion.id, reviewPolicy: { min_approved_rounds: 1, review_type: "end_to_end_mathematical", locked_assignment_required: true, remediation: true } })
 const supersededCompileReview = await runtime.createWorkstream({ workspaceId: workspace.id, projectId: project.id, goalId: goal.id, title: "Compile review that must wait for revision", kind: "hostile_review", instructions: "Check the old exact candidate compile.", coordinatorRole: "HostileReviewer", priority: 99, targetObjectType: "ManuscriptVersion", targetObjectId: manuscriptVersion.id, reviewPolicy: { min_approved_rounds: 1, review_type: "compile", locked_assignment_required: true } })
+const protectedSubmittedReview = await runtime.createWorkstream({ workspaceId: workspace.id, projectId: project.id, goalId: goal.id, title: "Submitted sibling review that must stay queued", kind: "hostile_review", instructions: "Review the submitted regeneration report.", coordinatorRole: "HostileReviewer", priority: 98, targetObjectType: "ManuscriptVersion", targetObjectId: manuscriptVersion.id, reviewPolicy: { min_approved_rounds: 1, review_type: "proof_integration", locked_assignment_required: true } })
+const protectedSubmittedReport = await runtime.createOrUpdateWorkstreamReport({ workspaceId: workspace.id, workstreamId: protectedSubmittedReview.id, title: "Submitted sibling report", bodyMarkdown: "This submitted report still requires independent review." })
+await runtime.submitReportForReview({ workspaceId: workspace.id, reportId: protectedSubmittedReport.id })
 assert.equal(boundedReviewWorkstream.status, "needs_review")
 const boundedClaim = await runtime.claimNextAssignment({ userId: user.id, workspaceRef: workspace.id, project: project.id, role: "HostileReviewer", sessionId: `bounded-review-session-${suffix}`, model: "smoke" }) as any
 assert.equal(boundedClaim.assignment?.id, boundedReviewWorkstream.id, "generic next-step routing should transparently use the locked review entrypoint")
@@ -379,6 +382,7 @@ const boundedVerdict = await runtime.recordReviewRound({ workspaceId: workspace.
 assert.equal(boundedVerdict.evidenceStatus, "assigned_valid")
 assert.equal((await prisma.workstream.findUniqueOrThrow({ where: { id: boundedReviewWorkstream.id } })).status, "completed")
 assert.equal((await prisma.workstream.findUniqueOrThrow({ where: { id: supersededCompileReview.id } })).status, "abandoned", "an adverse exact-candidate verdict should suspend other reviews of the superseded candidate")
+assert.equal((await prisma.workstream.findUniqueOrThrow({ where: { id: protectedSubmittedReview.id } })).status, "needs_review", "an adverse exact-candidate verdict must not orphan a submitted unreviewed report")
 const boundedRepair = await prisma.workstream.findFirstOrThrow({ where: { parentWorkstreamId: boundedReviewWorkstream.id, status: "ready" } })
 assert.equal(boundedRepair.coordinatorRole, "PaperWriter")
 assert.equal(boundedRepair.priority, 102)

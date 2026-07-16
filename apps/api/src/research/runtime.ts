@@ -1244,8 +1244,13 @@ export async function recordReviewRound(input: {
       const compileRepair = reviewType === "compile"
       const repairKind: WorkstreamKind = literatureRepair ? "literature_review" : compileRepair ? "computation" : "paper_synthesis"
       const repairRole: AgentRole = literatureRepair ? "LiteratureAgent" : compileRepair ? "CodingAgent" : "PaperWriter"
-      const supersededReviews = await tx.workstream.findMany({ where: { workspaceId: input.workspaceId, projectId: workstream.projectId, id: { not: input.workstreamId }, targetObjectType: "ManuscriptVersion", targetObjectId: manuscriptTarget.id, coordinatorRole: "HostileReviewer", status: { in: ["needs_review", "claimed", "running"] } }, select: { id: true } })
-      const supersededReviewIds = supersededReviews.map((candidate) => candidate.id)
+      const supersededReviews = await tx.workstream.findMany({
+        where: { workspaceId: input.workspaceId, projectId: workstream.projectId, id: { not: input.workstreamId }, targetObjectType: "ManuscriptVersion", targetObjectId: manuscriptTarget.id, coordinatorRole: "HostileReviewer", status: { in: ["needs_review", "claimed", "running"] } },
+        include: { reports: { where: { status: "submitted" }, include: { reviews: { select: { id: true } } }, take: 1 } }
+      })
+      const supersededReviewIds = supersededReviews
+        .filter((candidate) => !candidate.reports.some((report) => report.reviews.length === 0))
+        .map((candidate) => candidate.id)
       if (supersededReviewIds.length) {
         await tx.reviewAssignment.updateMany({ where: { workspaceId: input.workspaceId, workstreamId: { in: supersededReviewIds }, status: "claimed" }, data: { status: "cancelled" } })
         await tx.agentRun.updateMany({ where: { workspaceId: input.workspaceId, workstreamId: { in: supersededReviewIds }, status: { in: ["started", "running", "submitted"] } }, data: { status: "cancelled", finishedAt: new Date() } })
