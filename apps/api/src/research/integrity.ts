@@ -432,11 +432,24 @@ export async function createPublicationPackage(input: { workspaceId: string; pro
   const source = artifacts.find((artifact) => artifact.id === input.sourceArtifactId)!, pdf = artifacts.find((artifact) => artifact.id === input.pdfArtifactId)!
   if (pdf.mimeType !== "application/pdf" && !pdf.originalFilename?.toLowerCase().endsWith(".pdf")) throw new Error("Publication PDF artifact is not identified as a PDF.")
   const packageHash = hash({ manuscript: version.contentHash, source: source.sha256, pdf: pdf.sha256, supplement: input.supplementaryArtifactIds ?? [], build: input.buildManifest })
+  const existing = await prisma.publicationPackage.findFirst({ where: { workspaceId: input.workspaceId, projectId: input.projectId, packageHash } })
+  if (existing) {
+    if (existing.manuscriptVersionId !== version.id || existing.sourceArtifactId !== source.id || existing.pdfArtifactId !== pdf.id) throw new Error("Existing publication package hash does not match the requested exact manuscript artifacts.")
+    await prisma.$transaction([
+      prisma.manuscriptVersion.update({ where: { id: version.id }, data: { lifecycleStage: "released" } }),
+      prisma.project.update({ where: { id: input.projectId }, data: { status: "completed" } }),
+      prisma.artifact.updateMany({ where: { id: { in: artifacts.map((artifact) => artifact.id) } }, data: { visibility: "published" } }),
+      prisma.workstream.updateMany({ where: { workspaceId: input.workspaceId, projectId: input.projectId, status: { in: ["planned", "ready", "claimed", "running", "blocked", "needs_review", "revision_required", "escalated"] } }, data: { status: "abandoned", claimedSessionId: null, assignedToUserId: null, leaseExpiresAt: null, escalationMessage: `Project completed by released PublicationPackage ${existing.id}; historical work remains preserved.` } })
+    ])
+    return existing
+  }
   return prisma.$transaction(async (tx) => {
     await tx.readinessSnapshot.create({ data: { workspaceId: input.workspaceId, projectId: input.projectId, manuscriptVersionId: version.id, policyVersion: READINESS_POLICY_VERSION, assessment: readiness as any, assessmentHash: hash(readiness) } })
     const publication = await tx.publicationPackage.create({ data: { workspaceId: input.workspaceId, projectId: input.projectId, manuscriptVersionId: version.id, sourceArtifactId: source.id, pdfArtifactId: pdf.id, supplementaryArtifactIds: input.supplementaryArtifactIds ?? [], buildManifest: object(input.buildManifest), packageHash, status: "released", releasedAt: new Date() } })
     await tx.manuscriptVersion.update({ where: { id: version.id }, data: { lifecycleStage: "released" } })
+    await tx.project.update({ where: { id: input.projectId }, data: { status: "completed" } })
     await tx.artifact.updateMany({ where: { id: { in: artifacts.map((artifact) => artifact.id) } }, data: { visibility: "published" } })
+    await tx.workstream.updateMany({ where: { workspaceId: input.workspaceId, projectId: input.projectId, status: { in: ["planned", "ready", "claimed", "running", "blocked", "needs_review", "revision_required", "escalated"] } }, data: { status: "abandoned", claimedSessionId: null, assignedToUserId: null, leaseExpiresAt: null, escalationMessage: `Project completed by released PublicationPackage ${publication.id}; historical work remains preserved.` } })
     return publication
   })
 }

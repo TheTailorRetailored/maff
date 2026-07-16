@@ -1727,7 +1727,7 @@ export async function exportPhysicalArtifacts(input: { workspaceId: string; work
 }
 
 export async function surfaceArtifact(workspaceId: string, artifactId: string) {
-  await prisma.artifact.update({ where: { id: artifactId, workspaceId }, data: { visibility: "user_requested" } })
+  await prisma.artifact.updateMany({ where: { id: artifactId, workspaceId, visibility: { not: "published" } }, data: { visibility: "user_requested" } })
   return downloadArtifactReference(workspaceId, artifactId)
 }
 
