@@ -58,6 +58,7 @@ assert.equal(routedFrontier.next_workstream.targetObjectId, childGap.id)
 assert.equal(routedFrontier.next_workstream.kind, "paper_synthesis")
 assert.equal(routedFrontier.next_workstream.coordinatorRole, "PaperWriter")
 assert.notEqual(routedFrontier.next_workstream.targetObjectId, spinoutGap.id)
+assert.ok(routedFrontier.next_workstream.allowedWrites.includes("ManuscriptVersion"))
 const routedClaim = await runtime.claimNextAssignment({ userId: user.id, workspaceRef: workspace.slug, project: routedProject.id, role: "ManuscriptAuthor", sessionId: `routed-author-${suffix}`, model: "smoke" }) as any
 assert.equal(routedClaim.assignment?.id, routedFrontier.next_workstream.id)
 assert.equal(routedClaim.agent_run?.role, "PaperWriter")
