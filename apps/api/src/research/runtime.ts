@@ -51,10 +51,24 @@ const roleByKind: Record<WorkstreamKind, AgentRole> = {
 const kindByRole = Object.fromEntries(Object.entries(roleByKind).map(([kind, role]) => [role, kind])) as Partial<Record<AgentRole, WorkstreamKind>>
 
 const lockedManuscriptReviewTypes = new Set(["proof_integration", "end_to_end_mathematical", "novelty", "bibliography", "editorial", "source_fidelity"])
+const reviewTypeAliases: Record<string, string> = {
+  mathematical: "ingredient_correctness",
+  mathematical_truth_audit: "ingredient_correctness",
+  math_review: "ingredient_correctness",
+  correctness: "ingredient_correctness",
+  end_to_end: "end_to_end_mathematical",
+  end_to_end_math: "end_to_end_mathematical"
+}
+const allowedReviewTypes = ["legacy_unspecified", "ingredient_correctness", "proof_integration", "end_to_end_mathematical", "novelty", "bibliography", "editorial", "source_fidelity", "compile", "numerical_verification", "formal_verification", "other"]
+
+function normalizeReviewType(value: unknown) {
+  const raw = String(value ?? "legacy_unspecified")
+  return reviewTypeAliases[raw] ?? raw
+}
 
 function isLockedReviewWorkstream(workstream: { coordinatorRole: AgentRole; reviewPolicy: unknown }) {
   const policy = jsonObject(workstream.reviewPolicy) as Record<string, unknown>
-  return workstream.coordinatorRole === "HostileReviewer" && (policy.locked_assignment_required === true || lockedManuscriptReviewTypes.has(String(policy.review_type ?? "")))
+  return workstream.coordinatorRole === "HostileReviewer" && (policy.locked_assignment_required === true || lockedManuscriptReviewTypes.has(normalizeReviewType(policy.review_type)))
 }
 
 const allowedWritesByRole: Record<AgentRole, string[]> = {
@@ -798,9 +812,9 @@ export async function claimNextReview(input: { userId: string; workspaceRef?: st
   })
   const canonicalTargetId = (readiness as any)?.canonical_manuscript?.id as string | undefined
   const satisfiedGates = (readiness as any)?.gates as Record<string, { satisfied?: boolean }> | undefined
-  const obsoleteCompileReviewIds = foundReviewCandidates.filter((candidate) => String((jsonObject(candidate.reviewPolicy) as any).review_type) === "compile").map((candidate) => candidate.id)
+  const obsoleteCompileReviewIds = foundReviewCandidates.filter((candidate) => normalizeReviewType((jsonObject(candidate.reviewPolicy) as any).review_type) === "compile").map((candidate) => candidate.id)
   const redundantSatisfiedGateIds = foundReviewCandidates.filter((candidate) => {
-    const gate = String((jsonObject(candidate.reviewPolicy) as any).review_type ?? "")
+    const gate = normalizeReviewType((jsonObject(candidate.reviewPolicy) as any).review_type)
     return candidate.targetObjectType === "ManuscriptVersion" && candidate.targetObjectId === canonicalTargetId && satisfiedGates?.[gate]?.satisfied === true
   }).map((candidate) => candidate.id)
   const retiredReviewIds = [...new Set([...obsoleteCompileReviewIds, ...redundantSatisfiedGateIds])]
@@ -809,14 +823,15 @@ export async function claimNextReview(input: { userId: string; workspaceRef?: st
   const reviewCandidates = foundReviewCandidates.filter((candidate) => {
     if (retiredReviewIds.includes(candidate.id)) return false
     const policy = jsonObject(candidate.reviewPolicy) as any
-    const releaseOnlyGate = ["novelty", "bibliography", "editorial"].includes(String(policy.review_type))
+    const reviewType = normalizeReviewType(policy.review_type)
+    const releaseOnlyGate = ["novelty", "bibliography", "editorial"].includes(reviewType)
     const hasSubmittedReport = candidate.reports.some((report) => report.status === "submitted")
-    return !releaseOnlyGate || candidate.targetObjectType !== "ManuscriptVersion" || releaseAssessmentActive || (hasSubmittedReport && String(policy.review_type) === "proof_integration")
+    return !releaseOnlyGate || candidate.targetObjectType !== "ManuscriptVersion" || releaseAssessmentActive || (hasSubmittedReport && reviewType === "proof_integration")
   })
   const requiredGates = new Set(["proof_integration", "end_to_end_mathematical", "novelty", "bibliography", "editorial", "source_fidelity", "compile"])
   const remediationWorkstream = reviewCandidates.find((candidate) => {
     const policy = jsonObject(candidate.reviewPolicy) as any
-    return policy.remediation === true && requiredGates.has(String(policy.review_type)) && candidate.targetObjectType === "ManuscriptVersion" && candidate.targetObjectId === canonicalTargetId
+    return policy.remediation === true && requiredGates.has(normalizeReviewType(policy.review_type)) && candidate.targetObjectType === "ManuscriptVersion" && candidate.targetObjectId === canonicalTargetId
   })
   if (project && readiness) {
     const circuitBreaker = (readiness as any).workflow_circuit_breaker
@@ -859,8 +874,7 @@ export async function claimNextReview(input: { userId: string; workspaceRef?: st
   const baseBriefing = await getAgentBriefing(workspace.id, workstream.id)
   const reviewPolicy = jsonObject(workstream.reviewPolicy) as any
   const readinessGate = workstream.targetObjectType === "ManuscriptVersion" ? (readiness as any)?.next_required_action?.gate : undefined
-  const rawReviewType = String(reviewPolicy.review_type ?? readinessGate ?? "other")
-  const reviewType = rawReviewType === "mathematical_truth_audit" ? "ingredient_correctness" : rawReviewType
+  const reviewType = normalizeReviewType(reviewPolicy.review_type ?? readinessGate ?? "other")
   const manuscriptGate = requiredGates.has(reviewType)
   const manuscript = manuscriptGate && (readiness as any)?.canonical_manuscript?.id
     ? await prisma.manuscriptVersion.findFirst({ where: { workspaceId: workspace.id, id: (readiness as any).canonical_manuscript.id }, include: { physicalArtifacts: true } })
@@ -1087,8 +1101,7 @@ export async function recordReviewRound(input: {
     if (createdByRun.workstreamId === input.workstreamId && createdByRun.role === workstream.coordinatorRole && !input.reviewAssignmentId) throw new Error("Reviewer cannot review or edit the same workstream output in the same ReviewRound without a dedicated locked review assignment.")
   }
   const verdict = asReviewVerdict(input.verdict)
-  const reviewType = input.reviewType ?? "legacy_unspecified"
-  const allowedReviewTypes = ["legacy_unspecified", "ingredient_correctness", "proof_integration", "end_to_end_mathematical", "novelty", "bibliography", "editorial", "source_fidelity", "compile", "numerical_verification", "formal_verification", "other"]
+  const reviewType = normalizeReviewType(input.reviewType)
   const manuscriptReviewTypes = new Set(["proof_integration", "end_to_end_mathematical", "novelty", "bibliography", "compile", "editorial", "source_fidelity"])
   const allowedIndependence = ["author_self_check", "same_workstream_reviewer", "independent_reviewer", "external_referee_style"]
   if (!allowedReviewTypes.includes(reviewType)) throw new Error(`Invalid review type: ${reviewType}`)
@@ -1227,7 +1240,7 @@ export async function recordReviewRound(input: {
       await tx.agentRun.update({ where: { id: input.createdByAgentRunId }, data: { status: "submitted" } })
       if (evidenceSections.length) await tx.reviewEvidenceSection.createMany({ data: evidenceSections.map((raw) => { const section = jsonObject(raw) as Record<string, any>; return { workspaceId: input.workspaceId, projectId: workstream.projectId, reviewRoundId: review.id, sectionType: String(section.sectionType ?? section.section_type), conclusion: String(section.conclusion ?? ""), evidenceMarkdown: String(section.evidenceMarkdown ?? section.evidence_markdown ?? ""), checkedRefs: jsonArray(section.checkedRefs ?? section.checked_refs), externalSources: jsonArray(section.externalSources ?? section.external_sources), attackCategories: jsonArray(section.attackCategories ?? section.attack_categories) } }) })
     }
-    const configuredReviewTypes = normalizeLines((jsonObject(workstream.reviewPolicy) as any).review_types)
+    const configuredReviewTypes = normalizeLines((jsonObject(workstream.reviewPolicy) as any).review_types).map(normalizeReviewType)
     const approvedConfiguredTypes = configuredReviewTypes.length ? new Set((await tx.reviewRound.findMany({ where: { workspaceId: input.workspaceId, workstreamId: input.workstreamId, verdict: "approved", evidenceStatus: "assigned_valid", reviewType: { in: configuredReviewTypes as any } }, select: { reviewType: true } })).map((item) => item.reviewType)) : new Set<string>()
     const remainingReviewTypes = configuredReviewTypes.filter((type) => !approvedConfiguredTypes.has(type as any))
     const multiGatePending = Boolean(lockedAssignment && verdict === "approved" && remainingReviewTypes.length)
