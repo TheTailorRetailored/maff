@@ -157,7 +157,7 @@ for (const prop of ["report_id", "workstream_id"]) {
   assert.ok(submitReportProps[prop], `submit_report_for_review schema must advertise ${prop}`)
 }
 
-assert.equal(mcpServerVersion, "1.6.7-idempotent-publication")
+assert.equal(mcpServerVersion, "1.6.8-chat-file-publication")
 const gapTool = toolDefinitions.find((tool) => tool.name === "create_gap")!
 const gapProps = gapTool.inputSchema.properties as Record<string, unknown>
 for (const prop of ["resolution_kind", "resolution_role", "frontier_eligible"]) assert.ok(gapProps[prop], `create_gap schema must advertise ${prop}`)
@@ -227,8 +227,20 @@ const createdArtifactResult = contentResult("create_artifact", compactToolResult
 assert.equal((createdArtifactResult.structuredContent as any).verification.ok, true)
 assert.equal((createdArtifactResult.structuredContent as any).download.uri.includes("/api/artifacts/artifact-1/content"), true)
 assert.equal(createdArtifactResult.content[0].type, "text", "intermediate ingestion must not surface a user-visible file link")
-const publicationResult = contentResult("publish_manuscript", { package_id: "package-1", final_pdf: { uri: "https://maff.example/api/artifacts/final/content", name: "paper.pdf", mime_type: "application/pdf" } })
-assert.equal(publicationResult.content[0].type, "resource_link", "the final publication package must surface its PDF")
+const publicationResult = contentResult("publish_manuscript", {
+  package_id: "package-1",
+  final_pdf: { artifact_id: "pdf-1", name: "paper.pdf", mime_type: "application/pdf", byte_size: 4, sha256: "d".repeat(64) },
+  source_bundle: { artifact_id: "source-1", name: "paper-source.zip", mime_type: "application/zip", byte_size: 3, sha256: "e".repeat(64) },
+  embedded_files: [
+    { embedded_resource: { uri: "maff://publications/pdf-1/paper.pdf", mime_type: "application/pdf", blob: "JVBERg==" } },
+    { embedded_resource: { uri: "maff://publications/source-1/paper-source.zip", mime_type: "application/zip", blob: "UEsD" } }
+  ]
+})
+assert.equal((publicationResult.structuredContent as any).embedded_files, undefined, "publication metadata must not repeat base64 file bodies")
+assert.equal(publicationResult.content[0].type, "resource", "the final publication package must attach its PDF")
+assert.equal((publicationResult.content[0] as any).resource.blob, "JVBERg==")
+assert.equal(publicationResult.content[1].type, "resource", "the final publication package must attach its exact source bundle")
+assert.equal((publicationResult.content[1] as any).resource.blob, "UEsD")
 const archiveTextResult = contentResult("read_artifact_archive_file", {
   artifact_id: "artifact-1",
   entry_path: "main.tex",

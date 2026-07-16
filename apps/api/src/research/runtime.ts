@@ -1669,6 +1669,28 @@ export async function downloadArtifactReference(workspaceId: string, artifactId:
   return { artifact_id: artifact.id, name: artifact.originalFilename ?? artifact.title, mime_type: artifact.mimeType ?? "application/octet-stream", byte_size: artifact.byteSize, sha256: artifact.sha256, uri: `${config.publicBaseUrl}/api/artifacts/${artifact.id}/content?workspaceId=${workspaceId}` }
 }
 
+async function embeddedArtifactResource(workspaceId: string, artifactId: string, fallbackName: string) {
+  const artifact = await prisma.artifact.findFirst({ where: { workspaceId, id: artifactId } })
+  if (!artifact?.storageKey || !artifact.sha256 || artifact.byteSize === null) throw new Error("Artifact has no Maff-managed bytes to surface.")
+  const verification = await verifyArtifact(workspaceId, artifactId)
+  if (!verification.ok) throw Object.assign(new Error(`Artifact bytes are ${verification.status}.`), { status: 409 })
+  const name = artifact.originalFilename ?? artifact.title ?? fallbackName
+  const mimeType = artifact.mimeType ?? inferMimeType(name)
+  const bytes = await fs.readFile(storagePath(artifact.storageKey))
+  return {
+    artifact_id: artifact.id,
+    name,
+    mime_type: mimeType,
+    byte_size: Number(artifact.byteSize),
+    sha256: artifact.sha256,
+    embedded_resource: {
+      uri: `maff://publications/${artifact.id}/${encodeURIComponent(name)}?sha256=${artifact.sha256}`,
+      mime_type: mimeType,
+      blob: bytes.toString("base64")
+    }
+  }
+}
+
 export async function listArtifactArchive(workspaceId: string, artifactId: string) {
   const artifact = await prisma.artifact.findFirst({ where: { workspaceId, id: artifactId } })
   if (!artifact?.storageKey) throw new Error("Artifact has no Maff-managed bytes.")
@@ -2235,7 +2257,17 @@ export async function publishStructuredManuscript(input: { workspaceId: string; 
   const version = await prisma.manuscriptVersion.findFirstOrThrow({ where: { workspaceId: input.workspaceId, projectId: input.projectId, ...(input.manuscriptVersionId ? { id: input.manuscriptVersionId } : { isCanonical: true }) } })
   const build = await prisma.paperBuild.findFirstOrThrow({ where: { workspaceId: input.workspaceId, projectId: input.projectId, manuscriptVersionId: version.id, status: "succeeded", sourceArtifactId: { not: null }, pdfArtifactId: { not: null } }, orderBy: { completedAt: "desc" } })
   const publication = await createPublicationPackage({ workspaceId: input.workspaceId, projectId: input.projectId, manuscriptVersionId: version.id, sourceArtifactId: build.sourceArtifactId!, pdfArtifactId: build.pdfArtifactId!, buildManifest: build.buildManifest })
-  return { publication, final_pdf: await surfaceArtifact(input.workspaceId, build.pdfArtifactId!) }
+  await prisma.artifact.updateMany({ where: { id: { in: [build.pdfArtifactId!, build.sourceArtifactId!] }, workspaceId: input.workspaceId, visibility: { not: "published" } }, data: { visibility: "user_requested" } })
+  const [finalPdf, sourceBundle] = await Promise.all([
+    embeddedArtifactResource(input.workspaceId, build.pdfArtifactId!, `manuscript-rc${version.version}.pdf`),
+    embeddedArtifactResource(input.workspaceId, build.sourceArtifactId!, `manuscript-rc${version.version}-source.zip`)
+  ])
+  return {
+    publication,
+    final_pdf: { artifact_id: finalPdf.artifact_id, name: finalPdf.name, mime_type: finalPdf.mime_type, byte_size: finalPdf.byte_size, sha256: finalPdf.sha256 },
+    source_bundle: { artifact_id: sourceBundle.artifact_id, name: sourceBundle.name, mime_type: sourceBundle.mime_type, byte_size: sourceBundle.byte_size, sha256: sourceBundle.sha256 },
+    embedded_files: [finalPdf, sourceBundle]
+  }
 }
 
 function fingerprint(value: string) { return createHash("sha256").update(value).digest("hex") }
