@@ -2550,6 +2550,10 @@ export async function getIntegrationCoverage(workspaceId: string, manuscriptVers
 }
 
 export async function computeProjectSubmissionReadiness(workspaceId: string, projectId: string) { return computeSubmissionReadiness(workspaceId, projectId) }
+export async function getProjectReleaseContract(workspaceId: string, projectId: string) {
+  const readiness = await computeSubmissionReadiness(workspaceId, projectId)
+  return (readiness as any).llm_contract
+}
 
 
 export async function updateResearchArtifact(input: { workspaceId: string; id: string; patch: Record<string, unknown> }) {

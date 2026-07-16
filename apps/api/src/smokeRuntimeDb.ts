@@ -195,6 +195,8 @@ assert.ok(controlRoom.workstreams_by_status.completed?.some((item) => item.id ==
   )
   let readiness = await runtime.computeProjectSubmissionReadiness(workspace.id, project.id)
   assert.equal(readiness.submission_ready, false)
+  assert.equal(readiness.llm_contract.authoritative_ids.active_release_candidate_version_id, manuscriptVersion.id)
+  assert.deepEqual(readiness.llm_contract.permitted_mutation_tools, ["claim_next_assignment"], "the contract must expose only the build path while compile evidence is missing")
   assert.equal((readiness.gates as Record<string, any>).artifact_integrity.satisfied, false, "working-text promotion must not bypass final source/PDF requirements")
   const preservationGap = await runtime.createGap({ workspaceId: workspace.id, projectId: project.id, claimId: claim.id, title: "Uniform majorant omitted during integration", descriptionMarkdown: "Vague assertion replaced detailed proof.", severity: "major" })
   readiness = await runtime.computeProjectSubmissionReadiness(workspace.id, project.id)
@@ -209,6 +211,9 @@ const successorActivation = await runtime.promoteManuscriptToSubmissionCandidate
 assert.equal(successorActivation.canonical_promotion_applied, true)
 assert.equal(successorActivation.manuscript.lifecycleStage, "submission_candidate")
 assert.equal((await prisma.project.findUniqueOrThrow({ where: { id: project.id } })).currentWorkingPaperId, successorVersion.id)
+assert.equal(successorActivation.readiness.llm_contract.authoritative_ids.current_working_manuscript_version_id, successorVersion.id)
+assert.equal(successorActivation.readiness.llm_contract.authoritative_ids.active_release_candidate_version_id, successorVersion.id)
+assert.deepEqual(await runtime.getProjectReleaseContract(workspace.id, project.id), successorActivation.readiness.llm_contract)
 
 // Robustness regression: a substantial manuscript without an exact proof-obligation ledger
 // remains an unverified candidate; it cannot become canonical or receive manuscript gates.

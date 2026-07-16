@@ -1,4 +1,5 @@
 import { prisma } from "../db/prisma.js"
+import { releaseContractForReadiness } from "./releaseContract.js"
 
 export const READINESS_POLICY_VERSION = "1.6.0-submission-candidate"
 export const REQUIRED_MANUSCRIPT_GATES = ["proof_integration", "end_to_end_mathematical", "novelty", "bibliography", "editorial", "compile"] as const
@@ -41,8 +42,12 @@ export function reviewEvidenceMatch(review: any, candidate: VersionIdentity, ver
 export async function computeSubmissionReadiness(workspaceId: string, projectId: string) {
   await prisma.project.findFirstOrThrow({ where: { workspaceId, id: projectId } })
   const version = await prisma.manuscriptVersion.findFirst({ where: { workspaceId, projectId, isCanonical: true }, include: { artifact: true, obligations: true, physicalArtifacts: { include: { artifact: true } }, paperBuilds: { orderBy: { completedAt: "desc" } } } })
-  if (!version) return { submission_ready: false, status: "no_canonical_manuscript", reasons: ["No canonical working-paper version exists."], blocking_object_references: [], stale_review_references: [], missing_gate_references: REQUIRED_MANUSCRIPT_GATES, gates: {} }
-  if (!['submission_candidate', 'released'].includes(version.lifecycleStage)) return {
+  if (!version) {
+    const result = { submission_ready: false, publication_candidate: false, release_assessment_active: false, policy_version: READINESS_POLICY_VERSION, status: "no_canonical_manuscript", canonical_manuscript: null, release_candidate: null, reasons: ["No canonical working-paper version exists."], blocking_object_references: [], stale_review_references: [], missing_gate_references: REQUIRED_MANUSCRIPT_GATES, gates: {}, next_required_action: null, workflow_circuit_breaker: { active: false, affected_gates: [] as string[], instruction: null } }
+    return { ...result, llm_contract: releaseContractForReadiness(result) }
+  }
+  if (!['submission_candidate', 'released'].includes(version.lifecycleStage)) {
+    const result = {
     submission_ready: false,
     publication_candidate: false,
     release_assessment_active: false,
@@ -59,6 +64,8 @@ export async function computeSubmissionReadiness(workspaceId: string, projectId:
     stale_review_references: [],
     missing_gate_references: [],
     proof_obligations: { total: version.obligations.length, load_bearing_ids: version.obligations.filter((obligation) => obligation.loadBearing).map((obligation) => obligation.id) }
+    }
+    return { ...result, llm_contract: releaseContractForReadiness(result) }
   }
 
   const versions = await prisma.manuscriptVersion.findMany({ where: { workspaceId, projectId }, select: { id: true, version: true, contentHash: true, theoremFingerprint: true, citationFingerprint: true } })
@@ -210,7 +217,7 @@ export async function computeSubmissionReadiness(workspaceId: string, projectId:
   const acceptedButIncomplete = releaseOrder.filter((type) => type !== "compile" && !gates[type].satisfied && diagnostics[type].some((item) => item.accepted))
   const circuitBreakerGates = [...new Set([...repeatedWithoutNewIssues, ...acceptedButIncomplete])]
   const stale = REQUIRED_MANUSCRIPT_GATES.flatMap((type) => diagnostics[type].filter((item) => !item.accepted && item.review.verdict === approved).map((item) => ({ id: item.review.id, review_type: type, target_version: item.review.targetVersion, reason: item.reason })))
-  return {
+  const result = {
     submission_ready: reasons.length === 0,
     publication_candidate: reasons.length === 0,
     policy_version: READINESS_POLICY_VERSION,
@@ -232,6 +239,7 @@ export async function computeSubmissionReadiness(workspaceId: string, projectId:
     governing_claim_ids: governingClaimIds,
     proof_obligations: { total: version.obligations.length, load_bearing_ids: version.obligations.filter((obligation) => obligation.loadBearing).map((obligation) => obligation.id), uncovered_required_ids: missingObligations.map((o) => o.id), incomplete_load_bearing_ids: missingLoadBearingCompleteness.map((o) => o.id) }
   }
+  return { ...result, llm_contract: releaseContractForReadiness(result) }
 }
 
 export async function workstreamDependenciesSatisfied(workspaceId: string, workstreamId: string) {

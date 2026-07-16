@@ -11,6 +11,7 @@ import { productionOidc } from "./config.js"
 import { advertisedScopes, hasBearerAuthorization, hasPermission, rolesForClient, scopes } from "./auth/scopes.js"
 import { callTool, compactToolResult, contentResult, expectedMcpToolCount, formatResearchArtifact, mcpAuthorizationMatrix, mcpServerVersion, mcpToolsListResult, structuredContentForTool, toolDefinitions } from "./mcp/server.js"
 import { normalizedObligationCheckStatus, reviewEvidenceMatch } from "./research/readiness.js"
+import { releaseContractForReadiness, RELEASE_CONTRACT_SCHEMA_VERSION } from "./research/releaseContract.js"
 import { validateReviewEvidence } from "./research/integrity.js"
 import { sourcePreservingCompilationFiles, validateSourcePreservingBuildLog } from "./research/paperBuilder.js"
 
@@ -114,13 +115,14 @@ for (const name of [
   "update_claim_status",
   "create_lean_theorem",
   "mark_lean_verified",
-  "get_project_control_room"
+  "get_project_control_room",
+  "get_project_release_contract"
 ]) {
   if (name === "tools/list") continue
   assert.ok(toolDefinitions.some((tool) => tool.name === name), `missing MCP tool ${name}`)
 }
 
-for (const name of ["get_manuscript", "update_manuscript", "build_manuscript", "revise_manuscript_source", "inspect_manuscript_build", "publish_manuscript", "create_proof_obligation", "get_integration_coverage", "compute_submission_readiness", "promote_manuscript_to_submission_candidate", "import_external_review", "create_strategic_review", "get_project_health", "create_project_branch"]) {
+for (const name of ["get_manuscript", "update_manuscript", "build_manuscript", "revise_manuscript_source", "inspect_manuscript_build", "publish_manuscript", "create_proof_obligation", "get_integration_coverage", "get_project_release_contract", "compute_submission_readiness", "promote_manuscript_to_submission_candidate", "import_external_review", "create_strategic_review", "get_project_health", "create_project_branch"]) {
   assert.ok(toolDefinitions.some((tool) => tool.name === name), `missing modern MCP tool ${name}`)
 }
 assert.equal(toolDefinitions.length, expectedMcpToolCount, "MCP registry count changed; update the reviewed snapshot intentionally")
@@ -157,18 +159,61 @@ for (const prop of ["report_id", "workstream_id"]) {
   assert.ok(submitReportProps[prop], `submit_report_for_review schema must advertise ${prop}`)
 }
 
-assert.equal(mcpServerVersion, "1.6.8-chat-file-publication")
+assert.equal(mcpServerVersion, "1.7.0-llm-release-contract")
 const gapTool = toolDefinitions.find((tool) => tool.name === "create_gap")!
 const gapProps = gapTool.inputSchema.properties as Record<string, unknown>
 for (const prop of ["resolution_kind", "resolution_role", "frontier_eligible"]) assert.ok(gapProps[prop], `create_gap schema must advertise ${prop}`)
 const lifecycleTool = toolDefinitions.find((tool) => tool.name === "promote_manuscript_to_submission_candidate")!
 const lifecycleProps = lifecycleTool.inputSchema.properties as Record<string, unknown>
 for (const prop of ["manuscript_version_id", "load_bearing_obligation_ids"]) assert.ok(lifecycleProps[prop], `promote_manuscript_to_submission_candidate schema must advertise ${prop}`)
+assert.equal(lifecycleTool.annotations.idempotentHint, true)
+const releaseContractTool = toolDefinitions.find((tool) => tool.name === "get_project_release_contract")!
+assert.deepEqual((releaseContractTool.outputSchema as { required?: string[] }).required, ["schema_version", "authority", "policy_version", "state", "authoritative_ids", "invariant_truths", "blockers", "next_action", "permitted_mutation_tools", "prohibited_shortcuts", "enforcement"])
+assert.equal(releaseContractTool.annotations.readOnlyHint, true)
+const readinessTool = toolDefinitions.find((tool) => tool.name === "compute_submission_readiness")!
+assert.deepEqual((readinessTool.outputSchema as { required?: string[] }).required, ["llm_contract"])
 const obligationTool = toolDefinitions.find((tool) => tool.name === "create_proof_obligation")!
 assert.ok((obligationTool.inputSchema.properties as Record<string, unknown>).load_bearing, "create_proof_obligation must advertise load_bearing")
 assert.equal(normalizedObligationCheckStatus("passed"), "preserved")
 assert.equal(normalizedObligationCheckStatus("preserved"), "preserved")
 assert.equal(normalizedObligationCheckStatus("failed"), "failed")
+const developmentContract = releaseContractForReadiness({
+  submission_ready: false,
+  policy_version: "test-policy",
+  release_assessment_active: false,
+  canonical_manuscript: { id: "version-4" },
+  missing_gate_references: [],
+  blocking_object_references: []
+})
+assert.equal(developmentContract.schema_version, RELEASE_CONTRACT_SCHEMA_VERSION)
+assert.deepEqual(developmentContract.permitted_mutation_tools, ["promote_manuscript_to_submission_candidate"])
+assert.equal(developmentContract.next_action?.requires_user_decision, true)
+const circuitBrokenContract = releaseContractForReadiness({
+  submission_ready: false,
+  policy_version: "test-policy",
+  release_assessment_active: true,
+  canonical_manuscript: { id: "version-4" },
+  release_candidate: { id: "version-4" },
+  next_required_action: { gate: "proof_integration", instruction: "Repeat review" },
+  workflow_circuit_breaker: { active: true, affected_gates: ["proof_integration"], instruction: "Repair evidence transition." },
+  missing_gate_references: ["proof_integration"],
+  blocking_object_references: []
+})
+assert.deepEqual(circuitBrokenContract.permitted_mutation_tools, [], "circuit breakers must not advertise a loophole through duplicate review work")
+assert.equal(circuitBrokenContract.next_action?.requires_administrator, true)
+const externallyChallengedContract = releaseContractForReadiness({
+  submission_ready: false,
+  policy_version: "test-policy",
+  release_assessment_active: true,
+  canonical_manuscript: { id: "version-4" },
+  release_candidate: { id: "version-4" },
+  gates: { external_challenge_resolution: { unresolved_external_review_ids: ["external-review-1"] } },
+  next_required_action: { gate: "editorial", instruction: "Run editorial review" },
+  missing_gate_references: ["editorial", "external_challenge_resolution"],
+  blocking_object_references: []
+})
+assert.deepEqual(externallyChallengedContract.permitted_mutation_tools, ["triage_external_review"], "external challenges must be triaged before another release gate")
+assert.match(externallyChallengedContract.next_action?.instruction ?? "", /external-review-1/)
 const releaseCandidate = { id: "version-4", version: 4, contentHash: "content-4", theoremFingerprint: "theorem-4", citationFingerprint: "citations-shared" }
 const priorCandidate = { id: "version-3", version: 3, contentHash: "content-3", theoremFingerprint: "theorem-3", citationFingerprint: "citations-shared" }
 assert.deepEqual(reviewEvidenceMatch({ targetVersion: "4" }, releaseCandidate, [priorCandidate, releaseCandidate], "compile"), { accepted: true, basis: "exact_version", reason: null })
