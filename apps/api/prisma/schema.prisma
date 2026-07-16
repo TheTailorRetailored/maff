@@ -1479,6 +1479,8 @@ model Gap {
   severity            GapSeverity
   status              GapStatus   @default(open)
   suggestedResolution String?
+  resolutionKind      WorkstreamKind?
+  resolutionRole      AgentRole?
   targetObjectType    String?
   targetObjectId      String?
   externalReviewId    String?     @db.Uuid

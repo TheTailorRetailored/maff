@@ -91,6 +91,8 @@ function normalizeEnumToken(value?: string) {
 function asAgentRole(value?: string): AgentRole | undefined {
   if (!value) return undefined
   const token = normalizeEnumToken(value)
+  const alias = token?.toLowerCase()
+  if (["manuscriptauthor", "manuscript_author", "proofintegrationagent", "proof_integration_agent"].includes(alias ?? "")) return "PaperWriter"
   const roles = Object.keys(roleRecipeFiles) as AgentRole[]
   return roles.find((role) => role.toLowerCase() === token?.toLowerCase() || role.toLowerCase() === `${token}Agent`.toLowerCase())
 }
@@ -144,9 +146,10 @@ function workstreamWhereForRole(role?: AgentRole, kind?: WorkstreamKind) {
 
 async function resolveWorkspaceForUser(userId: string, workspaceRef?: string) {
   if (workspaceRef) {
+    const isUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(workspaceRef)
     const workspace = await prisma.workspace.findFirst({
       where: {
-        OR: [{ id: workspaceRef }, { slug: workspaceRef }],
+        ...(isUuid ? { id: workspaceRef } : { slug: workspaceRef }),
         members: { some: { userId } }
       }
     })
@@ -1355,7 +1358,7 @@ export async function createProofAttempt(input: { workspaceId: string; projectId
   return attempt
 }
 
-export async function createGap(input: { workspaceId: string; projectId: string; claimId?: string; proofAttemptId?: string; routeId?: string; title: string; descriptionMarkdown: string; severity?: string; status?: string; suggestedResolution?: string; targetObjectType?: string; targetObjectId?: string; externalReviewId?: string; auditFindingId?: string }) {
+export async function createGap(input: { workspaceId: string; projectId: string; claimId?: string; proofAttemptId?: string; routeId?: string; title: string; descriptionMarkdown: string; severity?: string; status?: string; suggestedResolution?: string; resolutionKind?: string; resolutionRole?: string; targetObjectType?: string; targetObjectId?: string; externalReviewId?: string; auditFindingId?: string }) {
   const gap = await prisma.gap.create({
     data: {
       workspaceId: input.workspaceId,
@@ -1368,6 +1371,8 @@ export async function createGap(input: { workspaceId: string; projectId: string;
       severity: input.severity as any ?? "unknown",
       status: input.status as any ?? "open",
       suggestedResolution: input.suggestedResolution,
+      resolutionKind: asWorkstreamKind(input.resolutionKind),
+      resolutionRole: asAgentRole(input.resolutionRole),
       targetObjectType: input.targetObjectType,
       targetObjectId: input.targetObjectId,
       externalReviewId: input.externalReviewId,
