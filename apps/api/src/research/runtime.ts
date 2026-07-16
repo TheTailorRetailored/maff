@@ -2415,10 +2415,11 @@ export async function promoteManuscriptToSubmissionCandidate(input: { workspaceI
   })).map((obligation) => obligation.id)
   const selected = input.loadBearingObligationIds?.length ? input.loadBearingObligationIds : inferredIds
   if (!selected.length) throw new Error("No exact-version journal-verifiable proof evidence is available to infer the load-bearing set. Supply bounded load_bearing_obligation_ids after completing the manuscript-level assessment.")
+  if (!version.isCanonical) await promoteManuscriptVersion({ workspaceId: input.workspaceId, manuscriptVersionId: version.id })
   const manuscript = await setManuscriptLifecycle({ workspaceId: input.workspaceId, manuscriptVersionId: version.id, stage: "submission_candidate", loadBearingObligationIds: selected })
   const readiness = await computeSubmissionReadiness(input.workspaceId, version.projectId)
   const retired = await prisma.workstream.findMany({ where: { workspaceId: input.workspaceId, projectId: version.projectId, status: "abandoned", escalationMessage: { contains: `submission-candidate activation of ManuscriptVersion ${version.id}` } }, select: { id: true, title: true, targetObjectType: true, targetObjectId: true } })
-  return { manuscript, inferred_load_bearing_obligation_ids: input.loadBearingObligationIds?.length ? [] : inferredIds, load_bearing_obligation_ids: selected, retired_predecessor_workstreams: retired, readiness }
+  return { manuscript, canonical_promotion_applied: !version.isCanonical, inferred_load_bearing_obligation_ids: input.loadBearingObligationIds?.length ? [] : inferredIds, load_bearing_obligation_ids: selected, retired_predecessor_workstreams: retired, readiness }
 }
 
 export async function setManuscriptFreeze(input: { workspaceId: string; manuscriptVersionId: string; level: "lexical" | "interface" | "mathematical" }) {

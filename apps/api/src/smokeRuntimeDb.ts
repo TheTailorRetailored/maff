@@ -201,6 +201,15 @@ assert.ok(controlRoom.workstreams_by_status.completed?.some((item) => item.id ==
   assert.ok(readiness.reasons.some((reason) => reason.includes(preservationGap.id)))
   await runtime.resolveGap({ workspaceId: workspace.id, gapId: preservationGap.id, suggestedResolution: "Restore the argument." })
 
+const successorArtifact = await runtime.createResearchArtifact({ workspaceId: workspace.id, projectId: project.id, title: "Reviewed successor manuscript", kind: "paper_draft", contentMarkdown: "The bound is standard, with the restored exact successor text." })
+const successorVersion = await runtime.createManuscriptVersion({ workspaceId: workspace.id, projectId: project.id, artifactId: successorArtifact.id, parentArtifactIds: [manuscript.id], claimIds: [claim.id], createdByAgentRunId: authorRun.agentRun.id })
+const successorObligation = await runtime.createProofObligation({ workspaceId: workspace.id, projectId: project.id, manuscriptVersionId: successorVersion.id, claimId: claim.id, sourceArtifactId: sourceA.id, title: "Successor uniform majorant", statementMarkdown: "Uniform majorant on the successor manuscript domain.", manuscriptLocation: "Lemma 4.1", assumptions: ["The stated successor domain hypotheses hold."], boundaryCases: ["The moving start equals the left endpoint."], authorAssertion: "The successor manuscript integrates the reviewed repair." })
+assert.equal(successorVersion.isCanonical, false)
+const successorActivation = await runtime.promoteManuscriptToSubmissionCandidate({ workspaceId: workspace.id, manuscriptVersionId: successorVersion.id, loadBearingObligationIds: [successorObligation.id] })
+assert.equal(successorActivation.canonical_promotion_applied, true)
+assert.equal(successorActivation.manuscript.lifecycleStage, "submission_candidate")
+assert.equal((await prisma.project.findUniqueOrThrow({ where: { id: project.id } })).currentWorkingPaperId, successorVersion.id)
+
 // Robustness regression: a substantial manuscript without an exact proof-obligation ledger
 // remains an unverified candidate; it cannot become canonical or receive manuscript gates.
 const ledgerless = await runtime.createResearchArtifact({ workspaceId: workspace.id, projectId: project.id, title: "Ledgerless theorem manuscript", kind: "paper_draft", contentMarkdown: "# Theorem\nA nontrivial statement with proof." })
