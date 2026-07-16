@@ -744,6 +744,44 @@ export async function claimNextAssignment(input: {
   }
 }
 
+async function restoreOrphanedSubmittedReviewWorkstreams(workspaceId: string, projectId?: string) {
+  const orphaned = await prisma.workstream.findMany({
+    where: {
+      workspaceId,
+      projectId,
+      status: "abandoned",
+      reports: { some: { status: "submitted" } },
+      project: { status: { notIn: ["completed", "terminated", "archived"] } }
+    },
+    include: {
+      reports: {
+        where: { status: "submitted" },
+        include: { reviews: { select: { id: true } } },
+        orderBy: { updatedAt: "desc" },
+        take: 1
+      }
+    }
+  })
+  const restoreIds = orphaned.filter((workstream) => {
+    const policy = jsonObject(workstream.reviewPolicy) as Record<string, unknown>
+    if (Number(policy.min_approved_rounds ?? 1) <= 0) return false
+    const report = workstream.reports[0]
+    return Boolean(report && report.reviews.length === 0)
+  }).map((workstream) => workstream.id)
+  if (!restoreIds.length) return
+  await prisma.workstream.updateMany({
+    where: { workspaceId, id: { in: restoreIds }, status: "abandoned" },
+    data: {
+      status: "needs_review",
+      claimedSessionId: null,
+      assignedToUserId: null,
+      leaseExpiresAt: null,
+      completedAt: null,
+      escalationMessage: "Restored automatically because its submitted report still requires independent review; abandoned workstreams must not orphan submitted mandatory-review reports."
+    }
+  })
+}
+
 export async function claimNextReview(input: { userId: string; workspaceRef?: string; project?: string; sessionId?: string; model?: string; leaseMinutes?: number; startRun?: boolean }): Promise<any> {
   if (input.startRun === false) throw new Error("claim_next_review must start its reviewer run atomically; dry or deferred claims are not supported.")
   const workspace = await resolveWorkspaceForUser(input.userId, input.workspaceRef)
@@ -751,6 +789,7 @@ export async function claimNextReview(input: { userId: string; workspaceRef?: st
   const sessionId = input.sessionId ?? `maff-${randomUUID()}`
   const project = await resolveProject(workspace.id, input.project)
   await retireResolvedGapWorkstreams(workspace.id, project?.id)
+  await restoreOrphanedSubmittedReviewWorkstreams(workspace.id, project?.id)
   const readiness = project ? await computeSubmissionReadiness(workspace.id, project.id) : null
   const foundReviewCandidates = await prisma.workstream.findMany({
     where: { workspaceId: workspace.id, projectId: project?.id, status: "needs_review" },

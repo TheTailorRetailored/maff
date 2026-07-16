@@ -182,6 +182,12 @@ assert.ok(controlRoom.workstreams_by_status.completed?.some((item) => item.id ==
   await prisma.reviewAssignment.update({ where: { id: explicitIntegratedClaim.review_assignment.assignment.id }, data: { status: "cancelled" } })
   await prisma.agentRun.update({ where: { id: explicitIntegratedClaim.agent_run.id }, data: { status: "cancelled", finishedAt: new Date() } })
   await prisma.workstream.update({ where: { id: explicitIntegratedReview.id }, data: { status: "abandoned", claimedSessionId: null, assignedToUserId: null, leaseExpiresAt: null } })
+  const restoredIntegratedClaim = await runtime.claimNextReview({ userId: user.id, workspaceRef: workspace.id, project: project.id, sessionId: `restored-integrated-review-${suffix}`, model: "smoke" })
+  assert.equal(restoredIntegratedClaim.assignment?.id, explicitIntegratedReview.id, "an abandoned workstream must not orphan its submitted unreviewed report")
+  assert.match(restoredIntegratedClaim.assignment?.escalationMessage ?? "", /Restored automatically/)
+  await prisma.reviewAssignment.update({ where: { id: restoredIntegratedClaim.review_assignment.assignment.id }, data: { status: "cancelled" } })
+  await prisma.agentRun.update({ where: { id: restoredIntegratedClaim.agent_run.id }, data: { status: "cancelled", finishedAt: new Date() } })
+  await prisma.workstream.update({ where: { id: explicitIntegratedReview.id }, data: { status: "abandoned", claimedSessionId: null, assignedToUserId: null, leaseExpiresAt: null } })
   await runtime.setManuscriptLifecycle({ workspaceId: workspace.id, manuscriptVersionId: manuscriptVersion.id, stage: "submission_candidate", loadBearingObligationIds: [obligation.id] })
   await assert.rejects(
     () => runtime.recordReviewRound({ workspaceId: workspace.id, workstreamId: workstream.id, verdict: "approved", reviewType: "proof_integration", targetVersion: manuscriptVersion.id, bodyMarkdown: "A direct typed approval must not count.", issues: [], requiredChanges: [], checkedRefs: [sourceA.id] }),
