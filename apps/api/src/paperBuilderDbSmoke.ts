@@ -35,6 +35,8 @@ try {
   assert.match(inspected.tex ?? "", /maff-section:main@1/)
   assert.match(inspected.normalized_manuscript_markdown ?? "", /Main result/)
   assert.equal(inspected.pdf?.surfaced, false)
+  const obligation = await prisma.proofObligation.findFirstOrThrow({ where: { workspaceId: workspace.id, manuscriptVersionId: built.manuscript_version.id, required: true } })
+  await runtime.promoteManuscriptToSubmissionCandidate({ workspaceId: workspace.id, manuscriptVersionId: built.manuscript_version.id, loadBearingObligationIds: [obligation.id] })
   const readiness: any = await runtime.computeProjectSubmissionReadiness(workspace.id, project.id)
   assert.equal(readiness.gates.compile.satisfied, true)
   assert.equal(readiness.gates.compile.paper_build_id, built.paper_build.id)
