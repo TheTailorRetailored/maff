@@ -154,12 +154,13 @@ try {
     () => runtime.publishStructuredManuscript({ workspaceId: workspace.id, projectId: project.id, manuscriptVersionId: versionId }),
     /prepare_external_review_package first/
   )
+  const statusBeforeReviewPackage = (await prisma.project.findUniqueOrThrow({ where: { id: project.id } })).status
   const reviewPackage: any = await runtime.prepareExternalReviewPackage({ workspaceId: workspace.id, projectId: project.id, manuscriptVersionId: versionId })
   const reviewPackageAgain: any = await runtime.prepareExternalReviewPackage({ workspaceId: workspace.id, projectId: project.id, manuscriptVersionId: versionId })
   assert.equal(reviewPackage.project_completed, false)
   assert.equal(reviewPackage.external_review_package.status, "preparing")
   assert.equal(reviewPackageAgain.package_id, reviewPackage.package_id)
-  assert.equal((await prisma.project.findUniqueOrThrow({ where: { id: project.id } })).status, "active")
+  assert.equal((await prisma.project.findUniqueOrThrow({ where: { id: project.id } })).status, statusBeforeReviewPackage, "external-review packaging must not change project lifecycle status")
 
   const externalReview = await runtime.importExternalReview({
     workspaceId: workspace.id,
