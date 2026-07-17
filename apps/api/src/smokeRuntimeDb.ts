@@ -361,6 +361,8 @@ await prisma.workstream.update({ where: { id: legacyMathematicalReviewWorkstream
 
 // A fresh reviewer receives a locked target and must prove access to exact bytes before
 // substantive evidence can close the gate. The one-use assignment completes with the run.
+const reactivatedOriginal = await runtime.promoteManuscriptToSubmissionCandidate({ workspaceId: workspace.id, manuscriptVersionId: manuscriptVersion.id, loadBearingObligationIds: [obligation.id] })
+assert.equal(reactivatedOriginal.manuscript.id, manuscriptVersion.id, "the physical-artifact review fixture deliberately reactivates its exact original candidate")
 const lockedReviewWorkstream = await runtime.createWorkstream({ workspaceId: workspace.id, projectId: project.id, goalId: goal.id, title: "Locked proof integration review", kind: "hostile_review", instructions: "Attack the exact proof integration without editing it.", coordinatorRole: "HostileReviewer", priority: 100, targetObjectType: "ManuscriptVersion", targetObjectId: manuscriptVersion.id, reviewPolicy: { min_approved_rounds: 1, review_type: "proof_integration", locked_assignment_required: true, remediation: true } })
 await assert.rejects(() => runtime.startAgentRun({ workspaceId: workspace.id, workstreamId: lockedReviewWorkstream.id, sessionId: `invalid-review-session-${suffix}`, model: "smoke" }), /claim_next_review/i)
 await assert.rejects(() => runtime.claimAgentAssignment({ workspaceId: workspace.id, projectId: project.id, workstreamId: lockedReviewWorkstream.id, sessionId: `invalid-review-session-${suffix}`, userId: user.id }), /claim_next_review/i)
