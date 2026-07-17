@@ -309,6 +309,7 @@ try {
   assert.equal((await runtime.getManuscriptVersion(workspace.id, successorVersion.id)).isCanonical, true)
   const authorSideBuildRoute = await runtime.claimNextReview({ userId: user.id, workspaceRef: workspace.id, project: project.id, sessionId: `author-session-${suffix}`, model: "smoke" })
   assert.equal(authorSideBuildRoute.briefing?.role, "PaperWriter", "an outstanding automated build remains author-side and may continue in the same chat")
+  assert.equal((await prisma.workstream.findUniqueOrThrow({ where: { id: explicitIntegratedReview.id } })).status, "abandoned", "a submitted review of a superseded manuscript must remain preserved but inactive")
   const authorOutcome = await runtime.submitRunOutcome({ workspaceId: workspace.id, agentRunId: authorRun.agentRun.id, completedWork: ["Integrated the canonical working text."], changedObjects: [`ManuscriptVersion:${manuscriptVersion.id}`], evidenceGenerated: [], checksPerformed: [], problemsEncountered: [], unresolvedUncertainty: [], gapsCreated: [], gapsResolved: [], nextAction: { title: "Run a highly detailed proof-integration review with internal ids that the user should not carry", kind: "review", role: "HostileReviewer" } })
   assert.equal(authorOutcome.continuation.mode, "fresh_chat_required")
   assert.equal(authorOutcome.continuation.prompt, `Start one new chat and say: "Work on the next part of my Maff project: ${project.title}."`)

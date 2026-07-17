@@ -760,6 +760,7 @@ export async function claimNextAssignment(input: {
 }
 
 async function restoreOrphanedSubmittedReviewWorkstreams(workspaceId: string, projectId?: string) {
+  const canonical = projectId ? await prisma.manuscriptVersion.findFirst({ where: { workspaceId, projectId, isCanonical: true }, select: { id: true } }) : null
   const orphaned = await prisma.workstream.findMany({
     where: {
       workspaceId,
@@ -780,6 +781,7 @@ async function restoreOrphanedSubmittedReviewWorkstreams(workspaceId: string, pr
   const restoreIds = orphaned.filter((workstream) => {
     const policy = jsonObject(workstream.reviewPolicy) as Record<string, unknown>
     if (Number(policy.min_approved_rounds ?? 1) <= 0) return false
+    if (workstream.targetObjectType === "ManuscriptVersion" && workstream.targetObjectId !== canonical?.id) return false
     const report = workstream.reports[0]
     return Boolean(report && report.reviews.length === 0)
   }).map((workstream) => workstream.id)
