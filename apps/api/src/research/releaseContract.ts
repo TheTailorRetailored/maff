@@ -1,4 +1,4 @@
-export const RELEASE_CONTRACT_SCHEMA_VERSION = "maff.release-contract.v2"
+export const RELEASE_CONTRACT_SCHEMA_VERSION = "maff.release-contract.v3"
 
 type ReadinessLike = {
   submission_ready?: boolean
@@ -15,6 +15,7 @@ type ReadinessLike = {
   blocking_object_references?: Array<{ type?: string; id?: string; path?: string[] }>
   alignment?: { classification?: string; requires_alignment?: boolean; requires_administrator?: boolean } | null
   external_review_package?: { id?: string; status?: string } | null
+  reviewed_successor_adoption?: { expected_current_manuscript_version_id: string; successor_manuscript_version_id: string; supporting_review_round_id: string; paper_build_id: string } | null
 }
 
 type ContractAction = {
@@ -38,6 +39,7 @@ const gateTool = (gate: string | undefined) => gate === "compile" || gate === "r
  */
 export function releaseContractForReadiness(readiness: ReadinessLike) {
   const workingVersionId = readiness.canonical_manuscript?.id ?? null
+  const adoption = readiness.reviewed_successor_adoption ?? null
   const activeCandidateId = readiness.release_assessment_active ? readiness.release_candidate?.id ?? workingVersionId : null
   const circuitBreaker = readiness.workflow_circuit_breaker?.active === true
   const approvalStatus = !workingVersionId
@@ -54,6 +56,12 @@ export function releaseContractForReadiness(readiness: ReadinessLike) {
     category: "missing_work",
     message: "No authoritative working manuscript version exists.",
     recovery_tool: readiness.alignment?.requires_administrator ? null : readiness.alignment?.requires_alignment ? "align_project_release_state" : "claim_next_assignment"
+  })
+  else if (!readiness.release_assessment_active && adoption) blockers.push({
+    code: "REVIEWED_SUCCESSOR_NOT_ADOPTED",
+    category: "state_transition",
+    message: `Reviewed successor ${adoption.successor_manuscript_version_id} must become the current working manuscript before release assessment can target it.`,
+    recovery_tool: "adopt_reviewed_manuscript_successor"
   })
   else if (!readiness.release_assessment_active) blockers.push({
     code: "RELEASE_ASSESSMENT_NOT_ACTIVATED",
@@ -111,6 +119,15 @@ export function releaseContractForReadiness(readiness: ReadinessLike) {
     exact_target_id: null,
     gate: null,
     instruction: "Claim the next ordinary manuscript-development assignment. Do not create final-review evidence.",
+    requires_user_decision: false,
+    requires_administrator: false
+  }
+  else if (!readiness.release_assessment_active && adoption) nextAction = {
+    kind: "adopt_reviewed_working_successor",
+    tool: "adopt_reviewed_manuscript_successor",
+    exact_target_id: adoption.successor_manuscript_version_id,
+    gate: null,
+    instruction: `Atomically adopt exact reviewed successor ${adoption.successor_manuscript_version_id} using expected current ${adoption.expected_current_manuscript_version_id}, ReviewRound ${adoption.supporting_review_round_id}, and PaperBuild ${adoption.paper_build_id}. This changes working-text authority only; it does not confer approval, activate release assessment, or publish.`,
     requires_user_decision: false,
     requires_administrator: false
   }
@@ -187,7 +204,10 @@ export function releaseContractForReadiness(readiness: ReadinessLike) {
     state: !workingVersionId ? "no_working_manuscript" : !readiness.release_assessment_active ? "manuscript_development" : readiness.external_review_package?.status === "released" ? "publication_released" : readiness.submission_ready && readiness.external_review_package ? "external_review_package_ready" : readiness.submission_ready ? "publication_candidate" : circuitBreaker ? "workflow_infrastructure_blocked" : "candidate_assessment",
     authoritative_ids: {
       current_working_manuscript_version_id: workingVersionId,
-      active_release_candidate_version_id: activeCandidateId
+      active_release_candidate_version_id: activeCandidateId,
+      reviewed_successor_manuscript_version_id: adoption?.successor_manuscript_version_id ?? null,
+      supporting_review_round_id: adoption?.supporting_review_round_id ?? null,
+      supporting_paper_build_id: adoption?.paper_build_id ?? null
     },
     manuscript_authority: {
       current_working_manuscript_version_id: workingVersionId,
@@ -210,6 +230,8 @@ export function releaseContractForReadiness(readiness: ReadinessLike) {
       alignment_never_infers_mathematical_approval: true,
       canonical_means_current_working_text_only: true,
       canonical_activation_is_not_review_approval: true,
+      successor_adoption_changes_working_text_authority_only: true,
+      successor_adoption_does_not_activate_release_assessment: true,
       proof_obligations_are_mathematical_not_governance_tasks: true,
       external_review_packaging_does_not_publish_or_complete_the_project: true
     },
@@ -218,6 +240,7 @@ export function releaseContractForReadiness(readiness: ReadinessLike) {
     permitted_mutation_tools: nextAction?.tool ? [nextAction.tool] : [],
     prohibited_shortcuts: [
       { code: "NO_FLAG_COMPOSITION", message: "Do not emulate candidate activation by composing lower-level canonical, lifecycle, freeze, artifact, or verification mutations." },
+      { code: "NO_ADOPTION_BY_FLAG_COMPOSITION", message: "Do not emulate reviewed-successor adoption with pointer, canonical, lifecycle, freeze, proof, verification, rebuild, rewrite, duplicate-review, or publication mutations. Use only adopt_reviewed_manuscript_successor when the contract lists it." },
       { code: "NO_GENERIC_REVIEW_SUBSTITUTION", message: "Do not use generic reports or unassigned reviews to manufacture release-gate evidence." },
       { code: "NO_DUPLICATE_GATE_WORK", message: "Do not repeat a completed or circuit-broken gate against the unchanged exact candidate." },
       { code: "NO_ARTIFACT_BLESSING", message: "Do not treat paths, hashes, or metadata as durable bytes; use Maff-managed build and ingestion paths." },

@@ -28,6 +28,8 @@ When `permitted_mutation_tools` is empty, an LLM must stop and surface the class
 
 `promote_manuscript_to_submission_candidate` is the only candidate-activation transition exposed to agents. It owns canonical promotion, lifecycle activation, load-bearing ledger selection, predecessor retirement, and the resulting readiness evaluation as one semantic operation.
 
+`adopt_reviewed_manuscript_successor` is a separate, narrower working-authority transition. When readiness finds a non-current successor with explicit predecessor lineage, an exact successful managed build, and submitted independent exact-version approval covering every required obligation, the contract exposes only this operation. One serializable transaction checks the expected current pointer and every supplied evidence identifier, retires the predecessor as historical provenance, makes the successor current, and records adoption provenance. It deliberately does not change verification, proof-obligation, freeze, lifecycle, release-assessment, or publication state. Candidate activation can be offered only by the recomputed contract after adoption.
+
 Gate work proceeds only through the contract-selected `claim_next_assignment` or `claim_next_review` path. Once all gates pass, idempotent `prepare_external_review_package` surfaces exact candidate bytes for third-party review while leaving the project active. Final release is a separate, explicit, idempotent `publish_manuscript` transition. Low-level storage and lifecycle details are implementation mechanisms, not alternate agent workflows.
 
 ## Blocker classes
@@ -45,3 +47,5 @@ Historical aliases and evidence shapes are normalized before readiness classific
 ## Verification
 
 Source smoke tests prove contract discovery, legacy-alignment guidance, candidate-activation guidance, external-review/package separation, prohibited circuit-breaker loopholes, and stable tool counts. The MMRW golden database replay starts with a mature proof graph and proves idempotent alignment, structured synthesis, deterministic build, exact-candidate promotion, every ordered review gate, immutable third-party handoff, external review import, explicit publication, and final idempotence.
+
+A dedicated database regression additionally proves reviewed-successor discovery, atomic adoption, historical predecessor retention, exact review/build binding, preservation of mathematical and release fields, idempotence, and post-adoption retargeting of candidate activation to the successor.

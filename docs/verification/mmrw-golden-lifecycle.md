@@ -32,6 +32,7 @@ Assess existing projects without mutation using `npm run admin:assess-release-al
 | Structured synthesis | PaperWriter creates linked sections and an explicit proof-obligation ledger from governing graph objects. |
 | Deterministic build | PaperBuilder creates one canonical exact version with managed source/PDF bytes; compilation alone supplies no mathematical approval. |
 | Explicit candidacy | The release contract permits only `promote_manuscript_to_submission_candidate` and marks it as a user decision. |
+| Reviewed successor adoption | A separate regression permits only `adopt_reviewed_manuscript_successor`, preserves the predecessor and all mathematical/release fields, then retargets candidacy to the adopted successor. |
 | Exact review sequence | Compile, proof integration, novelty, bibliography, end-to-end mathematics, and editorial evidence are consumed in policy order against the immutable candidate. |
 | Third-party handoff | `prepare_external_review_package` returns exact PDF/source bytes, remains idempotent, and leaves the project active. |
 | External review | Imported feedback is bound to the exact candidate/package; adverse feedback would reopen a bounded revision rather than being treated as publication approval. |

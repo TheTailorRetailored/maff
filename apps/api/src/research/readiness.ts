@@ -1,8 +1,9 @@
 import { prisma } from "../db/prisma.js"
 import { releaseContractForReadiness } from "./releaseContract.js"
 import { assessProjectReleaseAlignment } from "./alignment.js"
+import { findAdoptableReviewedManuscriptSuccessor } from "./successorAdoption.js"
 
-export const READINESS_POLICY_VERSION = "1.6.0-submission-candidate"
+export const READINESS_POLICY_VERSION = "1.7.0-reviewed-successor-adoption"
 export const REQUIRED_MANUSCRIPT_GATES = ["proof_integration", "end_to_end_mathematical", "novelty", "bibliography", "editorial", "compile"] as const
 export type RequiredGate = typeof REQUIRED_MANUSCRIPT_GATES[number]
 type VersionIdentity = { id: string; version: number; contentHash: string; theoremFingerprint: string; citationFingerprint: string }
@@ -49,6 +50,7 @@ export async function computeSubmissionReadiness(workspaceId: string, projectId:
     return { ...result, llm_contract: releaseContractForReadiness(result) }
   }
   if (!['submission_candidate', 'released'].includes(version.lifecycleStage)) {
+    const reviewedSuccessorAdoption = await findAdoptableReviewedManuscriptSuccessor(workspaceId, projectId, version.id)
     const result = {
     submission_ready: false,
     publication_candidate: false,
@@ -57,6 +59,7 @@ export async function computeSubmissionReadiness(workspaceId: string, projectId:
     status: "manuscript_development",
     lifecycle_stage: version.lifecycleStage,
     canonical_manuscript: { id: version.id, artifact_id: version.artifactId, version: version.version, content_hash: version.contentHash, theorem_fingerprint: version.theoremFingerprint, citation_fingerprint: version.citationFingerprint },
+    reviewed_successor_adoption: reviewedSuccessorAdoption,
     gates: {},
     gate_plan: [],
     next_required_action: null,

@@ -21,7 +21,7 @@
     "test:paper-builder:fixture": "tsx src/paperBuilderRenderFixture.ts",
     "test:paper-builder:db": "tsx src/paperBuilderDbSmoke.ts",
     "test:mmrw-golden:db": "tsx src/mmrwGoldenReplay.ts",
-    "test:lifecycle:db": "node dist/smokeRuntimeDb.js && node dist/paperBuilderDbSmoke.js && node dist/mmrwGoldenReplay.js && node dist/legacyLineageQuarantineDbSmoke.js",
+    "test:lifecycle:db": "node dist/smokeRuntimeDb.js && node dist/paperBuilderDbSmoke.js && node dist/mmrwGoldenReplay.js && node dist/legacyLineageQuarantineDbSmoke.js && node dist/successorAdoptionDbSmoke.js",
     "test:migration:fixture": "tsx src/migrationFixture.ts",
     "admin:reset-legacy": "node dist/admin/resetLegacyResearch.js",
     "admin:reset-legacy:src": "tsx src/admin/resetLegacyResearch.ts",

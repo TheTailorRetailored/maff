@@ -11,6 +11,7 @@ import { alignProjectReleaseState, assessProjectReleaseAlignment } from "./align
 import { inferMimeType, ingestFile, ingestRemoteFile, listZipEntries, readZipEntryBytes, storagePath, verifyStoredFile } from "../artifacts/storage.js"
 import { analyzeProjectImport, beginProjectImport, beginRepairFromAudit, commitProjectImport, createExternalReviewPackage, createPublicationPackage, createReviewAssignment, ensureProjectActionable, recordObjectAccess, recordObjectContribution, retireResolvedGapWorkstreams, runProjectGraphAudit, submitRunOutcome, triageExternalReview, validateReviewAssignment, validateReviewEvidence } from "./integrity.js"
 import { citationKey, executePaperBuild, executeSourcePreservingBuild, inspectPaperBuild, renderPaper } from "./paperBuilder.js"
+import { adoptReviewedManuscriptSuccessor as adoptSuccessor } from "./successorAdoption.js"
 
 export { alignProjectReleaseState, analyzeProjectImport, assessProjectReleaseAlignment, beginProjectImport, beginRepairFromAudit, commitProjectImport, createPublicationPackage, ensureProjectActionable, recordObjectAccess, recordObjectContribution, runProjectGraphAudit, submitRunOutcome, triageExternalReview }
 
@@ -2468,6 +2469,26 @@ export async function promoteManuscriptToSubmissionCandidate(input: { workspaceI
   const readiness = await computeSubmissionReadiness(input.workspaceId, version.projectId)
   const retired = await prisma.workstream.findMany({ where: { workspaceId: input.workspaceId, projectId: version.projectId, status: "abandoned", escalationMessage: { contains: `submission-candidate activation of ManuscriptVersion ${version.id}` } }, select: { id: true, title: true, targetObjectType: true, targetObjectId: true } })
   return { manuscript, canonical_promotion_applied: !version.isCanonical, inferred_load_bearing_obligation_ids: input.loadBearingObligationIds?.length ? [] : inferredIds, load_bearing_obligation_ids: selected, retired_predecessor_workstreams: retired, readiness }
+}
+
+/** Adopt reviewed successor bytes as the working text without changing mathematical or release state. */
+export async function adoptReviewedManuscriptSuccessor(input: { workspaceId: string; projectId: string; expectedCurrentManuscriptVersionId: string; successorManuscriptVersionId: string; supportingReviewRoundId: string; paperBuildId: string }) {
+  const before = await prisma.manuscriptVersion.findFirstOrThrow({ where: { workspaceId: input.workspaceId, projectId: input.projectId, id: input.successorManuscriptVersionId }, select: { verificationState: true, lifecycleStage: true, freezeLevel: true } })
+  const result = await adoptSuccessor(input)
+  const manuscript = await getManuscriptVersion(input.workspaceId, input.successorManuscriptVersionId)
+  if (manuscript.verificationState !== before.verificationState || manuscript.lifecycleStage !== before.lifecycleStage || manuscript.freezeLevel !== before.freezeLevel) throw new Error("Successor adoption invariant failed: mathematical or release state changed.")
+  return {
+    adopted: true,
+    idempotent: result.idempotent,
+    predecessor_manuscript_version_id: input.expectedCurrentManuscriptVersionId,
+    current_working_manuscript: manuscript,
+    supporting_review_round_id: input.supportingReviewRoundId,
+    paper_build_id: input.paperBuildId,
+    mathematical_or_proof_state_changed: false,
+    release_assessment_activated: false,
+    published: false,
+    release_contract: await getProjectReleaseContract(input.workspaceId, input.projectId)
+  }
 }
 
 export async function setManuscriptFreeze(input: { workspaceId: string; manuscriptVersionId: string; level: "lexical" | "interface" | "mathematical" }) {

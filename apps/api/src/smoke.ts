@@ -122,7 +122,7 @@ for (const name of [
   assert.ok(toolDefinitions.some((tool) => tool.name === name), `missing MCP tool ${name}`)
 }
 
-for (const name of ["get_manuscript", "update_manuscript", "build_manuscript", "revise_manuscript_source", "inspect_manuscript_build", "prepare_external_review_package", "publish_manuscript", "create_proof_obligation", "get_integration_coverage", "get_project_release_contract", "assess_project_release_alignment", "align_project_release_state", "compute_submission_readiness", "promote_manuscript_to_submission_candidate", "import_external_review", "create_strategic_review", "get_project_health", "create_project_branch"]) {
+for (const name of ["get_manuscript", "update_manuscript", "build_manuscript", "revise_manuscript_source", "inspect_manuscript_build", "prepare_external_review_package", "publish_manuscript", "create_proof_obligation", "get_integration_coverage", "get_project_release_contract", "assess_project_release_alignment", "align_project_release_state", "compute_submission_readiness", "adopt_reviewed_manuscript_successor", "promote_manuscript_to_submission_candidate", "import_external_review", "create_strategic_review", "get_project_health", "create_project_branch"]) {
   assert.ok(toolDefinitions.some((tool) => tool.name === name), `missing modern MCP tool ${name}`)
 }
 assert.equal(toolDefinitions.length, expectedMcpToolCount, "MCP registry count changed; update the reviewed snapshot intentionally")
@@ -159,7 +159,7 @@ for (const prop of ["report_id", "workstream_id"]) {
   assert.ok(submitReportProps[prop], `submit_report_for_review schema must advertise ${prop}`)
 }
 
-assert.equal(mcpServerVersion, "1.8.1-working-version-semantics")
+assert.equal(mcpServerVersion, "1.9.0-successor-adoption")
 const gapTool = toolDefinitions.find((tool) => tool.name === "create_gap")!
 const gapProps = gapTool.inputSchema.properties as Record<string, unknown>
 for (const prop of ["resolution_kind", "resolution_role", "frontier_eligible"]) assert.ok(gapProps[prop], `create_gap schema must advertise ${prop}`)
@@ -167,6 +167,9 @@ const lifecycleTool = toolDefinitions.find((tool) => tool.name === "promote_manu
 const lifecycleProps = lifecycleTool.inputSchema.properties as Record<string, unknown>
 for (const prop of ["manuscript_version_id", "load_bearing_obligation_ids"]) assert.ok(lifecycleProps[prop], `promote_manuscript_to_submission_candidate schema must advertise ${prop}`)
 assert.equal(lifecycleTool.annotations.idempotentHint, true)
+const adoptionTool = toolDefinitions.find((tool) => tool.name === "adopt_reviewed_manuscript_successor")!
+for (const prop of ["project_id", "expected_current_manuscript_version_id", "successor_manuscript_version_id", "supporting_review_round_id", "paper_build_id"]) assert.ok((adoptionTool.inputSchema.properties as Record<string, unknown>)[prop], `adopt_reviewed_manuscript_successor schema must advertise ${prop}`)
+assert.equal(adoptionTool.annotations.idempotentHint, true)
 assert.equal(toolDefinitions.find((tool) => tool.name === "align_project_release_state")!.annotations.idempotentHint, true)
 assert.equal(toolDefinitions.find((tool) => tool.name === "prepare_external_review_package")!.annotations.idempotentHint, true)
 assert.equal(toolDefinitions.find((tool) => tool.name === "assess_project_release_alignment")!.annotations.readOnlyHint, true)
@@ -197,6 +200,23 @@ assert.equal(developmentContract.manuscript_authority.release_assessment_active,
 assert.equal(developmentContract.manuscript_authority.approval_status, "not_under_release_assessment")
 assert.equal(developmentContract.invariant_truths.proof_obligations_are_mathematical_not_governance_tasks, true)
 assert.ok(developmentContract.prohibited_shortcuts.some((item) => item.code === "NO_GOVERNANCE_PROOF_OBLIGATIONS"))
+const successorAdoptionContract = releaseContractForReadiness({
+  submission_ready: false,
+  policy_version: "test-policy",
+  release_assessment_active: false,
+  canonical_manuscript: { id: "version-4" },
+  reviewed_successor_adoption: { expected_current_manuscript_version_id: "version-4", successor_manuscript_version_id: "version-5", supporting_review_round_id: "review-5", paper_build_id: "build-5" },
+  missing_gate_references: [],
+  blocking_object_references: []
+})
+assert.deepEqual(successorAdoptionContract.permitted_mutation_tools, ["adopt_reviewed_manuscript_successor"])
+assert.equal(successorAdoptionContract.next_action?.exact_target_id, "version-5")
+assert.equal(successorAdoptionContract.next_action?.requires_user_decision, false)
+assert.equal(successorAdoptionContract.blockers[0]?.code, "REVIEWED_SUCCESSOR_NOT_ADOPTED")
+assert.equal(successorAdoptionContract.authoritative_ids.current_working_manuscript_version_id, "version-4")
+assert.equal(successorAdoptionContract.authoritative_ids.reviewed_successor_manuscript_version_id, "version-5")
+assert.equal(successorAdoptionContract.invariant_truths.successor_adoption_changes_working_text_authority_only, true)
+assert.ok(successorAdoptionContract.prohibited_shortcuts.some((item) => item.code === "NO_ADOPTION_BY_FLAG_COMPOSITION"))
 const graphAlignmentContract = releaseContractForReadiness({
   submission_ready: false,
   policy_version: "test-policy",
