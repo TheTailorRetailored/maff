@@ -2384,8 +2384,17 @@ export async function getManuscriptVersion(workspaceId: string, manuscriptVersio
     include: { artifact: true, physicalArtifacts: { include: { artifact: true } }, obligations: true }
   })
   if (!version) throw Object.assign(new Error("ManuscriptVersion not found"), { status: 404 })
+  const project = await prisma.project.findFirstOrThrow({ where: { workspaceId, id: version.projectId }, select: { currentWorkingPaperId: true } })
+  const isCurrentWorkingVersion = project.currentWorkingPaperId === version.id && version.isCanonical
+  const releaseAssessmentActive = isCurrentWorkingVersion && ["submission_candidate", "released"].includes(version.lifecycleStage)
+  const readiness: any = releaseAssessmentActive ? await computeSubmissionReadiness(workspaceId, version.projectId) : null
   return {
     ...version,
+    is_current_working_version: isCurrentWorkingVersion,
+    canonical_semantics: "current_working_text_only",
+    canonical_activation_confers_approval: false,
+    release_assessment_active: releaseAssessmentActive,
+    approval_status: !isCurrentWorkingVersion ? "not_current_working_version" : !releaseAssessmentActive ? "not_under_release_assessment" : readiness?.submission_ready ? "release_gates_satisfied" : "release_gates_pending",
     physicalArtifacts: version.physicalArtifacts.map((link) => ({ ...link, artifact: artifactView(link.artifact) }))
   }
 }
@@ -2533,7 +2542,13 @@ export async function getProjectHealth(workspaceId: string, projectId: string) {
   return { epoch, strategic_reviews: reviews, branches, metrics: { frontier_delta_rate: actions.filter((a) => a.meaningfulDelta).length / Math.max(actionCount, 1), gap_reopen_rate: gaps.filter((g) => g.status === "open").length / Math.max(gaps.length, 1), blocked_workstream_fraction: workstreams.filter((w) => ["blocked", "escalated", "revision_required"].includes(w.status)).length / Math.max(workstreams.length, 1), review_debt: workstreams.filter((w) => w.status === "needs_review").length }, circuit_breakers: { strategic_review_queued: Boolean(epoch?.strategicReviewQueuedAt && !epoch?.strategicReviewCompletedAt), downstream_paused: Boolean(epoch?.downstreamPausedAt && !epoch?.strategicReviewCompletedAt) } }
 }
 
+export function isGovernanceOnlyProofObligation(input: { title: string; statementMarkdown: string; authorAssertion?: string }) {
+  const text = `${input.title}\n${input.statementMarkdown}\n${input.authorAssertion ?? ""}`.toLowerCase()
+  return /\bgovernance\b|\bfail[- ]closed\b|\bcanonical[- ]state\b|\bcanonical (?:state|status|activation|promotion)\b|\bcanonical\b.{0,80}\bapproval\b|\bapproval\b.{0,80}\bcanonical\b|\blifecycle (?:state|mutation|protocol)\b|\brelease[- ]state (?:flag|protocol|governance)\b/.test(text)
+}
+
 export async function createProofObligation(input: { workspaceId: string; projectId: string; manuscriptVersionId: string; title: string; statementMarkdown: string; dependencies?: unknown; claimId?: string; sourceArtifactId?: string; proofLocation?: string; manuscriptLocation?: string; externalTheorems?: unknown; externalAssumptionsMatched?: boolean; exactManuscriptProofPresent?: boolean; assumptions?: unknown; excludedRegimes?: unknown; boundaryCases?: unknown; semanticConsequences?: unknown; authorAssertion?: string; required?: boolean; loadBearing?: boolean }) {
+  if (isGovernanceOnlyProofObligation(input)) throw new Error("Governance and lifecycle state are not mathematical proof obligations. Read get_project_release_contract; canonical means current working text only and confers no review approval.")
   const version = await prisma.manuscriptVersion.findFirstOrThrow({ where: { workspaceId: input.workspaceId, projectId: input.projectId, id: input.manuscriptVersionId } })
   return prisma.proofObligation.create({ data: { workspaceId: input.workspaceId, projectId: input.projectId, manuscriptVersionId: version.id, title: input.title, statementMarkdown: input.statementMarkdown, dependencies: jsonArray(input.dependencies), claimId: input.claimId, sourceArtifactId: input.sourceArtifactId, proofLocation: input.proofLocation, manuscriptLocation: input.manuscriptLocation, externalTheorems: jsonArray(input.externalTheorems), externalAssumptionsMatched: input.externalAssumptionsMatched, exactManuscriptProofPresent: input.exactManuscriptProofPresent, assumptions: jsonArray(input.assumptions), excludedRegimes: jsonArray(input.excludedRegimes), boundaryCases: jsonArray(input.boundaryCases), semanticConsequences: jsonArray(input.semanticConsequences), authorAssertion: input.authorAssertion, required: input.required ?? true, loadBearing: input.loadBearing ?? false } })
 }

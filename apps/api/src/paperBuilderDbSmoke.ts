@@ -29,6 +29,15 @@ try {
   assert.equal(built.paper_build.status, "succeeded")
   assert.equal(built.surfaced_file, null)
   assert.equal(built.manuscript_version.isCanonical, true)
+  assert.equal(built.manuscript_version.is_current_working_version, true)
+  assert.equal(built.manuscript_version.canonical_semantics, "current_working_text_only")
+  assert.equal(built.manuscript_version.canonical_activation_confers_approval, false)
+  assert.equal(built.manuscript_version.release_assessment_active, false)
+  assert.equal(built.manuscript_version.approval_status, "not_under_release_assessment")
+  await assert.rejects(
+    () => runtime.createProofObligation({ workspaceId: workspace.id, projectId: project.id, manuscriptVersionId: built.manuscript_version.id, title: "Canonical-state governance check", statementMarkdown: "Disposition canonical activation before approval.", assumptions: [], boundaryCases: [] }),
+    /Governance and lifecycle state are not mathematical proof obligations/
+  )
   assert.equal(built.manuscript_version.physicalArtifacts.length, 2)
   assert.ok(built.manuscript_version.physicalArtifacts.every((link: any) => link.artifact.visibility === "internal"))
   const inspected = await runtime.inspectStructuredManuscriptBuild(workspace.id, built.paper_build.id)

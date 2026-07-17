@@ -1,4 +1,4 @@
-export const RELEASE_CONTRACT_SCHEMA_VERSION = "maff.release-contract.v1"
+export const RELEASE_CONTRACT_SCHEMA_VERSION = "maff.release-contract.v2"
 
 type ReadinessLike = {
   submission_ready?: boolean
@@ -40,6 +40,13 @@ export function releaseContractForReadiness(readiness: ReadinessLike) {
   const workingVersionId = readiness.canonical_manuscript?.id ?? null
   const activeCandidateId = readiness.release_assessment_active ? readiness.release_candidate?.id ?? workingVersionId : null
   const circuitBreaker = readiness.workflow_circuit_breaker?.active === true
+  const approvalStatus = !workingVersionId
+    ? "no_working_version"
+    : !readiness.release_assessment_active
+      ? "not_under_release_assessment"
+      : readiness.submission_ready
+        ? "release_gates_satisfied"
+        : "release_gates_pending"
   const blockers: Array<Record<string, unknown>> = []
 
   if (!workingVersionId) blockers.push({
@@ -182,6 +189,15 @@ export function releaseContractForReadiness(readiness: ReadinessLike) {
       current_working_manuscript_version_id: workingVersionId,
       active_release_candidate_version_id: activeCandidateId
     },
+    manuscript_authority: {
+      current_working_manuscript_version_id: workingVersionId,
+      is_current_working_version: workingVersionId !== null,
+      canonical_semantics: "current_working_text_only",
+      canonical_activation_confers_approval: false,
+      release_assessment_active: readiness.release_assessment_active === true,
+      active_release_candidate_version_id: activeCandidateId,
+      approval_status: approvalStatus
+    },
     alignment: readiness.alignment ?? null,
     invariant_truths: {
       readiness_is_authoritative: true,
@@ -192,6 +208,9 @@ export function releaseContractForReadiness(readiness: ReadinessLike) {
       artifact_metadata_without_managed_bytes_is_not_physical_evidence: true,
       audits_do_not_mutate_the_audited_project: true,
       alignment_never_infers_mathematical_approval: true,
+      canonical_means_current_working_text_only: true,
+      canonical_activation_is_not_review_approval: true,
+      proof_obligations_are_mathematical_not_governance_tasks: true,
       external_review_packaging_does_not_publish_or_complete_the_project: true
     },
     blockers,
@@ -202,7 +221,8 @@ export function releaseContractForReadiness(readiness: ReadinessLike) {
       { code: "NO_GENERIC_REVIEW_SUBSTITUTION", message: "Do not use generic reports or unassigned reviews to manufacture release-gate evidence." },
       { code: "NO_DUPLICATE_GATE_WORK", message: "Do not repeat a completed or circuit-broken gate against the unchanged exact candidate." },
       { code: "NO_ARTIFACT_BLESSING", message: "Do not treat paths, hashes, or metadata as durable bytes; use Maff-managed build and ingestion paths." },
-      { code: "NO_AUDIT_AS_PROGRESS", message: "Do not create an audit merely because ordinary release work remains incomplete." }
+      { code: "NO_AUDIT_AS_PROGRESS", message: "Do not create an audit merely because ordinary release work remains incomplete." },
+      { code: "NO_GOVERNANCE_PROOF_OBLIGATIONS", message: "Do not create proof obligations about canonical activation, lifecycle state, approval state, policy interpretation, or workflow governance. Read the release contract instead." }
     ],
     enforcement: "Only the listed permitted_mutation_tools are valid release-progress paths. If none are listed, stop and surface the system inconsistency; never construct a workaround from lower-level records."
   }

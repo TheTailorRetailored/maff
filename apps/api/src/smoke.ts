@@ -159,7 +159,7 @@ for (const prop of ["report_id", "workstream_id"]) {
   assert.ok(submitReportProps[prop], `submit_report_for_review schema must advertise ${prop}`)
 }
 
-assert.equal(mcpServerVersion, "1.8.0-golden-lifecycle")
+assert.equal(mcpServerVersion, "1.8.1-working-version-semantics")
 const gapTool = toolDefinitions.find((tool) => tool.name === "create_gap")!
 const gapProps = gapTool.inputSchema.properties as Record<string, unknown>
 for (const prop of ["resolution_kind", "resolution_role", "frontier_eligible"]) assert.ok(gapProps[prop], `create_gap schema must advertise ${prop}`)
@@ -171,7 +171,7 @@ assert.equal(toolDefinitions.find((tool) => tool.name === "align_project_release
 assert.equal(toolDefinitions.find((tool) => tool.name === "prepare_external_review_package")!.annotations.idempotentHint, true)
 assert.equal(toolDefinitions.find((tool) => tool.name === "assess_project_release_alignment")!.annotations.readOnlyHint, true)
 const releaseContractTool = toolDefinitions.find((tool) => tool.name === "get_project_release_contract")!
-assert.deepEqual((releaseContractTool.outputSchema as { required?: string[] }).required, ["schema_version", "authority", "policy_version", "state", "alignment", "authoritative_ids", "invariant_truths", "blockers", "next_action", "permitted_mutation_tools", "prohibited_shortcuts", "enforcement"])
+assert.deepEqual((releaseContractTool.outputSchema as { required?: string[] }).required, ["schema_version", "authority", "policy_version", "state", "alignment", "authoritative_ids", "manuscript_authority", "invariant_truths", "blockers", "next_action", "permitted_mutation_tools", "prohibited_shortcuts", "enforcement"])
 assert.equal(releaseContractTool.annotations.readOnlyHint, true)
 const readinessTool = toolDefinitions.find((tool) => tool.name === "compute_submission_readiness")!
 assert.deepEqual((readinessTool.outputSchema as { required?: string[] }).required, ["llm_contract"])
@@ -191,6 +191,12 @@ const developmentContract = releaseContractForReadiness({
 assert.equal(developmentContract.schema_version, RELEASE_CONTRACT_SCHEMA_VERSION)
 assert.deepEqual(developmentContract.permitted_mutation_tools, ["promote_manuscript_to_submission_candidate"])
 assert.equal(developmentContract.next_action?.requires_user_decision, true)
+assert.equal(developmentContract.manuscript_authority.canonical_semantics, "current_working_text_only")
+assert.equal(developmentContract.manuscript_authority.canonical_activation_confers_approval, false)
+assert.equal(developmentContract.manuscript_authority.release_assessment_active, false)
+assert.equal(developmentContract.manuscript_authority.approval_status, "not_under_release_assessment")
+assert.equal(developmentContract.invariant_truths.proof_obligations_are_mathematical_not_governance_tasks, true)
+assert.ok(developmentContract.prohibited_shortcuts.some((item) => item.code === "NO_GOVERNANCE_PROOF_OBLIGATIONS"))
 const graphAlignmentContract = releaseContractForReadiness({
   submission_ready: false,
   policy_version: "test-policy",

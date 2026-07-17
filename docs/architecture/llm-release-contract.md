@@ -38,6 +38,10 @@ Blockers distinguish missing research or release work, an explicit user decision
 
 Historical aliases and evidence shapes are normalized before readiness classification. The contract reports only canonical semantics; clients never need to infer whether a legacy spelling, version number, hash, or report shape is equivalent.
 
+## Working-version terminology
+
+`ManuscriptVersion.isCanonical` is a legacy storage name for the current working manuscript. It does not mean reviewed, approved, frozen, submission-ready, or released. LLM-facing responses therefore expose `manuscript_authority.canonical_semantics=current_working_text_only`, `release_assessment_active`, and `approval_status`. Governance or lifecycle interpretations are never mathematical proof obligations, and the server rejects attempts to record them as such.
+
 ## Verification
 
 Source smoke tests prove contract discovery, legacy-alignment guidance, candidate-activation guidance, external-review/package separation, prohibited circuit-breaker loopholes, and stable tool counts. The MMRW golden database replay starts with a mature proof graph and proves idempotent alignment, structured synthesis, deterministic build, exact-candidate promotion, every ordered review gate, immutable third-party handoff, external review import, explicit publication, and final idempotence.
