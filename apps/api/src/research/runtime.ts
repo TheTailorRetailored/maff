@@ -818,7 +818,8 @@ export async function claimNextReview(input: { userId: string; workspaceRef?: st
   const obsoleteCompileReviewIds = foundReviewCandidates.filter((candidate) => normalizeReviewType((jsonObject(candidate.reviewPolicy) as any).review_type) === "compile").map((candidate) => candidate.id)
   const redundantSatisfiedGateIds = foundReviewCandidates.filter((candidate) => {
     const gate = normalizeReviewType((jsonObject(candidate.reviewPolicy) as any).review_type)
-    return candidate.targetObjectType === "ManuscriptVersion" && candidate.targetObjectId === canonicalTargetId && satisfiedGates?.[gate]?.satisfied === true
+    const hasSubmittedUnreviewedReport = candidate.reports.some((report) => report.status === "submitted")
+    return candidate.targetObjectType === "ManuscriptVersion" && candidate.targetObjectId === canonicalTargetId && satisfiedGates?.[gate]?.satisfied === true && !hasSubmittedUnreviewedReport
   }).map((candidate) => candidate.id)
   const retiredReviewIds = [...new Set([...obsoleteCompileReviewIds, ...redundantSatisfiedGateIds])]
   if (retiredReviewIds.length) await prisma.workstream.updateMany({ where: { workspaceId: workspace.id, id: { in: retiredReviewIds } }, data: { status: "abandoned", escalationMessage: "This exact-candidate gate is already satisfied by accepted readiness evidence; no duplicate reviewer run is required." } })
