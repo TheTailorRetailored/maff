@@ -20,6 +20,8 @@
     "test:artifact-storage": "tsx src/artifacts/storageSmoke.ts",
     "test:paper-builder:fixture": "tsx src/paperBuilderRenderFixture.ts",
     "test:paper-builder:db": "tsx src/paperBuilderDbSmoke.ts",
+    "test:mmrw-golden:db": "tsx src/mmrwGoldenReplay.ts",
+    "test:lifecycle:db": "node dist/smokeRuntimeDb.js && node dist/paperBuilderDbSmoke.js && node dist/mmrwGoldenReplay.js",
     "test:migration:fixture": "tsx src/migrationFixture.ts",
     "admin:reset-legacy": "node dist/admin/resetLegacyResearch.js",
     "admin:reset-legacy:src": "tsx src/admin/resetLegacyResearch.ts",
@@ -29,7 +31,11 @@
     "admin:reset-frontiers:src": "tsx src/admin/resetProjectFrontiers.ts",
     "admin:link-oidc-identity:src": "tsx src/admin/linkOidcIdentity.ts",
     "admin:diagnose-ephemeral-artifacts": "node dist/admin/diagnoseEphemeralArtifacts.js",
-    "admin:diagnose-ephemeral-artifacts:src": "tsx src/admin/diagnoseEphemeralArtifacts.ts"
+    "admin:diagnose-ephemeral-artifacts:src": "tsx src/admin/diagnoseEphemeralArtifacts.ts",
+    "admin:assess-release-alignment": "node dist/admin/alignProjectReleaseStates.js",
+    "admin:assess-release-alignment:src": "tsx src/admin/alignProjectReleaseStates.ts",
+    "admin:align-release-state": "node dist/admin/alignProjectReleaseStates.js --apply",
+    "admin:align-release-state:src": "tsx src/admin/alignProjectReleaseStates.ts --apply"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.13.0",

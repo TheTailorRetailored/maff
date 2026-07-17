@@ -35,6 +35,7 @@ const releaseContractOutputSchema: JsonSchema = objectSchema({
   authority: s,
   policy_version: nullableString,
   state: s,
+  alignment: { anyOf: [objectOutputSchema, { type: "null" }] },
   authoritative_ids: objectSchema({ current_working_manuscript_version_id: nullableString, active_release_candidate_version_id: nullableString }, ["current_working_manuscript_version_id", "active_release_candidate_version_id"]),
   invariant_truths: anyObj,
   blockers: { type: "array", items: objectOutputSchema },
@@ -42,7 +43,7 @@ const releaseContractOutputSchema: JsonSchema = objectSchema({
   permitted_mutation_tools: strArray,
   prohibited_shortcuts: { type: "array", items: objectOutputSchema },
   enforcement: s
-}, ["schema_version", "authority", "policy_version", "state", "authoritative_ids", "invariant_truths", "blockers", "next_action", "permitted_mutation_tools", "prohibited_shortcuts", "enforcement"])
+}, ["schema_version", "authority", "policy_version", "state", "alignment", "authoritative_ids", "invariant_truths", "blockers", "next_action", "permitted_mutation_tools", "prohibited_shortcuts", "enforcement"])
 const listResultKeys: Record<string, string> = {
   list_workspaces: "workspaces",
   list_projects: "projects",
@@ -59,8 +60,8 @@ const listResultKeys: Record<string, string> = {
   list_frontier_snapshots: "snapshots",
   list_artifacts: "physical_artifacts"
 }
-const readOnlyToolNames = new Set(["get_my_maff_context", "list_workspaces", "get_project", "list_projects", "get_project_control_room", "get_project_release_contract", "compute_submission_readiness", "get_integration_coverage", "list_project_goals", "list_workstreams", "get_workstream", "get_agent_briefing", "list_review_rounds", "get_report", "get_object_graph", "search_research_objects", "list_research_deltas", "list_mechanisms", "list_spinout_candidates", "list_assumption_regimes", "list_theorem_contracts", "list_frontier_snapshots", "get_latest_frontier_snapshot", "list_research_artifacts", "get_research_artifact", "export_research_artifact_bundle", "list_research_links", "get_quartz_site_status", "get_artifact", "list_artifacts", "verify_artifact", "get_manuscript_version", "get_manuscript", "inspect_manuscript_build"])
-const idempotentToolNames = new Set(["rebuild_quartz_site", "promote_manuscript_to_submission_candidate", "publish_manuscript"])
+const readOnlyToolNames = new Set(["get_my_maff_context", "list_workspaces", "get_project", "list_projects", "get_project_control_room", "get_project_release_contract", "assess_project_release_alignment", "compute_submission_readiness", "get_integration_coverage", "list_project_goals", "list_workstreams", "get_workstream", "get_agent_briefing", "list_review_rounds", "get_report", "get_object_graph", "search_research_objects", "list_research_deltas", "list_mechanisms", "list_spinout_candidates", "list_assumption_regimes", "list_theorem_contracts", "list_frontier_snapshots", "get_latest_frontier_snapshot", "list_research_artifacts", "get_research_artifact", "export_research_artifact_bundle", "list_research_links", "get_quartz_site_status", "get_artifact", "list_artifacts", "verify_artifact", "get_manuscript_version", "get_manuscript", "inspect_manuscript_build"])
+const idempotentToolNames = new Set(["rebuild_quartz_site", "align_project_release_state", "promote_manuscript_to_submission_candidate", "prepare_external_review_package", "publish_manuscript"])
 const outputSchemaFor = (name: string): JsonSchema => {
   const listKey = listResultKeys[name]
   if (listKey) return objectSchema({ [listKey]: { type: "array", items: objectOutputSchema } }, [listKey])
@@ -101,8 +102,8 @@ const tool = (name: string, description: string, role: WorkspaceRole, inputSchem
   annotations: { readOnlyHint: readOnlyToolNames.has(name), openWorldHint: false, destructiveHint: false, idempotentHint: idempotentToolNames.has(name) },
   meta
 })
-export const mcpServerVersion = "1.7.0-llm-release-contract"
-export const expectedMcpToolCount = 109
+export const mcpServerVersion = "1.8.0-golden-lifecycle"
+export const expectedMcpToolCount = 112
 
 export const toolDefinitions: ToolDef[] = [
   tool("get_my_maff_context", "Recover where the user is up to. Infers the user's workspace, summarizes active projects, ready assignments, reports needing review, and suggested simple chat prompts.", "viewer", objectSchema({ workspace: s, project: s })),
@@ -115,6 +116,8 @@ export const toolDefinitions: ToolDef[] = [
   tool("list_projects", "List Maff projects in a workspace.", "viewer", objectSchema({ workspace_id: s }, ["workspace_id"])),
   tool("get_project_control_room", "Read the project control room: goals, workstreams, reviews, recent agent runs, key claims, gaps, and suggested next assignment.", "viewer", objectSchema({ workspace_id: s, project_id: s }, ["workspace_id", "project_id"])),
   tool("get_project_release_contract", "Read the authoritative LLM-facing release contract before attempting manuscript release work. Returns exact working/candidate IDs, pinned policy, invariant truths, stable blocker classes, prohibited shortcuts, and the sole permitted release mutation tool. If permitted_mutation_tools is empty, stop and surface the system inconsistency; never compose a workaround from lower-level records.", "viewer", objectSchema({ workspace_id: s, project_id: s }, ["workspace_id", "project_id"])),
+  tool("assess_project_release_alignment", "Classify whether a project already follows the canonical manuscript lifecycle, has a proof graph ready for manuscript synthesis, is a legacy manuscript, is still research-in-progress, or is internally inconsistent. This is the authoritative preflight for bringing existing graphs into the release system.", "viewer", objectSchema({ workspace_id: s, project_id: s }, ["workspace_id", "project_id"])),
+  tool("align_project_release_state", "Idempotently align a proof-complete research graph with the canonical manuscript lifecycle by creating or reusing exactly one PaperWriter synthesis workstream. It never invents approvals, candidates, audit evidence, or publication state. Use only when the release contract permits it.", "editor", objectSchema({ workspace_id: s, project_id: s }, ["workspace_id", "project_id"]), scopes.maffReview),
   tool("update_project_summary", "Update the Project Coordinator summary.", "editor", objectSchema({ workspace_id: s, project_id: s, coordinator_summary: s }, ["workspace_id", "project_id", "coordinator_summary"])),
 
   tool("propose_project_goal", "Propose an explicit project goal for user approval.", "editor", objectSchema({ workspace_id: s, project_id: s, title: s, statement: s, priority: n, success_criteria: strArray, dependencies: strArray }, ["workspace_id", "project_id", "title", "statement"])),
@@ -190,7 +193,8 @@ export const toolDefinitions: ToolDef[] = [
   tool("build_manuscript", "Deterministically materialize the structured manuscript into internal TeX, bibliography, source bundle, and PDF; attach them automatically and surface nothing.", "editor", objectSchema({ workspace_id: s, project_id: s, agent_run_id: s, promote: { type: "boolean" } }, ["workspace_id", "project_id", "agent_run_id"])),
   tool("revise_manuscript_source", "Create an exact source-preserving child manuscript from an existing PaperBuild using bounded expected-text replacements, recompile it internally, clone its proof ledger, and surface nothing. Editorial-only carry-forward is permitted only for a server-verified LaTeX date-command delta authorized by an assigned editorial ReviewRound.", "editor", objectSchema({ workspace_id: s, project_id: s, agent_run_id: s, parent_build_id: s, source_review_round_id: s, revision_class: s, replacements: { type: "array", items: anyObj } }, ["workspace_id", "project_id", "agent_run_id", "parent_build_id", "source_review_round_id", "revision_class", "replacements"])),
   tool("inspect_manuscript_build", "Inspect the complete normalized manuscript, generated TeX, bibliography, manifest, and build log as text without surfacing source or PDF files.", "viewer", objectSchema({ workspace_id: s, build_id: s }, ["workspace_id", "build_id"])),
-  tool("publish_manuscript", "Idempotently release the latest successful exact PaperBuild after publication readiness, mark the project complete, retire residual active work, and attach its final PDF plus exact source bundle directly to the chat. Repeated calls return the existing identical package and files.", "editor", objectSchema({ workspace_id: s, project_id: s, manuscript_version_id: s }, ["workspace_id", "project_id"]), scopes.maffReview),
+  tool("prepare_external_review_package", "Idempotently package the exact publication candidate PDF and source bundle for third-party review without publishing it or completing the project. Use only when the release contract lists this tool. The returned files are the authoritative review handoff.", "editor", objectSchema({ workspace_id: s, project_id: s, manuscript_version_id: s }, ["workspace_id", "project_id"]), scopes.maffReview),
+  tool("publish_manuscript", "Idempotently release the pre-existing exact external-review package after publication readiness and an explicit user decision, mark the project complete, retire residual active work, and attach its final PDF plus exact source bundle directly to the chat. It cannot create or skip the review handoff; repeated calls return the existing identical release.", "editor", objectSchema({ workspace_id: s, project_id: s, manuscript_version_id: s }, ["workspace_id", "project_id"]), scopes.maffReview),
   tool("create_proof_obligation", "Record an atomic exact-version proof obligation including assumptions, excluded regimes, boundary cases, semantic consequences, dependency/source ledger, and the author's non-verifying assertion. Mark load_bearing only during final manuscript assembly; it does not create a separate review task.", "editor", objectSchema({ workspace_id: s, project_id: s, manuscript_version_id: s, title: s, statement_markdown: s, dependencies: { type: "array", items: anyObj }, claim_id: s, source_artifact_id: s, proof_location: s, manuscript_location: s, external_theorems: { type: "array", items: anyObj }, external_assumptions_matched: { type: "boolean" }, exact_manuscript_proof_present: { type: "boolean" }, assumptions: strArray, excluded_regimes: strArray, boundary_cases: strArray, semantic_consequences: strArray, author_assertion: s, required: { type: "boolean" }, load_bearing: { type: "boolean" } }, ["workspace_id", "project_id", "manuscript_version_id", "title", "statement_markdown", "assumptions", "boundary_cases"])),
   tool("promote_manuscript_to_submission_candidate", "The only supported candidate-activation transition. Atomically promote the supplied exact ManuscriptVersion to the active canonical submission_candidate without rebuilding or rewriting it. Use only when get_project_release_contract lists this tool and the user deliberately requests final submission assessment. Never emulate it with lower-level lifecycle, canonical, freeze, artifact, or verification mutations. Uses supplied bounded load_bearing_obligation_ids, or infers them from approved exact-version journal-verifiable proof-integration evidence.", "editor", objectSchema({ workspace_id: s, manuscript_version_id: s, load_bearing_obligation_ids: strArray }, ["workspace_id", "manuscript_version_id"]), scopes.maffReview),
   tool("import_external_review", "Immutable import of an externally performed review; it is not represented as a Maff AgentRun.", "editor", objectSchema({ workspace_id: s, project_id: s, manuscript_version_id: s, theorem_or_artifact_ref: s, original_review_text: s, original_review_uri: s, provenance: s, reviewer_identity: s, independence_statement: s, review_scope: s, verdict: reviewVerdict, issues: strArray, required_changes: strArray }, ["workspace_id", "project_id", "theorem_or_artifact_ref", "original_review_text", "provenance", "independence_statement", "review_scope", "verdict"]), scopes.maffReview),
@@ -264,6 +268,8 @@ export async function callTool(toolName: string, args: any, ctx: ToolContext) {
     case "list_projects": return runtime.listProjects(workspaceId)
     case "get_project_control_room": return runtime.getProjectControlRoom(workspaceId, args.project_id)
     case "get_project_release_contract": return runtime.getProjectReleaseContract(workspaceId, args.project_id)
+    case "assess_project_release_alignment": return runtime.assessProjectReleaseAlignment(workspaceId, args.project_id)
+    case "align_project_release_state": return runtime.alignProjectReleaseState(workspaceId, args.project_id)
     case "update_project_summary": return runtime.updateProjectSummary({ workspaceId, projectId: args.project_id, coordinatorSummary: args.coordinator_summary })
     case "propose_project_goal": return runtime.proposeProjectGoal({ workspaceId, projectId: args.project_id, title: args.title, statement: args.statement, priority: args.priority, successCriteria: args.success_criteria, dependencies: args.dependencies })
     case "approve_project_goal": return runtime.approveProjectGoal({ workspaceId, goalId: args.goal_id, userId })
@@ -345,6 +351,7 @@ export async function callTool(toolName: string, args: any, ctx: ToolContext) {
     case "revise_manuscript_source": return runtime.reviseManuscriptSource({ workspaceId, projectId: args.project_id, agentRunId: args.agent_run_id, parentBuildId: args.parent_build_id, sourceReviewRoundId: args.source_review_round_id, revisionClass: args.revision_class, replacements: args.replacements })
     case "inspect_manuscript_build": return runtime.inspectStructuredManuscriptBuild(workspaceId, args.build_id)
     case "publish_manuscript": return runtime.publishStructuredManuscript({ workspaceId, projectId: args.project_id, manuscriptVersionId: args.manuscript_version_id })
+    case "prepare_external_review_package": return runtime.prepareExternalReviewPackage({ workspaceId, projectId: args.project_id, manuscriptVersionId: args.manuscript_version_id })
     case "promote_manuscript_to_submission_candidate": return runtime.promoteManuscriptToSubmissionCandidate({ workspaceId, manuscriptVersionId: args.manuscript_version_id, loadBearingObligationIds: args.load_bearing_obligation_ids })
     case "import_external_review": return runtime.importExternalReview({ workspaceId, projectId: args.project_id, manuscriptVersionId: args.manuscript_version_id, theoremOrArtifactRef: args.theorem_or_artifact_ref, originalReviewText: args.original_review_text, originalReviewUri: args.original_review_uri, provenance: args.provenance, reviewerIdentity: args.reviewer_identity, independenceStatement: args.independence_statement, reviewScope: args.review_scope, verdict: args.verdict, issues: args.issues, requiredChanges: args.required_changes })
     case "triage_external_review": return runtime.triageExternalReview({ workspaceId, projectId: args.project_id, externalReviewId: args.external_review_id, agentRunId: args.agent_run_id, dispositions: args.dispositions })
@@ -410,7 +417,7 @@ export function contentResult(toolName: string, value: unknown) {
   }
   const directUri = (structuredContent as any).uri
   const embeddedFiles = (structuredContent as any).embedded_files
-  if (toolName === "publish_manuscript" && Array.isArray(embeddedFiles) && embeddedFiles.length) {
+  if (["prepare_external_review_package", "publish_manuscript"].includes(toolName) && Array.isArray(embeddedFiles) && embeddedFiles.length) {
     const metadata = { ...structuredContent } as any
     delete metadata.embedded_files
     const resources = embeddedFiles.map((file: any) => ({

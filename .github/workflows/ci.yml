@@ -28,3 +28,32 @@ jobs:
       - run: npm run build
       - if: matrix.package == 'apps/api'
         run: npm run test:smoke
+
+  manuscript-lifecycle:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: maff
+          POSTGRES_PASSWORD: maff
+          POSTGRES_DB: maff_lifecycle
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U maff -d maff_lifecycle"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build production API image with PaperBuilder
+        run: docker build -f apps/api/Dockerfile -t maff-api-lifecycle .
+      - name: Replay database and MMRW manuscript lifecycle regressions
+        run: >-
+          docker run --rm --network host
+          -e DATABASE_URL=postgresql://maff:maff@127.0.0.1:5432/maff_lifecycle
+          -e DATA_DIR=/tmp/maff-data
+          -e QUARTZ_DIR=/quartz
+          maff-api-lifecycle
+          sh -c "npx prisma migrate deploy && npm run test:lifecycle:db"

@@ -1,5 +1,6 @@
 import { prisma } from "../db/prisma.js"
 import { releaseContractForReadiness } from "./releaseContract.js"
+import { assessProjectReleaseAlignment } from "./alignment.js"
 
 export const READINESS_POLICY_VERSION = "1.6.0-submission-candidate"
 export const REQUIRED_MANUSCRIPT_GATES = ["proof_integration", "end_to_end_mathematical", "novelty", "bibliography", "editorial", "compile"] as const
@@ -43,7 +44,8 @@ export async function computeSubmissionReadiness(workspaceId: string, projectId:
   await prisma.project.findFirstOrThrow({ where: { workspaceId, id: projectId } })
   const version = await prisma.manuscriptVersion.findFirst({ where: { workspaceId, projectId, isCanonical: true }, include: { artifact: true, obligations: true, physicalArtifacts: { include: { artifact: true } }, paperBuilds: { orderBy: { completedAt: "desc" } } } })
   if (!version) {
-    const result = { submission_ready: false, publication_candidate: false, release_assessment_active: false, policy_version: READINESS_POLICY_VERSION, status: "no_canonical_manuscript", canonical_manuscript: null, release_candidate: null, reasons: ["No canonical working-paper version exists."], blocking_object_references: [], stale_review_references: [], missing_gate_references: REQUIRED_MANUSCRIPT_GATES, gates: {}, next_required_action: null, workflow_circuit_breaker: { active: false, affected_gates: [] as string[], instruction: null } }
+    const alignment = await assessProjectReleaseAlignment(workspaceId, projectId)
+    const result = { submission_ready: false, publication_candidate: false, release_assessment_active: false, policy_version: READINESS_POLICY_VERSION, status: "no_canonical_manuscript", canonical_manuscript: null, release_candidate: null, alignment, reasons: ["No canonical working-paper version exists."], blocking_object_references: [], stale_review_references: [], missing_gate_references: REQUIRED_MANUSCRIPT_GATES, gates: {}, next_required_action: null, workflow_circuit_breaker: { active: false, affected_gates: [] as string[], instruction: null } }
     return { ...result, llm_contract: releaseContractForReadiness(result) }
   }
   if (!['submission_candidate', 'released'].includes(version.lifecycleStage)) {
@@ -161,6 +163,7 @@ export async function computeSubmissionReadiness(workspaceId: string, projectId:
   const physicalHealthy = (items: typeof attached) => items.some(({ artifact }) => artifact.storageStatus === "available" && Boolean(artifact.storageKey && artifact.sha256 && artifact.byteSize !== null))
   const successfulBuild = version.paperBuilds.find((build) => build.status === "succeeded" && build.sourceArtifactId && build.pdfArtifactId && (build.buildManifest as any)?.manuscript_content_hash === version.contentHash)
   const externalChallenges = await prisma.externalReviewImport.findMany({ where: { workspaceId, projectId, manuscriptVersionId: version.id, verdict: { in: ["needs_revision", "rejected"] }, triagedAt: null } })
+  const externalReviewPackage = await prisma.publicationPackage.findFirst({ where: { workspaceId, projectId, manuscriptVersionId: version.id }, orderBy: { createdAt: "desc" }, select: { id: true, status: true, packageHash: true, createdAt: true, releasedAt: true } })
   const numericalRequired = claims.some((claim) => (claim.metadata as any)?.requires_numerical_validation === true)
   const numericalDiagnostics = reviews.filter((review) => review.reviewType === "numerical_verification" && review.verdict === approved && review.evidenceStatus === "assigned_valid" && review.reviewAssignment?.status === "submitted" && review.reviewAssignment.reviewerRun.status === "completed")
   const gates: Record<string, any> = {
@@ -227,6 +230,7 @@ export async function computeSubmissionReadiness(workspaceId: string, projectId:
     release_progress: reasons.length === 0 ? "publication_candidate" : gates.end_to_end_mathematical.satisfied ? "internally_refereed" : gates.proof_integration.satisfied ? "proof_integration_checked" : gates.compile.satisfied ? "build_reproducible" : "candidate_assembly",
     canonical_manuscript: { id: version.id, artifact_id: version.artifactId, version: version.version, content_hash: version.contentHash, theorem_fingerprint: version.theoremFingerprint, citation_fingerprint: version.citationFingerprint },
     release_candidate: { id: version.id, label: `RC-${version.version}`, exact_content_hash: version.contentHash, theorem_fingerprint: version.theoremFingerprint, citation_fingerprint: version.citationFingerprint, immutable_review_target: true },
+    external_review_package: externalReviewPackage,
     gates,
     gate_plan: [...(adverseExactReviews.length ? [{ gate: "revision", status: "next", accepted_review_ids: adverseExactReviews.map((review) => review.id), next_action: `Apply the bounded required changes from accepted adverse review${adverseExactReviews.length === 1 ? "" : "s"} ${adverseExactReviews.map((review) => review.id).join(", ")} and register a new exact manuscript version.` }] : []), ...releaseOrder.map((type) => ({ gate: type, status: gates[type].satisfied ? "complete" : type === nextGate ? "next" : "pending", accepted_review_ids: gates[type].review_ids, next_action: gates[type].satisfied ? null : nextAction[type] }))],
     next_required_action: adverseExactReviews.length ? { gate: "revision", review_round_ids: adverseExactReviews.map((review) => review.id), instruction: `Apply the bounded required changes from accepted adverse review${adverseExactReviews.length === 1 ? "" : "s"} and register a new exact manuscript version before any further release review.` } : nextGate ? { gate: nextGate, instruction: nextAction[nextGate] } : null,

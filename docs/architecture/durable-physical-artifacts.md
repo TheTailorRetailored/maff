@@ -17,7 +17,8 @@ Artifacts may link directly to a workstream, a ResearchArtifact, and one or more
 3. Manuscript agents edit structured content with `update_manuscript`; `build_manuscript` performs server-side rendering, compilation, ingestion, verification and exact-version linking.
 4. Reviewers use `inspect_manuscript_build` to read complete normalized text, TeX, bibliography, manifest and logs without surfacing a file.
 5. Low-level server-path ingestion, archive access, attachment, download and surfacing operations are internal implementation surfaces rather than agent tools.
-6. `publish_manuscript` selects the matching successful PaperBuild and surfaces only its final PDF after publication readiness.
+6. `prepare_external_review_package` selects the matching successful PaperBuild and surfaces its exact PDF/source bundle after publication readiness without completing the project.
+7. `publish_manuscript` explicitly releases that same immutable package and completes the project.
 
 Submission, approval, and completion run a durability preflight only when structured state explicitly says physical bytes are material: `reviewPolicy.requires_physical_artifacts=true`. Neither ordinary prose nor merely referencing a legacy `ResearchArtifact.filePath` creates that obligation; a memo may discuss or diagnose missing files without becoming a file-producing task. When the policy applies, the preflight verifies managed bytes, required archive members from `metadata.required_files`, direct links, and rejects metadata-only paths.
 

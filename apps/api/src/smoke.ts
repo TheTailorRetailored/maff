@@ -122,7 +122,7 @@ for (const name of [
   assert.ok(toolDefinitions.some((tool) => tool.name === name), `missing MCP tool ${name}`)
 }
 
-for (const name of ["get_manuscript", "update_manuscript", "build_manuscript", "revise_manuscript_source", "inspect_manuscript_build", "publish_manuscript", "create_proof_obligation", "get_integration_coverage", "get_project_release_contract", "compute_submission_readiness", "promote_manuscript_to_submission_candidate", "import_external_review", "create_strategic_review", "get_project_health", "create_project_branch"]) {
+for (const name of ["get_manuscript", "update_manuscript", "build_manuscript", "revise_manuscript_source", "inspect_manuscript_build", "prepare_external_review_package", "publish_manuscript", "create_proof_obligation", "get_integration_coverage", "get_project_release_contract", "assess_project_release_alignment", "align_project_release_state", "compute_submission_readiness", "promote_manuscript_to_submission_candidate", "import_external_review", "create_strategic_review", "get_project_health", "create_project_branch"]) {
   assert.ok(toolDefinitions.some((tool) => tool.name === name), `missing modern MCP tool ${name}`)
 }
 assert.equal(toolDefinitions.length, expectedMcpToolCount, "MCP registry count changed; update the reviewed snapshot intentionally")
@@ -159,7 +159,7 @@ for (const prop of ["report_id", "workstream_id"]) {
   assert.ok(submitReportProps[prop], `submit_report_for_review schema must advertise ${prop}`)
 }
 
-assert.equal(mcpServerVersion, "1.7.0-llm-release-contract")
+assert.equal(mcpServerVersion, "1.8.0-golden-lifecycle")
 const gapTool = toolDefinitions.find((tool) => tool.name === "create_gap")!
 const gapProps = gapTool.inputSchema.properties as Record<string, unknown>
 for (const prop of ["resolution_kind", "resolution_role", "frontier_eligible"]) assert.ok(gapProps[prop], `create_gap schema must advertise ${prop}`)
@@ -167,8 +167,11 @@ const lifecycleTool = toolDefinitions.find((tool) => tool.name === "promote_manu
 const lifecycleProps = lifecycleTool.inputSchema.properties as Record<string, unknown>
 for (const prop of ["manuscript_version_id", "load_bearing_obligation_ids"]) assert.ok(lifecycleProps[prop], `promote_manuscript_to_submission_candidate schema must advertise ${prop}`)
 assert.equal(lifecycleTool.annotations.idempotentHint, true)
+assert.equal(toolDefinitions.find((tool) => tool.name === "align_project_release_state")!.annotations.idempotentHint, true)
+assert.equal(toolDefinitions.find((tool) => tool.name === "prepare_external_review_package")!.annotations.idempotentHint, true)
+assert.equal(toolDefinitions.find((tool) => tool.name === "assess_project_release_alignment")!.annotations.readOnlyHint, true)
 const releaseContractTool = toolDefinitions.find((tool) => tool.name === "get_project_release_contract")!
-assert.deepEqual((releaseContractTool.outputSchema as { required?: string[] }).required, ["schema_version", "authority", "policy_version", "state", "authoritative_ids", "invariant_truths", "blockers", "next_action", "permitted_mutation_tools", "prohibited_shortcuts", "enforcement"])
+assert.deepEqual((releaseContractTool.outputSchema as { required?: string[] }).required, ["schema_version", "authority", "policy_version", "state", "alignment", "authoritative_ids", "invariant_truths", "blockers", "next_action", "permitted_mutation_tools", "prohibited_shortcuts", "enforcement"])
 assert.equal(releaseContractTool.annotations.readOnlyHint, true)
 const readinessTool = toolDefinitions.find((tool) => tool.name === "compute_submission_readiness")!
 assert.deepEqual((readinessTool.outputSchema as { required?: string[] }).required, ["llm_contract"])
@@ -188,6 +191,18 @@ const developmentContract = releaseContractForReadiness({
 assert.equal(developmentContract.schema_version, RELEASE_CONTRACT_SCHEMA_VERSION)
 assert.deepEqual(developmentContract.permitted_mutation_tools, ["promote_manuscript_to_submission_candidate"])
 assert.equal(developmentContract.next_action?.requires_user_decision, true)
+const graphAlignmentContract = releaseContractForReadiness({
+  submission_ready: false,
+  policy_version: "test-policy",
+  release_assessment_active: false,
+  canonical_manuscript: null,
+  alignment: { classification: "proof_graph_ready_for_synthesis", requires_alignment: true, requires_administrator: false },
+  missing_gate_references: [],
+  blocking_object_references: []
+})
+assert.deepEqual(graphAlignmentContract.permitted_mutation_tools, ["align_project_release_state"])
+assert.equal(graphAlignmentContract.blockers[0]?.recovery_tool, "align_project_release_state")
+assert.equal(graphAlignmentContract.invariant_truths.alignment_never_infers_mathematical_approval, true)
 const circuitBrokenContract = releaseContractForReadiness({
   submission_ready: false,
   policy_version: "test-policy",
@@ -238,7 +253,7 @@ for (const listedTool of toolsList.tools) {
   assert.equal(typeof listedTool.annotations.readOnlyHint, "boolean", `${listedTool.name} must advertise tool annotations`)
 }
 
-for (const name of ["get_research_artifact", "export_research_artifact_bundle", "get_manuscript", "update_manuscript", "build_manuscript", "inspect_manuscript_build", "publish_manuscript", "create_proof_obligation", "get_integration_coverage", "compute_submission_readiness"]) {
+for (const name of ["get_research_artifact", "export_research_artifact_bundle", "get_manuscript", "update_manuscript", "build_manuscript", "inspect_manuscript_build", "prepare_external_review_package", "publish_manuscript", "create_proof_obligation", "get_integration_coverage", "get_project_release_contract", "assess_project_release_alignment", "align_project_release_state", "compute_submission_readiness"]) {
   assert.ok(toolsListNames.has(name), `tools/list missing ${name}`)
 }
 for (const name of ["record_object_contribution", "record_object_access", "submit_run_outcome", "ensure_project_actionable", "begin_project_import", "analyze_project_import", "preview_project_import", "commit_project_import", "run_project_graph_audit", "begin_repair_from_audit"]) {
@@ -286,6 +301,17 @@ assert.equal(publicationResult.content[0].type, "resource", "the final publicati
 assert.equal((publicationResult.content[0] as any).resource.blob, "JVBERg==")
 assert.equal(publicationResult.content[1].type, "resource", "the final publication package must attach its exact source bundle")
 assert.equal((publicationResult.content[1] as any).resource.blob, "UEsD")
+const externalReviewPackageResult = contentResult("prepare_external_review_package", {
+  package_id: "package-review-1",
+  project_completed: false,
+  embedded_files: [
+    { embedded_resource: { uri: "maff://external-review/pdf-1/paper-review.pdf", mime_type: "application/pdf", blob: "JVBERg==" } },
+    { embedded_resource: { uri: "maff://external-review/source-1/paper-review-source.zip", mime_type: "application/zip", blob: "UEsD" } }
+  ]
+})
+assert.equal((externalReviewPackageResult.structuredContent as any).project_completed, false)
+assert.equal((externalReviewPackageResult.structuredContent as any).embedded_files, undefined)
+assert.equal(externalReviewPackageResult.content.filter((item) => item.type === "resource").length, 2, "the external-review handoff must attach both exact candidate files")
 const archiveTextResult = contentResult("read_artifact_archive_file", {
   artifact_id: "artifact-1",
   entry_path: "main.tex",

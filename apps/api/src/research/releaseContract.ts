@@ -13,6 +13,8 @@ type ReadinessLike = {
   gates?: Record<string, { unresolved_external_review_ids?: string[] } | undefined>
   missing_gate_references?: readonly string[]
   blocking_object_references?: Array<{ type?: string; id?: string; path?: string[] }>
+  alignment?: { classification?: string; requires_alignment?: boolean; requires_administrator?: boolean } | null
+  external_review_package?: { id?: string; status?: string } | null
 }
 
 type ContractAction = {
@@ -44,7 +46,7 @@ export function releaseContractForReadiness(readiness: ReadinessLike) {
     code: "NO_WORKING_MANUSCRIPT",
     category: "missing_work",
     message: "No authoritative working manuscript version exists.",
-    recovery_tool: "claim_next_assignment"
+    recovery_tool: readiness.alignment?.requires_administrator ? null : readiness.alignment?.requires_alignment ? "align_project_release_state" : "claim_next_assignment"
   })
   else if (!readiness.release_assessment_active) blockers.push({
     code: "RELEASE_ASSESSMENT_NOT_ACTIVATED",
@@ -78,7 +80,25 @@ export function releaseContractForReadiness(readiness: ReadinessLike) {
 
   const unresolvedExternalReviewIds = readiness.gates?.external_challenge_resolution?.unresolved_external_review_ids ?? []
   let nextAction: ContractAction | null
-  if (!workingVersionId) nextAction = {
+  if (!workingVersionId && readiness.alignment?.requires_administrator) nextAction = {
+    kind: "repair_release_alignment",
+    tool: null,
+    exact_target_id: null,
+    gate: null,
+    instruction: "Repair contradictory legacy manuscript pointers or incomplete state administratively; do not infer a canonical version.",
+    requires_user_decision: false,
+    requires_administrator: true
+  }
+  else if (!workingVersionId && readiness.alignment?.requires_alignment) nextAction = {
+    kind: "align_graph_for_manuscript_synthesis",
+    tool: "align_project_release_state",
+    exact_target_id: null,
+    gate: null,
+    instruction: "Create or reuse one bounded PaperWriter synthesis frontier from the mature proof graph or legacy manuscript.",
+    requires_user_decision: false,
+    requires_administrator: false
+  }
+  else if (!workingVersionId) nextAction = {
     kind: "continue_manuscript_development",
     tool: "claim_next_assignment",
     exact_target_id: null,
@@ -123,15 +143,25 @@ export function releaseContractForReadiness(readiness: ReadinessLike) {
     requires_user_decision: false,
     requires_administrator: false
   }
-  else if (readiness.submission_ready) nextAction = {
-    kind: "publish_release_candidate",
-    tool: "publish_manuscript",
+  else if (readiness.submission_ready && !readiness.external_review_package) nextAction = {
+    kind: "prepare_external_review_package",
+    tool: "prepare_external_review_package",
     exact_target_id: activeCandidateId,
     gate: null,
-    instruction: "Publish the exact active release candidate idempotently.",
+    instruction: "Prepare and surface an immutable exact-candidate PDF/source package without completing the project.",
     requires_user_decision: false,
     requires_administrator: false
   }
+  else if (readiness.submission_ready && readiness.external_review_package?.status === "preparing") nextAction = {
+    kind: "await_external_review_or_publish",
+    tool: "publish_manuscript",
+    exact_target_id: activeCandidateId,
+    gate: null,
+    instruction: "The external-review package is ready. Import any received third-party review against this exact candidate. Publish only when the user explicitly chooses final release.",
+    requires_user_decision: true,
+    requires_administrator: false
+  }
+  else if (readiness.submission_ready && readiness.external_review_package?.status === "released") nextAction = null
   else if (readiness.next_required_action) nextAction = {
     kind: readiness.next_required_action.gate === "revision" ? "create_exact_successor" : "complete_release_gate",
     tool: gateTool(readiness.next_required_action.gate),
@@ -147,11 +177,12 @@ export function releaseContractForReadiness(readiness: ReadinessLike) {
     schema_version: RELEASE_CONTRACT_SCHEMA_VERSION,
     authority: "compute_submission_readiness",
     policy_version: readiness.policy_version ?? null,
-    state: !workingVersionId ? "no_working_manuscript" : !readiness.release_assessment_active ? "manuscript_development" : readiness.submission_ready ? "publication_candidate" : circuitBreaker ? "workflow_infrastructure_blocked" : "candidate_assessment",
+    state: !workingVersionId ? "no_working_manuscript" : !readiness.release_assessment_active ? "manuscript_development" : readiness.external_review_package?.status === "released" ? "publication_released" : readiness.submission_ready && readiness.external_review_package ? "external_review_package_ready" : readiness.submission_ready ? "publication_candidate" : circuitBreaker ? "workflow_infrastructure_blocked" : "candidate_assessment",
     authoritative_ids: {
       current_working_manuscript_version_id: workingVersionId,
       active_release_candidate_version_id: activeCandidateId
     },
+    alignment: readiness.alignment ?? null,
     invariant_truths: {
       readiness_is_authoritative: true,
       release_candidate_is_exact_and_immutable: activeCandidateId !== null,
@@ -159,7 +190,9 @@ export function releaseContractForReadiness(readiness: ReadinessLike) {
       exact_version_reviews_are_non_transitive: true,
       generic_reports_cannot_satisfy_release_gates: true,
       artifact_metadata_without_managed_bytes_is_not_physical_evidence: true,
-      audits_do_not_mutate_the_audited_project: true
+      audits_do_not_mutate_the_audited_project: true,
+      alignment_never_infers_mathematical_approval: true,
+      external_review_packaging_does_not_publish_or_complete_the_project: true
     },
     blockers,
     next_action: nextAction,

@@ -7,11 +7,12 @@ import { config } from "../config.js"
 import { leanClient } from "../lean/leanClient.js"
 import { requireWorkspaceRole } from "../auth/permissions.js"
 import { computeSubmissionReadiness, normalizedObligationCheckStatus, workstreamDependenciesSatisfied } from "./readiness.js"
+import { alignProjectReleaseState, assessProjectReleaseAlignment } from "./alignment.js"
 import { inferMimeType, ingestFile, ingestRemoteFile, listZipEntries, readZipEntryBytes, storagePath, verifyStoredFile } from "../artifacts/storage.js"
-import { analyzeProjectImport, beginProjectImport, beginRepairFromAudit, commitProjectImport, createPublicationPackage, createReviewAssignment, ensureProjectActionable, recordObjectAccess, recordObjectContribution, retireResolvedGapWorkstreams, runProjectGraphAudit, submitRunOutcome, triageExternalReview, validateReviewAssignment, validateReviewEvidence } from "./integrity.js"
+import { analyzeProjectImport, beginProjectImport, beginRepairFromAudit, commitProjectImport, createExternalReviewPackage, createPublicationPackage, createReviewAssignment, ensureProjectActionable, recordObjectAccess, recordObjectContribution, retireResolvedGapWorkstreams, runProjectGraphAudit, submitRunOutcome, triageExternalReview, validateReviewAssignment, validateReviewEvidence } from "./integrity.js"
 import { citationKey, executePaperBuild, executeSourcePreservingBuild, inspectPaperBuild, renderPaper } from "./paperBuilder.js"
 
-export { analyzeProjectImport, beginProjectImport, beginRepairFromAudit, commitProjectImport, createPublicationPackage, ensureProjectActionable, recordObjectAccess, recordObjectContribution, runProjectGraphAudit, submitRunOutcome, triageExternalReview }
+export { alignProjectReleaseState, analyzeProjectImport, assessProjectReleaseAlignment, beginProjectImport, beginRepairFromAudit, commitProjectImport, createPublicationPackage, ensureProjectActionable, recordObjectAccess, recordObjectContribution, runProjectGraphAudit, submitRunOutcome, triageExternalReview }
 
 const roleRecipeFiles: Record<AgentRole, string> = {
   ProjectCoordinator: "project_coordinator.md",
@@ -2310,6 +2311,26 @@ export async function inspectStructuredManuscriptBuild(workspaceId: string, buil
   return inspectPaperBuild(workspaceId, buildId)
 }
 
+export async function prepareExternalReviewPackage(input: { workspaceId: string; projectId: string; manuscriptVersionId?: string }) {
+  const version = await prisma.manuscriptVersion.findFirstOrThrow({ where: { workspaceId: input.workspaceId, projectId: input.projectId, ...(input.manuscriptVersionId ? { id: input.manuscriptVersionId } : { isCanonical: true }) } })
+  const build = await prisma.paperBuild.findFirstOrThrow({ where: { workspaceId: input.workspaceId, projectId: input.projectId, manuscriptVersionId: version.id, status: "succeeded", sourceArtifactId: { not: null }, pdfArtifactId: { not: null } }, orderBy: { completedAt: "desc" } })
+  const reviewPackage = await createExternalReviewPackage({ workspaceId: input.workspaceId, projectId: input.projectId, manuscriptVersionId: version.id, sourceArtifactId: build.sourceArtifactId!, pdfArtifactId: build.pdfArtifactId!, buildManifest: build.buildManifest })
+  const [reviewPdf, sourceBundle] = await Promise.all([
+    embeddedArtifactResource(input.workspaceId, build.pdfArtifactId!, `manuscript-rc${version.version}-external-review.pdf`),
+    embeddedArtifactResource(input.workspaceId, build.sourceArtifactId!, `manuscript-rc${version.version}-external-review-source.zip`)
+  ])
+  return {
+    package_id: reviewPackage.id,
+    external_review_package: reviewPackage,
+    review_package: reviewPackage,
+    project_completed: false,
+    exact_candidate_id: version.id,
+    review_pdf: { artifact_id: reviewPdf.artifact_id, name: reviewPdf.name, mime_type: reviewPdf.mime_type, byte_size: reviewPdf.byte_size, sha256: reviewPdf.sha256 },
+    source_bundle: { artifact_id: sourceBundle.artifact_id, name: sourceBundle.name, mime_type: sourceBundle.mime_type, byte_size: sourceBundle.byte_size, sha256: sourceBundle.sha256 },
+    embedded_files: [reviewPdf, sourceBundle]
+  }
+}
+
 export async function publishStructuredManuscript(input: { workspaceId: string; projectId: string; manuscriptVersionId?: string }) {
   const version = await prisma.manuscriptVersion.findFirstOrThrow({ where: { workspaceId: input.workspaceId, projectId: input.projectId, ...(input.manuscriptVersionId ? { id: input.manuscriptVersionId } : { isCanonical: true }) } })
   const build = await prisma.paperBuild.findFirstOrThrow({ where: { workspaceId: input.workspaceId, projectId: input.projectId, manuscriptVersionId: version.id, status: "succeeded", sourceArtifactId: { not: null }, pdfArtifactId: { not: null } }, orderBy: { completedAt: "desc" } })
@@ -2320,6 +2341,8 @@ export async function publishStructuredManuscript(input: { workspaceId: string; 
     embeddedArtifactResource(input.workspaceId, build.sourceArtifactId!, `manuscript-rc${version.version}-source.zip`)
   ])
   return {
+    package_id: publication.id,
+    project_completed: true,
     publication,
     final_pdf: { artifact_id: finalPdf.artifact_id, name: finalPdf.name, mime_type: finalPdf.mime_type, byte_size: finalPdf.byte_size, sha256: finalPdf.sha256 },
     source_bundle: { artifact_id: sourceBundle.artifact_id, name: sourceBundle.name, mime_type: sourceBundle.mime_type, byte_size: sourceBundle.byte_size, sha256: sourceBundle.sha256 },
