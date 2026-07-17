@@ -21,7 +21,7 @@
     "test:paper-builder:fixture": "tsx src/paperBuilderRenderFixture.ts",
     "test:paper-builder:db": "tsx src/paperBuilderDbSmoke.ts",
     "test:mmrw-golden:db": "tsx src/mmrwGoldenReplay.ts",
-    "test:lifecycle:db": "node dist/smokeRuntimeDb.js && node dist/paperBuilderDbSmoke.js && node dist/mmrwGoldenReplay.js",
+    "test:lifecycle:db": "node dist/smokeRuntimeDb.js && node dist/paperBuilderDbSmoke.js && node dist/mmrwGoldenReplay.js && node dist/legacyLineageQuarantineDbSmoke.js",
     "test:migration:fixture": "tsx src/migrationFixture.ts",
     "admin:reset-legacy": "node dist/admin/resetLegacyResearch.js",
     "admin:reset-legacy:src": "tsx src/admin/resetLegacyResearch.ts",
@@ -35,7 +35,9 @@
     "admin:assess-release-alignment": "node dist/admin/alignProjectReleaseStates.js",
     "admin:assess-release-alignment:src": "tsx src/admin/alignProjectReleaseStates.ts",
     "admin:align-release-state": "node dist/admin/alignProjectReleaseStates.js --apply",
-    "admin:align-release-state:src": "tsx src/admin/alignProjectReleaseStates.ts --apply"
+    "admin:align-release-state:src": "tsx src/admin/alignProjectReleaseStates.ts --apply",
+    "admin:quarantine-legacy-manuscript": "node dist/admin/quarantineLegacyManuscriptLineage.js",
+    "admin:quarantine-legacy-manuscript:src": "tsx src/admin/quarantineLegacyManuscriptLineage.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.13.0",
