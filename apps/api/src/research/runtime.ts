@@ -226,6 +226,15 @@ function normalizeLines(value: unknown): string[] {
   return []
 }
 
+function stableJson(value: unknown): string {
+  const normalize = (item: unknown): unknown => Array.isArray(item)
+    ? item.map(normalize)
+    : item && typeof item === "object"
+      ? Object.fromEntries(Object.entries(item as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b)).map(([key, child]) => [key, normalize(child)]))
+      : item
+  return JSON.stringify(normalize(value))
+}
+
 /** Records only graph-changing work and queues/pauses strategic review at configured thresholds. */
 type SubstantiveActionInput = { workspaceId: string; projectId: string; actionType: string; targetType?: string; targetId?: string; meaningfulDelta?: boolean; summary?: string }
 
@@ -802,6 +811,62 @@ async function restoreOrphanedSubmittedReviewWorkstreams(workspaceId: string, pr
   })
 }
 
+function manuscriptIdsFromRefs(value: unknown): string[] {
+  const found: string[] = []
+  const visit = (item: unknown) => {
+    if (Array.isArray(item)) return item.forEach(visit)
+    if (typeof item === "string") {
+      const match = /^ManuscriptVersion:([0-9a-f-]{36})$/i.exec(item.trim())
+      if (match) found.push(match[1])
+      return
+    }
+    if (!item || typeof item !== "object") return
+    const ref = item as Record<string, unknown>
+    const type = String(ref.objectType ?? ref.object_type ?? ref.type ?? ref.targetType ?? ref.target_type ?? "")
+    const id = ref.objectId ?? ref.object_id ?? ref.id ?? ref.targetId ?? ref.target_id
+    if (type === "ManuscriptVersion" && typeof id === "string") found.push(id)
+    Object.values(ref).forEach((child) => { if (child && typeof child === "object") visit(child) })
+  }
+  visit(value)
+  return [...new Set(found)]
+}
+
+async function resolveLockedManuscriptReviewTarget(input: { workspaceId: string; projectId: string; workstream: any; canonicalTargetId?: string }) {
+  const policy = jsonObject(input.workstream.reviewPolicy) as Record<string, any>
+  const policyType = String(policy.target_object_type ?? policy.targetObjectType ?? "ManuscriptVersion")
+  const policyTarget = policy.manuscript_version_id ?? policy.manuscriptVersionId ?? policy.target_version ?? policy.targetVersion ?? (policyType === "ManuscriptVersion" ? policy.target_object_id ?? policy.targetObjectId : undefined)
+  const workstreamTarget = input.workstream.targetObjectType === "ManuscriptVersion" ? input.workstream.targetObjectId : undefined
+  const submittedReportTargets = input.workstream.reports.filter((report: any) => report.status === "submitted").flatMap((report: any) => manuscriptIdsFromRefs(report.linkedObjectRefs))
+  const repairOutputTargets = input.workstream.coordinatorRole !== "HostileReviewer" && policy.bounded_revision === true ? submittedReportTargets : []
+  const candidates: Array<{ id?: string; source: string; explicit: boolean }> = [
+    { id: typeof policyTarget === "string" ? policyTarget : undefined, source: "locked_review_policy", explicit: true },
+    ...repairOutputTargets.map((id: string) => ({ id, source: "submitted_bounded_revision_successor", explicit: true })),
+    { id: typeof workstreamTarget === "string" ? workstreamTarget : undefined, source: "workstream_target", explicit: true },
+    ...submittedReportTargets.map((id: string) => ({ id, source: "submitted_report_link", explicit: true })),
+    { id: input.canonicalTargetId, source: "current_working_fallback", explicit: false }
+  ].filter((candidate) => Boolean(candidate.id))
+  const selected = candidates[0]
+  if (!selected?.id) throw new Error("REVIEW_TARGET_UNRESOLVED: no exact ManuscriptVersion is locked by policy, workstream, submitted report, or current-working fallback.")
+  const manuscript = await prisma.manuscriptVersion.findFirst({ where: { workspaceId: input.workspaceId, projectId: input.projectId, id: selected.id }, include: { physicalArtifacts: true } })
+  if (!manuscript) throw new Error(`REVIEW_TARGET_INVALID: ${selected.source} references inaccessible ManuscriptVersion ${selected.id}; no lower-priority fallback is permitted.`)
+  const requestedBuildId = policy.paper_build_id ?? policy.paperBuildId
+  const paperBuild = requestedBuildId
+    ? await prisma.paperBuild.findFirst({ where: { workspaceId: input.workspaceId, projectId: input.projectId, id: String(requestedBuildId), manuscriptVersionId: manuscript.id, status: "succeeded" } })
+    : await prisma.paperBuild.findFirst({ where: { workspaceId: input.workspaceId, projectId: input.projectId, manuscriptVersionId: manuscript.id, status: "succeeded" }, orderBy: { completedAt: "desc" } })
+  if (!paperBuild) throw new Error(`REVIEW_BUILD_MISSING: exact ManuscriptVersion ${manuscript.id} has no successful${requestedBuildId ? ` requested PaperBuild ${requestedBuildId}` : " PaperBuild"}; no review assignment was created.`)
+  const exactArtifactIds = new Set([
+    ...manuscript.physicalArtifacts.map((link) => link.artifactId),
+    ...(paperBuild.sourceArtifactId ? [paperBuild.sourceArtifactId] : []),
+    ...(paperBuild.pdfArtifactId ? [paperBuild.pdfArtifactId] : [])
+  ])
+  const policyArtifactIds = normalizeLines(policy.permitted_artifact_ids ?? policy.permittedArtifactIds)
+  const mismatchedArtifactIds = policyArtifactIds.filter((id) => !exactArtifactIds.has(id))
+  if (mismatchedArtifactIds.length) throw new Error(`REVIEW_ARTIFACT_VERSION_MISMATCH: policy artifacts ${mismatchedArtifactIds.join(", ")} are not linked to exact ManuscriptVersion ${manuscript.id} or its exact PaperBuild ${paperBuild.id}; no assignment was created.`)
+  const permittedArtifactIds = policyArtifactIds.length ? policyArtifactIds : [...exactArtifactIds]
+  if (!permittedArtifactIds.length) throw new Error(`REVIEW_ARTIFACTS_MISSING: exact ManuscriptVersion ${manuscript.id} has no permitted physical source/PDF artifacts; no assignment was created.`)
+  return { manuscript, paperBuild, permittedArtifactIds, resolutionSource: selected.source }
+}
+
 export async function claimNextReview(input: { userId: string; workspaceRef?: string; project?: string; sessionId?: string; model?: string; leaseMinutes?: number; startRun?: boolean }): Promise<any> {
   if (input.startRun === false) throw new Error("claim_next_review must start its reviewer run atomically; dry or deferred claims are not supported.")
   const workspace = await resolveWorkspaceForUser(input.userId, input.workspaceRef)
@@ -895,25 +960,22 @@ export async function claimNextReview(input: { userId: string; workspaceRef?: st
       throw new Error(`Release contract requires ${contractReviewGate} review of exact ManuscriptVersion ${canonicalTargetId}; selected ${selectedReviewType} on ${workstream.targetObjectType} ${workstream.targetObjectId}.`)
     }
   }
+  const selectedReviewPolicy = jsonObject(workstream.reviewPolicy) as any
+  const selectedReadinessGate = workstream.targetObjectType === "ManuscriptVersion" ? (readiness as any)?.next_required_action?.gate : undefined
+  const selectedReviewType = normalizeReviewType(selectedReviewPolicy.review_type ?? selectedReadinessGate ?? "other")
+  const selectedManuscriptGate = requiredGates.has(selectedReviewType)
+  const resolvedReviewTarget = selectedManuscriptGate
+    ? await resolveLockedManuscriptReviewTarget({ workspaceId: workspace.id, projectId: workstream.projectId, workstream, canonicalTargetId })
+    : null
   const claimedCount = await prisma.workstream.updateMany({
     where: { id: workstream.id, workspaceId: workspace.id, status: "needs_review" },
     data: { status: "claimed", claimedSessionId: sessionId, assignedToUserId: input.userId, leaseExpiresAt }
   })
   if (claimedCount.count !== 1) throw new Error("This review was claimed by another session. Ask Maff for the next review; do not start a generic reviewer run.")
   const baseBriefing = await getAgentBriefing(workspace.id, workstream.id)
-  const reviewPolicy = jsonObject(workstream.reviewPolicy) as any
-  const readinessGate = workstream.targetObjectType === "ManuscriptVersion" ? (readiness as any)?.next_required_action?.gate : undefined
-  const reviewType = normalizeReviewType(reviewPolicy.review_type ?? readinessGate ?? "other")
-  const manuscriptGate = requiredGates.has(reviewType)
-  const manuscript = manuscriptGate && (readiness as any)?.canonical_manuscript?.id
-    ? await prisma.manuscriptVersion.findFirst({ where: { workspaceId: workspace.id, id: (readiness as any).canonical_manuscript.id }, include: { physicalArtifacts: true } })
-    : null
-  const paperBuild = manuscript
-    ? await prisma.paperBuild.findFirst({
-        where: { workspaceId: workspace.id, projectId: workstream.projectId, manuscriptVersionId: manuscript.id, status: "succeeded" },
-        orderBy: { completedAt: "desc" }
-      })
-    : null
+  const reviewType = selectedReviewType
+  const manuscript = resolvedReviewTarget?.manuscript ?? null
+  const paperBuild = resolvedReviewTarget?.paperBuild ?? null
   const targetObjectType = manuscript ? "ManuscriptVersion" : workstream.targetObjectType ?? (workstream.reports[0] ? "WorkstreamReport" : "Workstream")
   const targetObjectId = manuscript?.id ?? workstream.targetObjectId ?? workstream.reports[0]?.id ?? workstream.id
   const briefing = {
@@ -928,6 +990,7 @@ export async function claimNextReview(input: { userId: string; workspaceRef?: st
       "Do not complete the Workstream directly."
     ],
     review_assignment_policy: { review_type: reviewType, target_object_type: targetObjectType, target_object_id: targetObjectId, prior_approvals_hidden_initially: true, independence_computed_by_server: true },
+    review_target_resolution: manuscript ? { source: resolvedReviewTarget?.resolutionSource, manuscript_version_id: manuscript.id, paper_build_id: paperBuild?.id, permitted_artifact_ids: resolvedReviewTarget?.permittedArtifactIds, predecessor_input_target_id: workstream.targetObjectType === "ManuscriptVersion" && workstream.targetObjectId !== manuscript.id ? workstream.targetObjectId : null, reviewed_successor_id: workstream.targetObjectType === "ManuscriptVersion" && workstream.targetObjectId !== manuscript.id ? manuscript.id : null, invariant: "assignment target, manuscript inspection, build, and permitted artifacts are one exact version; a bounded-revision report's explicit successor is the review output, while its workstream target remains historical predecessor provenance" } : null,
     manuscript_inspection: paperBuild ? {
       tool: "inspect_manuscript_build",
       build_id: paperBuild.id,
@@ -974,11 +1037,7 @@ export async function claimNextReview(input: { userId: string; workspaceRef?: st
       targetObjectId,
       targetHash: manuscript?.contentHash,
       manuscriptVersionId: manuscript?.id,
-      permittedArtifactIds: [...new Set([
-        ...(manuscript?.physicalArtifacts.map((link) => link.artifactId) ?? []),
-        ...(paperBuild?.sourceArtifactId ? [paperBuild.sourceArtifactId] : []),
-        ...(paperBuild?.pdfArtifactId ? [paperBuild.pdfArtifactId] : [])
-      ])],
+      permittedArtifactIds: resolvedReviewTarget?.permittedArtifactIds ?? [],
       briefing,
       leaseExpiresAt
     }) : null
@@ -1122,7 +1181,8 @@ export async function recordReviewRound(input: {
   reviewAssignmentId?: string
   submissionToken?: string
   evidenceSections?: unknown
-}) {
+  validateOnly?: boolean
+}): Promise<any> {
   const workstream = await prisma.workstream.findFirstOrThrow({ where: { workspaceId: input.workspaceId, id: input.workstreamId } })
   let createdByRun: Awaited<ReturnType<typeof prisma.agentRun.findFirstOrThrow>> | null = null
   if (input.createdByAgentRunId) {
@@ -1152,7 +1212,8 @@ export async function recordReviewRound(input: {
   if (assignedInternalReview) {
     const assignedTargetId = manuscriptTarget?.id ?? input.targetObjectId ?? input.reportId ?? workstream.reportId ?? input.workstreamId
     if (!input.reviewAssignmentId || !input.submissionToken || !input.createdByAgentRunId) throw new Error("Internal reviews require the server-issued ReviewAssignment, submission token, and active reviewer AgentRun returned by claim_next_review.")
-    lockedAssignment = await validateReviewAssignment({ workspaceId: input.workspaceId, assignmentId: input.reviewAssignmentId, submissionToken: input.submissionToken, reviewerRunId: input.createdByAgentRunId, reviewType, targetObjectId: assignedTargetId, workstreamId: input.workstreamId })
+    lockedAssignment = await validateReviewAssignment({ workspaceId: input.workspaceId, assignmentId: input.reviewAssignmentId, submissionToken: input.submissionToken, reviewerRunId: input.createdByAgentRunId, reviewType, targetObjectId: assignedTargetId, workstreamId: input.workstreamId, allowSubmittedReplay: true })
+    if (manuscriptTarget && lockedAssignment.targetHash && lockedAssignment.targetHash !== manuscriptTarget.contentHash) throw new Error(`REVIEW_TARGET_DRIFT: locked content hash ${lockedAssignment.targetHash} no longer matches exact ManuscriptVersion ${manuscriptTarget.id} hash ${manuscriptTarget.contentHash}.`)
   }
   if (manuscriptReviewTypes.has(reviewType)) {
     if (!lockedAssignment || !input.createdByAgentRunId || !manuscriptTarget) throw new Error("Internal manuscript reviews require a server-issued ReviewAssignment, submission token, and active reviewer AgentRun.")
@@ -1230,11 +1291,42 @@ export async function recordReviewRound(input: {
     const allowed = await prisma.proofObligation.count({ where: { workspaceId: input.workspaceId, id: { in: canonicalCheckedObligationIds } } })
     if (allowed !== canonicalCheckedObligationIds.length) throw new Error("Review obligation checks must reference accessible proof obligations.")
   }
+  if (lockedAssignment?.status === "submitted") {
+    const existing = await prisma.reviewRound.findFirst({ where: { workspaceId: input.workspaceId, reviewAssignmentId: lockedAssignment.id }, include: { evidenceSections: { orderBy: { sectionType: "asc" } }, obligationChecks: { orderBy: { proofObligationId: "asc" } } } })
+    if (!existing) throw new Error("REVIEW_REPLAY_INCONSISTENT: assignment is submitted but its immutable ReviewRound is missing.")
+    const same = existing.verdict === verdict
+      && existing.reviewType === reviewType
+      && existing.targetObjectId === (manuscriptTarget?.id ?? input.targetObjectId ?? input.reportId ?? workstream.reportId ?? input.workstreamId)
+      && existing.bodyMarkdown === input.bodyMarkdown
+      && stableJson(existing.issues) === stableJson(jsonArray(input.issues))
+      && stableJson(existing.requiredChanges) === stableJson(jsonArray(input.requiredChanges))
+      && stableJson(existing.checkedRefs) === stableJson(jsonArray(input.checkedRefs))
+      && stableJson(existing.scope) === stableJson(jsonObject(input.scope))
+      && stableJson(existing.inspectedArtifactIds) === stableJson(jsonArray(input.inspectedArtifactIds))
+      && stableJson(existing.checkedObligationIds) === stableJson(canonicalCheckedObligationIds)
+      && existing.parentMathReopenable === (input.parentMathReopenable ?? true)
+      && existing.priorApprovalsEvidenceOnly === (input.priorApprovalsEvidenceOnly ?? true)
+      && stableJson(existing.obligationChecks.map((check) => ({ proofObligationId: check.proofObligationId, status: check.status, evidenceMarkdown: check.evidenceMarkdown, expositionStatus: check.expositionStatus, completenessEvidence: check.completenessEvidence }))) === stableJson([...obligationChecks].sort((a, b) => a.proofObligationId.localeCompare(b.proofObligationId)))
+      && stableJson(existing.evidenceSections.map((section) => ({ sectionType: section.sectionType, conclusion: section.conclusion, evidenceMarkdown: section.evidenceMarkdown, checkedRefs: section.checkedRefs, externalSources: section.externalSources, attackCategories: section.attackCategories }))) === stableJson(evidenceSections.map((section: any) => ({ sectionType: section.sectionType, conclusion: section.conclusion, evidenceMarkdown: section.evidenceMarkdown, checkedRefs: section.checkedRefs ?? [], externalSources: section.externalSources ?? [], attackCategories: section.attackCategories ?? [] })).sort((a: any, b: any) => a.sectionType.localeCompare(b.sectionType)))
+    if (!same) throw new Error(`REVIEW_REPLAY_CONFLICT: ReviewAssignment ${lockedAssignment.id} is already bound to immutable ReviewRound ${existing.id}; the new payload differs.`)
+    return { ...existing, delivery_outcome: "replayed", mutation_performed: false }
+  }
+  if (input.validateOnly) return {
+    valid: true,
+    mutation_performed: false,
+    review_assignment_id: lockedAssignment?.id ?? null,
+    exact_target: manuscriptTarget ? { object_type: "ManuscriptVersion", object_id: manuscriptTarget.id, content_hash: manuscriptTarget.contentHash } : { object_type: input.targetObjectType ?? "WorkstreamReport", object_id: input.targetObjectId ?? reportId ?? input.workstreamId },
+    normalized_evidence_sections: evidenceSections,
+    normalized_obligation_checks: obligationChecks,
+    normalized_checked_obligation_ids: canonicalCheckedObligationIds
+  }
   if (input.createdByAgentRunId) {
     const existing = await prisma.reviewRound.findFirst({ where: { workspaceId: input.workspaceId, workstreamId: input.workstreamId, reportId, createdByAgentRunId: input.createdByAgentRunId, reviewType: reviewType as any, targetVersion: manuscriptTarget?.id ?? input.targetVersion } })
     if (existing) throw new Error(`A review from this AgentRun already exists for this report and review scope: ${existing.id}`)
   }
-  const recordedReview = await prisma.$transaction(async (tx) => {
+  let recordedReview: any
+  try {
+    recordedReview = await prisma.$transaction(async (tx) => {
     const review = await tx.reviewRound.create({
       data: {
         workspaceId: input.workspaceId,
@@ -1320,7 +1412,14 @@ export async function recordReviewRound(input: {
       })
     }
     return review
-  })
+    })
+  } catch (error) {
+    // Two identical deliveries can both pass the claimed-state preflight. The
+    // unique assignment binding elects one winner; the loser then enters the
+    // replay-first path above and receives the same immutable ReviewRound.
+    if (input.reviewAssignmentId && (error as { code?: string }).code === "P2002") return recordReviewRound(input)
+    throw error
+  }
   await recordSubstantiveAction({ workspaceId: input.workspaceId, projectId: workstream.projectId, actionType: "review_recorded", targetType: "ReviewRound", targetId: recordedReview.id, summary: `${reviewType}:${recordedReview.verdict}` })
   if (verdict === "approved" && workstream.parentWorkstreamId) {
     const parent = await prisma.workstream.findFirst({ where: { workspaceId: input.workspaceId, id: workstream.parentWorkstreamId } })

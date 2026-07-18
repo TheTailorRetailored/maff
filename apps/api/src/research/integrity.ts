@@ -103,24 +103,56 @@ export async function createReviewAssignment(input: { workspaceId: string; proje
   return { assignment, submission_token: token, eligibility }
 }
 
-export async function validateReviewAssignment(input: { workspaceId: string; assignmentId: string; submissionToken: string; reviewerRunId: string; reviewType: string; targetObjectId: string; workstreamId: string }) {
+export async function validateReviewAssignment(input: { workspaceId: string; assignmentId: string; submissionToken: string; reviewerRunId: string; reviewType: string; targetObjectId: string; workstreamId: string; allowSubmittedReplay?: boolean }) {
   const assignment = await prisma.reviewAssignment.findFirstOrThrow({ where: { workspaceId: input.workspaceId, id: input.assignmentId }, include: { reviewerRun: true } })
-  if (assignment.status !== "claimed" || assignment.leaseExpiresAt <= new Date()) throw new Error("Review assignment is no longer active.")
   if (assignment.tokenHash !== hash(input.submissionToken)) throw new Error("Review assignment token is invalid.")
   if (assignment.reviewerRunId !== input.reviewerRunId || assignment.reviewType !== input.reviewType || assignment.targetObjectId !== input.targetObjectId || assignment.workstreamId !== input.workstreamId) throw new Error("Review submission does not match its locked assignment.")
+  if (input.allowSubmittedReplay && assignment.status === "submitted") return assignment
+  if (assignment.status !== "claimed" || assignment.leaseExpiresAt <= new Date()) throw new Error("Review assignment is no longer active.")
   if (!["started", "running"].includes(assignment.reviewerRun.status)) throw new Error("Reviewing AgentRun must be active when the review is submitted.")
   return assignment
 }
 
+export class ReviewEvidenceValidationError extends Error {
+  status = 400
+  code = "REVIEW_EVIDENCE_INVALID"
+  constructor(message: string, public details: Record<string, unknown>) { super(message) }
+}
+
 export function validateReviewEvidence(input: { reviewType: string; verdict: string; evidenceSections?: unknown; obligationChecks?: Array<{ status: string; evidenceMarkdown?: string }>; checkedRefs?: unknown; scope?: unknown }) {
-  const sections = array(input.evidenceSections).map(object)
-  const matching = sections.find((section) => section.sectionType === input.reviewType || section.section_type === input.reviewType)
-  if (!matching || !String(matching.evidenceMarkdown ?? matching.evidence_markdown ?? "").trim() || !String(matching.conclusion ?? "").trim()) throw new Error(`Assigned ${input.reviewType} reviews require a matching evidence section with a conclusion and concrete evidence; padding to a character quota is not required.`)
+  const rawSections = array(input.evidenceSections)
+  const sections = rawSections.map((raw, index) => {
+    const section = object(raw)
+    const sectionType = String(section.sectionType ?? section.section_type ?? section.reviewType ?? section.review_type ?? "").trim()
+    const conclusion = String(section.conclusion ?? "").trim()
+    const evidenceMarkdown = String(section.evidenceMarkdown ?? section.evidence_markdown ?? section.concreteEvidence ?? section.concrete_evidence ?? "").trim()
+    return {
+      ...section,
+      sectionType,
+      conclusion,
+      evidenceMarkdown,
+      checkedRefs: array(section.checkedRefs ?? section.checked_refs),
+      externalSources: array(section.externalSources ?? section.external_sources),
+      attackCategories: array(section.attackCategories ?? section.attack_categories),
+      _inputIndex: index
+    }
+  })
+  const matching = sections.find((section) => section.sectionType === input.reviewType)
+  const fieldErrors: Array<{ path: string; code: string; message: string }> = []
+  if (!matching) fieldErrors.push({ path: "evidence_sections", code: "missing_matching_section", message: `Provide one section whose section_type or review_type is ${input.reviewType}.` })
+  if (matching && !matching.conclusion) fieldErrors.push({ path: `evidence_sections[${matching._inputIndex}].conclusion`, code: "required", message: "conclusion must be a non-empty string." })
+  if (matching && !matching.evidenceMarkdown) fieldErrors.push({ path: `evidence_sections[${matching._inputIndex}].concrete_evidence`, code: "required", message: "concrete_evidence (or evidence_markdown) must be a non-empty string." })
+  if (fieldErrors.length) throw new ReviewEvidenceValidationError(`Assigned ${input.reviewType} review evidence is invalid: a matching section requires a conclusion and concrete evidence.`, {
+    review_type: input.reviewType,
+    accepted_schema: { review_type: input.reviewType, conclusion: input.verdict, concrete_evidence: "Exact evidence text" },
+    accepted_aliases: { review_type: ["review_type", "reviewType", "section_type", "sectionType"], concrete_evidence: ["concrete_evidence", "concreteEvidence", "evidence_markdown", "evidenceMarkdown"] },
+    field_errors: fieldErrors
+  })
   if (input.reviewType === "proof_integration" && input.verdict === "approved" && (input.obligationChecks ?? []).some((check) => check.status === "preserved" && !String(check.evidenceMarkdown ?? "").trim())) throw new Error("Every preserved obligation requires specific evidence, not a bare checked id.")
-  if (input.reviewType === "end_to_end_mathematical" && array(matching.attackCategories ?? matching.attack_categories).length === 0) throw new Error("End-to-end mathematical review requires at least one recorded falsification or attack category, not an arbitrary quota.")
-  if (input.reviewType === "novelty" && array(matching.externalSources ?? matching.external_sources).length === 0) throw new Error("Novelty review requires stored external theorem-comparison sources.")
+  if (input.reviewType === "end_to_end_mathematical" && array(matching?.attackCategories).length === 0) throw new Error("End-to-end mathematical review requires at least one recorded falsification or attack category, not an arbitrary quota.")
+  if (input.reviewType === "novelty" && array(matching?.externalSources).length === 0) throw new Error("Novelty review requires stored external theorem-comparison sources.")
   if (["novelty", "bibliography"].includes(input.reviewType) && array(input.checkedRefs).length === 0) throw new Error(`${input.reviewType} review requires checked references.`)
-  return sections
+  return sections.map(({ _inputIndex, ...section }) => section)
 }
 
 function recommendedRoleFor(action: Record<string, any>, fallback: AgentRole): AgentRole {
@@ -183,21 +215,36 @@ export async function ensureProjectActionable(workspaceId: string, projectId: st
 
 export async function submitRunOutcome(input: { workspaceId: string; agentRunId: string; completedWork?: unknown; changedObjects?: unknown; evidenceGenerated?: unknown; checksPerformed?: unknown; problemsEncountered?: unknown; unresolvedUncertainty?: unknown; gapsCreated?: unknown; gapsResolved?: unknown; nextAction?: unknown }) {
   const run = await prisma.agentRun.findFirstOrThrow({ where: { workspaceId: input.workspaceId, id: input.agentRunId }, include: { project: true, workstream: true } })
+  const existingOutcome = await prisma.runOutcome.findUnique({ where: { agentRunId: run.id } })
+  if (existingOutcome) return { outcome: existingOutcome, continuation: { mode: existingOutcome.continuationMode, reason: existingOutcome.continuationReason, prompt: existingOutcome.userPrompt, authoritative: true }, delivery_outcome: "replayed", mutation_performed: false }
   if (!["started", "running", "submitted"].includes(run.status)) throw new Error("Only an active or submitted AgentRun can produce a run outcome.")
+  const nextAction = object(input.nextAction)
+  const actionKind = String(nextAction.kind ?? nextAction.type ?? "").toLowerCase()
+  const blockedByTooling = nextAction.blocked_by_tooling === true || actionKind === "blocked_by_tooling"
   const reviewPolicy = object(run.workstream.reviewPolicy)
   const manuscriptReviewTypes = new Set(["proof_integration", "end_to_end_mathematical", "novelty", "bibliography", "compile", "editorial", "source_fidelity"])
   const lockedReviewerRun = run.role === "HostileReviewer" && (reviewPolicy.locked_assignment_required === true || manuscriptReviewTypes.has(String(reviewPolicy.review_type ?? "")))
   const reviewerAssignment = run.role === "HostileReviewer" ? await prisma.reviewAssignment.findFirst({ where: { workspaceId: input.workspaceId, reviewerRunId: run.id }, include: { reviewRound: true } }) : null
-  if (lockedReviewerRun || reviewerAssignment) {
+  if ((lockedReviewerRun || reviewerAssignment) && !blockedByTooling) {
     const assignment = reviewerAssignment
     if (!assignment) throw new Error("This locked reviewer run was started without a ReviewAssignment. It cannot complete; claim the review through claim_next_review.")
     if (assignment.status !== "submitted" || !assignment.reviewRound) throw new Error("Submit the assigned ReviewRound before completing this locked reviewer run. A narrative run outcome cannot replace the required verdict.")
   }
-  const nextAction = object(input.nextAction)
+  if (blockedByTooling) {
+    const reason = String(nextAction.reason ?? "The assigned workflow cannot complete because a supported Maff operation failed.")
+    const userPrompt = String(nextAction.unblock_condition ?? "Retry this exact workstream after the named Maff tooling defect is fixed.")
+    const outcome = await prisma.$transaction(async (tx) => {
+      if (reviewerAssignment?.status === "claimed") await tx.reviewAssignment.update({ where: { id: reviewerAssignment.id }, data: { status: "cancelled" } })
+      await tx.workstream.update({ where: { id: run.workstreamId, workspaceId: input.workspaceId }, data: { status: "blocked", claimedSessionId: null, assignedToUserId: null, leaseExpiresAt: null, escalationMessage: reason } })
+      const created = await tx.runOutcome.create({ data: { workspaceId: input.workspaceId, projectId: run.projectId, agentRunId: run.id, completedWork: array(input.completedWork), changedObjects: array(input.changedObjects), evidenceGenerated: array(input.evidenceGenerated), checksPerformed: array(input.checksPerformed), problemsEncountered: array(input.problemsEncountered), unresolvedUncertainty: array(input.unresolvedUncertainty), gapsCreated: array(input.gapsCreated), gapsResolved: array(input.gapsResolved), nextAction, continuationMode: "waiting_for_external_condition", continuationReason: reason, userPrompt } })
+      await tx.agentRun.update({ where: { id: run.id }, data: { status: "failed", finishedAt: new Date(), outputSummary: array(input.completedWork).map(String).join("; ") } })
+      return created
+    })
+    return { outcome, continuation: { mode: "waiting_for_external_condition", reason, prompt: userPrompt, authoritative: true }, tooling_blocked: true }
+  }
   let frontier = await ensureProjectActionable(input.workspaceId, run.projectId, false, undefined, run.workstreamId)
   const frontierRole = (frontier as any).next_workstream?.coordinatorRole as AgentRole | undefined
   const nextRole = nextAction.role ? recommendedRoleFor(nextAction, run.role) : frontierRole ?? run.role
-  const actionKind = String(nextAction.kind ?? nextAction.type ?? "").toLowerCase()
   const nextIsIndependent = ["HostileReviewer", "GraphAuditor"].includes(nextRole) || ["review", "audit", "novelty", "editorial", "strategic"].some((word) => actionKind.includes(word))
   const currentIsIndependent = ["HostileReviewer", "GraphAuditor"].includes(run.role)
   const reviewerMayContinue = run.role === "HostileReviewer" && nextRole === "HostileReviewer" && !actionKind.includes("audit")

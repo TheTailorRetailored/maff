@@ -112,6 +112,7 @@ for (const name of [
   "create_or_update_workstream_report",
   "submit_report_for_review",
   "record_review_round",
+  "validate_review_round",
   "complete_workstream",
   "update_claim_status",
   "create_lean_theorem",
@@ -160,7 +161,11 @@ for (const prop of ["report_id", "workstream_id"]) {
   assert.ok(submitReportProps[prop], `submit_report_for_review schema must advertise ${prop}`)
 }
 
-assert.equal(mcpServerVersion, "1.10.0-exact-version-citation-repair")
+assert.equal(mcpServerVersion, "1.11.0-exact-review-transactions")
+const validateReviewTool = toolDefinitions.find((tool) => tool.name === "validate_review_round")!
+assert.equal(validateReviewTool.annotations.readOnlyHint, true)
+const recordReviewTool = toolDefinitions.find((tool) => tool.name === "record_review_round")!
+assert.equal(recordReviewTool.annotations.idempotentHint, true)
 const gapTool = toolDefinitions.find((tool) => tool.name === "create_gap")!
 const gapProps = gapTool.inputSchema.properties as Record<string, unknown>
 for (const prop of ["resolution_kind", "resolution_role", "frontier_eligible"]) assert.ok(gapProps[prop], `create_gap schema must advertise ${prop}`)
