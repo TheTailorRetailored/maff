@@ -55,6 +55,7 @@ const kindByRole = Object.fromEntries(Object.entries(roleByKind).map(([kind, rol
 const lockedManuscriptReviewTypes = new Set(["proof_integration", "end_to_end_mathematical", "novelty", "bibliography", "editorial", "source_fidelity"])
 const reviewTypeAliases: Record<string, string> = {
   mathematical: "ingredient_correctness",
+  mathematical_truth: "ingredient_correctness",
   mathematical_truth_audit: "ingredient_correctness",
   math_review: "ingredient_correctness",
   correctness: "ingredient_correctness",
@@ -834,6 +835,16 @@ export async function claimNextReview(input: { userId: string; workspaceRef?: st
     return !releaseOnlyGate || candidate.targetObjectType !== "ManuscriptVersion" || releaseAssessmentActive || (hasSubmittedReport && reviewType === "proof_integration")
   })
   const requiredGates = new Set(["proof_integration", "end_to_end_mathematical", "novelty", "bibliography", "editorial", "source_fidelity", "compile"])
+  const releaseContract = (readiness as any)?.llm_contract as { permitted_mutation_tools?: string[]; next_action?: { tool?: string | null; gate?: string | null; exact_target_id?: string | null } | null } | undefined
+  const contractReviewGate = releaseContract?.next_action?.tool === "claim_next_review" && releaseContract.permitted_mutation_tools?.length === 1 && releaseContract.permitted_mutation_tools[0] === "claim_next_review"
+    ? normalizeReviewType(releaseContract.next_action.gate)
+    : null
+  const contractReviewWorkstream = contractReviewGate ? reviewCandidates.find((candidate) => {
+    const policy = jsonObject(candidate.reviewPolicy) as any
+    return candidate.targetObjectType === "ManuscriptVersion"
+      && candidate.targetObjectId === canonicalTargetId
+      && normalizeReviewType(policy.review_type) === contractReviewGate
+  }) : null
   const remediationWorkstream = reviewCandidates.find((candidate) => {
     const policy = jsonObject(candidate.reviewPolicy) as any
     return policy.remediation === true && requiredGates.has(normalizeReviewType(policy.review_type)) && candidate.targetObjectType === "ManuscriptVersion" && candidate.targetObjectId === canonicalTargetId
@@ -853,9 +864,15 @@ export async function claimNextReview(input: { userId: string; workspaceRef?: st
     }
   }
   const leaseExpiresAt = new Date(Date.now() + (input.leaseMinutes ?? 120) * 60_000)
-  let workstream = remediationWorkstream ?? reviewCandidates[0] ?? null
+  // During active release assessment, the contract's exact gate and candidate
+  // outrank every generic or historical review queue item. Generic submitted
+  // reports remain preserved for later ordinary review but cannot pre-empt the
+  // immutable release candidate.
+  let workstream = contractReviewGate
+    ? contractReviewWorkstream ?? null
+    : remediationWorkstream ?? reviewCandidates[0] ?? null
   if (!workstream && project && (readiness as any)?.next_required_action && (readiness as any)?.canonical_manuscript) {
-    const gate = (readiness as any).next_required_action.gate
+    const gate = contractReviewGate ?? (readiness as any).next_required_action.gate
     if (gate === "compile") {
       const buildWorkstream = await prisma.workstream.create({ data: { workspaceId: workspace.id, projectId: project.id, title: `Build ${(readiness as any).release_candidate.label} with PaperBuilder`, kind: "paper_synthesis", coordinatorRole: "PaperWriter", status: "ready", priority: 100, targetObjectType: "ManuscriptVersion", targetObjectId: (readiness as any).canonical_manuscript.id, instructions: "Inspect the structured manuscript, repair its sections if necessary, then call build_manuscript. Do not create, upload, attach, verify, or surface files manually.", allowedWrites: ["ManuscriptDocument", "ManuscriptSection", "ManuscriptVersion", "PaperBuild", "WorkstreamReport", "RunOutcome"], forbiddenActions: ["Do not use low-level artifact tools for manuscript builds.", "Do not surface intermediate source or PDF files."], successCriteria: ["A successful exact PaperBuild is linked to the canonical manuscript."], reviewPolicy: { review_type: "other", min_approved_rounds: 0, paper_builder: true } }, include: { project: true } })
       return claimNextAssignment({ userId: input.userId, workspaceRef: workspace.id, project: project.id, role: "PaperWriter", sessionId, model: input.model, leaseMinutes: input.leaseMinutes, startRun: true })
@@ -869,6 +886,12 @@ export async function claimNextReview(input: { userId: string; workspaceRef?: st
       assignment: null,
       briefing: null,
       message: "No report currently needs review for that scope."
+    }
+  }
+  if (contractReviewGate) {
+    const selectedReviewType = normalizeReviewType((jsonObject(workstream.reviewPolicy) as any).review_type)
+    if (selectedReviewType !== contractReviewGate || workstream.targetObjectType !== "ManuscriptVersion" || workstream.targetObjectId !== canonicalTargetId) {
+      throw new Error(`Release contract requires ${contractReviewGate} review of exact ManuscriptVersion ${canonicalTargetId}; selected ${selectedReviewType} on ${workstream.targetObjectType} ${workstream.targetObjectId}.`)
     }
   }
   const claimedCount = await prisma.workstream.updateMany({

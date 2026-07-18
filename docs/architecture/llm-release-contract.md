@@ -1,5 +1,7 @@
 # LLM-Legible Release Contract
 
+For the complete normative state-machine, evidence, transaction, testing, and operational specification, see [Maff Manuscript Lifecycle and Release System](./manuscript-lifecycle-system.md).
+
 ## Principle
 
 Maff must not rely on a language model to obey an invariant that the exposed tool surface allows it to violate. Database constraints and transactional commands remain authoritative, while `get_project_release_contract` makes the same state machine explicit to model clients.

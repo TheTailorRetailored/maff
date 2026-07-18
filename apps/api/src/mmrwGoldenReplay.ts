@@ -139,11 +139,14 @@ try {
   assert.equal(developmentContract.next_action.requires_user_decision, true)
 
   await runtime.promoteManuscriptToSubmissionCandidate({ workspaceId: workspace.id, manuscriptVersionId: versionId, loadBearingObligationIds: [obligation.id] })
+  const historicalReviewDebt = await prisma.workstream.create({ data: { workspaceId: workspace.id, projectId: project.id, title: "Historical mathematical-truth report", kind: "proof_attempt", coordinatorRole: "ProofAttemptAgent", status: "abandoned", priority: 110, targetObjectType: "Gap", targetObjectId: randomUUID(), instructions: "Preserved historical proof attempt; it must not pre-empt exact candidate gates.", allowedWrites: ["ProofAttempt", "WorkstreamReport"], forbiddenActions: ["Do not edit the active release candidate."], successCriteria: ["Receive ordinary ingredient-correctness review later."], reviewPolicy: { min_approved_rounds: 1, required: true, remediation: true, review_type: "mathematical_truth" } } })
+  await prisma.workstreamReport.create({ data: { workspaceId: workspace.id, projectId: project.id, workstreamId: historicalReviewDebt.id, title: "Historical submitted proof", status: "submitted", bodyMarkdown: "A submitted historical proof report outside the active release candidate.", uncertaintyNotes: [], linkedObjectRefs: [], artifactRefs: [], submittedAt: new Date() } })
   const gates = ["proof_integration", "novelty", "bibliography", "end_to_end_mathematical", "editorial"]
   for (const [ordinal, gate] of gates.entries()) {
     const readiness: any = await runtime.computeProjectSubmissionReadiness(workspace.id, project.id)
     assert.equal(readiness.next_required_action?.gate, gate)
     await approveNextGate({ userId: user.id, projectId: project.id, manuscriptVersionId: versionId, claimId: claim.id, obligationId: obligation.id, gate, ordinal })
+    assert.equal((await prisma.workstream.findUniqueOrThrow({ where: { id: historicalReviewDebt.id } })).status, "needs_review", "historical submitted review debt must remain preserved without pre-empting the contract-selected release gate")
   }
 
   const ready: any = await runtime.computeProjectSubmissionReadiness(workspace.id, project.id)

@@ -103,7 +103,7 @@ const tool = (name: string, description: string, role: WorkspaceRole, inputSchem
   annotations: { readOnlyHint: readOnlyToolNames.has(name), openWorldHint: false, destructiveHint: false, idempotentHint: idempotentToolNames.has(name) },
   meta
 })
-export const mcpServerVersion = "1.9.0-successor-adoption"
+export const mcpServerVersion = "1.9.1-contract-exact-review-routing"
 export const expectedMcpToolCount = 113
 
 export const toolDefinitions: ToolDef[] = [
