@@ -164,6 +164,7 @@ for (const prop of ["report_id", "workstream_id"]) {
 assert.equal(mcpServerVersion, "1.11.0-exact-review-transactions")
 const validateReviewTool = toolDefinitions.find((tool) => tool.name === "validate_review_round")!
 assert.equal(validateReviewTool.annotations.readOnlyHint, true)
+assert.equal(validateReviewTool.annotations.idempotentHint, true)
 const recordReviewTool = toolDefinitions.find((tool) => tool.name === "record_review_round")!
 assert.equal(recordReviewTool.annotations.idempotentHint, true)
 const gapTool = toolDefinitions.find((tool) => tool.name === "create_gap")!
