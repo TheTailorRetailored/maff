@@ -1,6 +1,5 @@
 import assert from "node:assert/strict"
 import path from "node:path"
-import { readFileSync, readdirSync } from "node:fs"
 import { createLocalJWKSet, exportJWK, generateKeyPair, jwtVerify, SignJWT } from "jose"
 import { assertInsideRoot } from "./vault/paths.js"
 import { dumpMarkdown, parseMarkdown } from "./vault/parser.js"
@@ -14,6 +13,7 @@ import { normalizedObligationCheckStatus, reviewEvidenceMatch } from "./research
 import { releaseContractForReadiness, RELEASE_CONTRACT_SCHEMA_VERSION } from "./research/releaseContract.js"
 import { validateReviewEvidence } from "./research/integrity.js"
 import { sourcePreservingCompilationFiles, validateSourcePreservingBuildLog } from "./research/paperBuilder.js"
+import { apiRouter } from "./rest/routes.js"
 
 const root = path.resolve("tmp-workspace")
 assert.equal(assertInsideRoot(root, path.join(root, "vault", "A.md")), path.resolve(root, "vault", "A.md"))
@@ -85,10 +85,7 @@ assert.equal(restAuthorizationRequirement("POST", "/workspaces/w/projects").scop
 assert.equal(restAuthorizationRequirement("POST", "/workspaces/w/projects/p/external-reviews").scope, scopes.maffReview)
   assert.equal(restAuthorizationRequirement("POST", "/workspaces/w/projects/p/manuscripts").scope, scopes.maffWrite)
 assert.equal(restAuthorizationRequirement("POST", "/workspaces/w/manuscripts/m/citation-metadata-repair").scope, scopes.maffReview)
-const restRouteEntries = readdirSync("src/rest").filter((name) => name.endsWith(".ts")).flatMap((name) => {
-  const source = readFileSync(path.join("src/rest", name), "utf8")
-  return [...source.matchAll(/router\.(get|post|put|patch|delete)\("([^"]+)"/g)].map((match) => ({ method: match[1], path: match[2] }))
-})
+const restRouteEntries = ((apiRouter() as any).stack as any[]).filter((layer) => layer.route).flatMap((layer) => Object.keys(layer.route.methods).map((method) => ({ method, path: layer.route.path })))
 assert.equal(restRouteEntries.length, 90, "authenticated REST registry changed; review the authorization matrix intentionally")
 for (const route of restRouteEntries) {
   const requirement = restAuthorizationRequirement(route.method, route.path)
