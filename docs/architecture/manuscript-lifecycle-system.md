@@ -311,6 +311,8 @@ The system has three enforcement layers:
 
 The contract currently governs which release mutation a compliant MCP client should call. Exact release-review routing and reviewed-successor adoption enforce their contract target transactionally, but the generic MCP dispatcher does not yet centrally compare every other incoming release mutation name against the latest contract before dispatch. Individual semantic operations still validate their own substantive preconditions; however, omission from `permitted_mutation_tools` is not itself a universal dispatcher-level authorization denial.
 
+Exact-version citation metadata repair is governed separately because it is neither manuscript authoring nor a release-state transition. Its provenance locks, replay-first compare-and-swap, protected-state digest, and append-only certificate are specified in [Exact-Version Citation Metadata Repair](./exact-version-citation-repair.md).
+
 Therefore the strongest future hardening is a central release-mutation guard that, in the same request path, recomputes the contract and rejects any release mutation not currently listed, with a narrowly defined exception for explicit administrative repair. Until that is implemented, contract compliance remains part of the client trust boundary even though the high-risk adoption operation itself is transactionally guarded.
 
 ## 13. Failure taxonomy

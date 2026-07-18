@@ -942,6 +942,7 @@ model AgentRun {
   runOutcome        RunOutcome?
   projectAudits     ProjectAudit[]
   strategicReviews  StrategicReviewRound[]
+  citationRepairCertificates CitationRepairCertificate[]
 
   @@index([workspaceId, workstreamId, status])
   @@index([workspaceId, projectId, startedAt])
@@ -1038,6 +1039,9 @@ model ManuscriptVersion {
   contentHash          String
   theoremFingerprint   String
   citationFingerprint  String
+  citationPayload      Json?
+  citationMetadataRevision Int                         @default(0)
+  citationMetadataUpdatedAt DateTime?
   isCanonical          Boolean                     @default(false)
   verificationState    ManuscriptVerificationState @default(unverified_candidate)
   freezeLevel          ManuscriptFreezeLevel       @default(none)
@@ -1058,10 +1062,52 @@ model ManuscriptVersion {
   publicationPackages   PublicationPackage[]
   readinessSnapshots    ReadinessSnapshot[]
   paperBuilds           PaperBuild[]
+  citationRepairCertificates CitationRepairCertificate[]
 
   @@unique([projectId, version])
   @@unique([projectId, contentHash])
   @@index([workspaceId, projectId, isCanonical])
+}
+
+/// Append-only proof that citation metadata alone was repaired for one exact manuscript version.
+model CitationRepairCertificate {
+  id                             String   @id @default(uuid()) @db.Uuid
+  workspaceId                    String   @db.Uuid
+  projectId                      String   @db.Uuid
+  manuscriptVersionId            String   @db.Uuid
+  actorAgentRunId                String   @db.Uuid
+  schemaVersion                  String
+  requestDigest                  String
+  idempotencyKey                 String?  @unique
+  expectedContentHash            String
+  observedContentHash            String
+  expectedOldCitationFingerprint String
+  oldCitationFingerprint         String
+  newCitationFingerprint         String
+  citationPayloadDigest          String
+  citationKeys                   Json
+  sourceArtifactId               String   @db.Uuid
+  sourceArtifactSha256           String
+  pdfArtifactId                  String   @db.Uuid
+  pdfArtifactSha256              String
+  theoremFingerprint             String
+  proofLedgerDigest              String
+  protectedStateDigestBefore     String
+  protectedStateDigestAfter      String
+  currentWorkingPointerBefore    String?  @db.Uuid
+  currentWorkingPointerAfter     String?  @db.Uuid
+  allowedStateDiff               Json
+  protectedStateDiff             Json
+  applicationOutcome             String
+  certificatePayload             Json
+  createdAt                      DateTime @default(now())
+
+  manuscriptVersion ManuscriptVersion @relation(fields: [manuscriptVersionId], references: [id], onDelete: Restrict)
+  actorAgentRun     AgentRun          @relation(fields: [actorAgentRunId], references: [id], onDelete: Restrict)
+
+  @@unique([manuscriptVersionId, requestDigest])
+  @@index([workspaceId, projectId, createdAt])
+  @@index([sourceArtifactId, pdfArtifactId])
 }
 
 model ProofObligation {

@@ -83,12 +83,13 @@ await assert.rejects(() => jwtVerify(unknownKidJwt, createLocalJWKSet({ keys: [p
 assert.equal(restAuthorizationRequirement("GET", "/workspaces/w/projects").scope, scopes.maffRead)
 assert.equal(restAuthorizationRequirement("POST", "/workspaces/w/projects").scope, scopes.maffWrite)
 assert.equal(restAuthorizationRequirement("POST", "/workspaces/w/projects/p/external-reviews").scope, scopes.maffReview)
-assert.equal(restAuthorizationRequirement("POST", "/workspaces/w/projects/p/manuscripts").scope, scopes.maffWrite)
+  assert.equal(restAuthorizationRequirement("POST", "/workspaces/w/projects/p/manuscripts").scope, scopes.maffWrite)
+assert.equal(restAuthorizationRequirement("POST", "/workspaces/w/manuscripts/m/citation-metadata-repair").scope, scopes.maffReview)
 const restRouteEntries = readdirSync("src/rest").filter((name) => name.endsWith(".ts")).flatMap((name) => {
   const source = readFileSync(path.join("src/rest", name), "utf8")
   return [...source.matchAll(/router\.(get|post|put|patch|delete)\("([^"]+)"/g)].map((match) => ({ method: match[1], path: match[2] }))
 })
-assert.equal(restRouteEntries.length, 89, "authenticated REST registry changed; review the authorization matrix intentionally")
+assert.equal(restRouteEntries.length, 90, "authenticated REST registry changed; review the authorization matrix intentionally")
 for (const route of restRouteEntries) {
   const requirement = restAuthorizationRequirement(route.method, route.path)
   assert.ok(advertisedScopes.includes(requirement.scope as typeof advertisedScopes[number]), `unmapped REST scope for ${route.method} ${route.path}`)
@@ -122,7 +123,7 @@ for (const name of [
   assert.ok(toolDefinitions.some((tool) => tool.name === name), `missing MCP tool ${name}`)
 }
 
-for (const name of ["get_manuscript", "update_manuscript", "build_manuscript", "revise_manuscript_source", "inspect_manuscript_build", "prepare_external_review_package", "publish_manuscript", "create_proof_obligation", "get_integration_coverage", "get_project_release_contract", "assess_project_release_alignment", "align_project_release_state", "compute_submission_readiness", "adopt_reviewed_manuscript_successor", "promote_manuscript_to_submission_candidate", "import_external_review", "create_strategic_review", "get_project_health", "create_project_branch"]) {
+for (const name of ["get_manuscript", "update_manuscript", "build_manuscript", "revise_manuscript_source", "inspect_manuscript_build", "prepare_external_review_package", "publish_manuscript", "create_proof_obligation", "get_integration_coverage", "get_project_release_contract", "assess_project_release_alignment", "align_project_release_state", "compute_submission_readiness", "adopt_reviewed_manuscript_successor", "repair_exact_version_citation_metadata", "promote_manuscript_to_submission_candidate", "import_external_review", "create_strategic_review", "get_project_health", "create_project_branch"]) {
   assert.ok(toolDefinitions.some((tool) => tool.name === name), `missing modern MCP tool ${name}`)
 }
 assert.equal(toolDefinitions.length, expectedMcpToolCount, "MCP registry count changed; update the reviewed snapshot intentionally")
@@ -159,7 +160,7 @@ for (const prop of ["report_id", "workstream_id"]) {
   assert.ok(submitReportProps[prop], `submit_report_for_review schema must advertise ${prop}`)
 }
 
-assert.equal(mcpServerVersion, "1.9.1-contract-exact-review-routing")
+assert.equal(mcpServerVersion, "1.10.0-exact-version-citation-repair")
 const gapTool = toolDefinitions.find((tool) => tool.name === "create_gap")!
 const gapProps = gapTool.inputSchema.properties as Record<string, unknown>
 for (const prop of ["resolution_kind", "resolution_role", "frontier_eligible"]) assert.ok(gapProps[prop], `create_gap schema must advertise ${prop}`)
@@ -170,6 +171,9 @@ assert.equal(lifecycleTool.annotations.idempotentHint, true)
 const adoptionTool = toolDefinitions.find((tool) => tool.name === "adopt_reviewed_manuscript_successor")!
 for (const prop of ["project_id", "expected_current_manuscript_version_id", "successor_manuscript_version_id", "supporting_review_round_id", "paper_build_id"]) assert.ok((adoptionTool.inputSchema.properties as Record<string, unknown>)[prop], `adopt_reviewed_manuscript_successor schema must advertise ${prop}`)
 assert.equal(adoptionTool.annotations.idempotentHint, true)
+const citationRepairTool = toolDefinitions.find((tool) => tool.name === "repair_exact_version_citation_metadata")!
+for (const prop of ["project_id", "manuscript_version_id", "expected_content_hash", "expected_old_citation_fingerprint", "source_artifact_id", "source_artifact_sha256", "pdf_artifact_id", "pdf_artifact_sha256", "actor_agent_run_id", "expected_new_citation_fingerprint", "idempotency_key"]) assert.ok((citationRepairTool.inputSchema.properties as Record<string, unknown>)[prop], `repair_exact_version_citation_metadata schema must advertise ${prop}`)
+assert.equal(citationRepairTool.annotations.idempotentHint, true)
 assert.equal(toolDefinitions.find((tool) => tool.name === "align_project_release_state")!.annotations.idempotentHint, true)
 assert.equal(toolDefinitions.find((tool) => tool.name === "prepare_external_review_package")!.annotations.idempotentHint, true)
 assert.equal(toolDefinitions.find((tool) => tool.name === "assess_project_release_alignment")!.annotations.readOnlyHint, true)

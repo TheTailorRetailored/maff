@@ -440,6 +440,18 @@ export function registerResearchRuntimeRoutes(router: Router) {
     res.json(await runtime.getManuscriptVersion(req.params.id, req.params.manuscriptVersionId))
   }))
 
+  router.post("/workspaces/:id/manuscripts/:manuscriptVersionId/citation-metadata-repair", asyncHandler(async (req, res) => {
+    const user = requireUser(req)
+    await requireWorkspaceRole(user.id, req.params.id, "editor")
+    const body = parse(z.object({
+      projectId: z.string().uuid(), expectedContentHash: z.string().regex(/^[a-f0-9]{64}$/), expectedOldCitationFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
+      sourceArtifactId: z.string().uuid(), sourceArtifactSha256: z.string().regex(/^[a-f0-9]{64}$/), pdfArtifactId: z.string().uuid(), pdfArtifactSha256: z.string().regex(/^[a-f0-9]{64}$/),
+      actorAgentRunId: z.string().uuid(), mode: z.enum(["source_bundle", "explicit_map"]).optional(), citations: z.array(z.object({ key: z.string().min(1), bibitem_latex: z.string().min(1) })).optional(),
+      expectedNewCitationFingerprint: z.string().regex(/^[a-f0-9]{64}$/).optional(), idempotencyKey: z.string().min(1).max(200).optional()
+    }), req.body)
+    res.json(await runtime.repairExactVersionCitationMetadata({ workspaceId: req.params.id, manuscriptVersionId: req.params.manuscriptVersionId, ...body }))
+  }))
+
   router.post("/workspaces/:id/manuscripts/:manuscriptVersionId/promote", asyncHandler(async (req, res) => {
     const user = requireUser(req)
     await requireWorkspaceRole(user.id, req.params.id, "editor")

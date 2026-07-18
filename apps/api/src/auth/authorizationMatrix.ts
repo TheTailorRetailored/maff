@@ -9,7 +9,7 @@ export type AuthorizationRequirement = {
 
 export function restAuthorizationRequirement(method: string, path: string): AuthorizationRequirement {
   const mutation = !["GET", "HEAD", "OPTIONS"].includes(method.toUpperCase())
-  const reviewMutation = mutation && /(?:claim-next-review|\/reviews(?:\/|$)|\/manuscripts\/[^/]+\/(?:promote|freeze)$|\/external-reviews$|\/strategic-reviews$)/i.test(path)
+  const reviewMutation = mutation && /(?:claim-next-review|\/reviews(?:\/|$)|\/manuscripts\/[^/]+\/(?:promote|freeze|citation-metadata-repair)$|\/external-reviews$|\/strategic-reviews$)/i.test(path)
   const scope = mutation ? (reviewMutation ? scopes.maffReview : scopes.maffWrite) : scopes.maffRead
   return { scope, clientRoles: acceptedClientRolesForScope(scope), workspaceRole: path.includes("/workspaces/") || path.startsWith("/research/") ? "route-specific" : "none" }
 }

@@ -12,8 +12,9 @@ import { inferMimeType, ingestFile, ingestRemoteFile, listZipEntries, readZipEnt
 import { analyzeProjectImport, beginProjectImport, beginRepairFromAudit, commitProjectImport, createExternalReviewPackage, createPublicationPackage, createReviewAssignment, ensureProjectActionable, recordObjectAccess, recordObjectContribution, retireResolvedGapWorkstreams, runProjectGraphAudit, submitRunOutcome, triageExternalReview, validateReviewAssignment, validateReviewEvidence } from "./integrity.js"
 import { citationKey, executePaperBuild, executeSourcePreservingBuild, inspectPaperBuild, renderPaper } from "./paperBuilder.js"
 import { adoptReviewedManuscriptSuccessor as adoptSuccessor } from "./successorAdoption.js"
+import { repairExactVersionCitationMetadata, runExactVersionCitationRepairAudit } from "./citationRepair.js"
 
-export { alignProjectReleaseState, analyzeProjectImport, assessProjectReleaseAlignment, beginProjectImport, beginRepairFromAudit, commitProjectImport, createPublicationPackage, ensureProjectActionable, recordObjectAccess, recordObjectContribution, runProjectGraphAudit, submitRunOutcome, triageExternalReview }
+export { alignProjectReleaseState, analyzeProjectImport, assessProjectReleaseAlignment, beginProjectImport, beginRepairFromAudit, commitProjectImport, createPublicationPackage, ensureProjectActionable, recordObjectAccess, recordObjectContribution, repairExactVersionCitationMetadata, runExactVersionCitationRepairAudit, runProjectGraphAudit, submitRunOutcome, triageExternalReview }
 
 const roleRecipeFiles: Record<AgentRole, string> = {
   ProjectCoordinator: "project_coordinator.md",
