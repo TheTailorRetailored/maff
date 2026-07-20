@@ -1,6 +1,9 @@
 import { config } from "../config.js"
 
 async function post(path: string, body: unknown) {
+  if (!config.leanWorkerUrl) {
+    throw new Error("LEAN_RUNTIME_DISABLED: the optional Lean execution runtime is not installed")
+  }
   const res = await fetch(`${config.leanWorkerUrl}${path}`, {
     method: "POST",
     headers: { "content-type": "application/json" },

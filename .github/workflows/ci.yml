@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        package: [apps/api, apps/web, workers/lean-worker]
+        package: [apps/api, apps/web]
     defaults:
       run:
         working-directory: ${{ matrix.package }}

@@ -22,7 +22,7 @@ export const config = {
     allowedOrganizations: (process.env.OIDC_ALLOWED_ORGANIZATIONS ?? "").split(",").map((s) => s.trim()).filter(Boolean),
     requiredEmailDomain: process.env.OIDC_REQUIRED_EMAIL_DOMAIN || undefined
   },
-  leanWorkerUrl: process.env.LEAN_WORKER_URL ?? "http://localhost:8765",
+  leanWorkerUrl: process.env.LEAN_WORKER_URL?.trim() || null,
   quartzDir: process.env.QUARTZ_DIR ?? "./quartz",
   skillsDir: process.env.SKILLS_DIR ?? "./skills",
   promptsDir: process.env.PROMPTS_DIR ?? "./prompts"
